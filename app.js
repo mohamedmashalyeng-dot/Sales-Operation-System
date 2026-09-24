@@ -385,7 +385,7 @@ async function runGmailSyncAuto(){
  gmailSyncRunning=true;
  clearTimeout(loadingTimer);
  $('#global-loader')?.classList.remove('show');
- let totalImported=0,totalScanned=0,totalReplies=0,batch=0;
+ let totalImported=0,totalScanned=0,totalReplies=0,totalLabels=0,batch=0;
  try{
   while(gmailSyncRunning){
    batch+=1;
@@ -393,12 +393,13 @@ async function runGmailSyncAuto(){
    totalImported+=result.imported||0;
    totalScanned+=result.scanned||0;
    totalReplies+=result.replies_resolved||0;
+   totalLabels+=result.labels_refreshed||0;
    await refresh();
-   toast(`Gmail sync batch ${batch}: ${result.imported||0} imported, ${result.replies_resolved||0} replies matched.${result.has_more?' Continuing automatically...':''}`);
+   toast(`Gmail sync batch ${batch}: ${result.imported||0} imported, ${result.replies_resolved||0} replies matched, ${result.labels_refreshed||0} labels fixed.${result.has_more?' Continuing automatically...':''}`);
    if(!result.has_more)break;
    await sleep(result.retry_after_ms||70000);
   }
-  toast(`Gmail sync complete. ${totalImported} imported, ${totalReplies} replies matched, ${totalScanned} scanned from 2026.`);
+  toast(`Gmail sync complete. ${totalImported} imported, ${totalReplies} replies matched, ${totalLabels} labels fixed, ${totalScanned} scanned from 2026.`);
  }catch(error){
   if(/quota|rate|limit/i.test(error.message)){
    toast('Google quota reached. Waiting and continuing automatically...');
@@ -429,7 +430,7 @@ async function runGmailLiveSync(){
  gmailLiveSyncRunning=true;
  try{
   const result=await api('/api/integrations/gmail/sync',{max_results:5,latest:true,skip_trash:true},'POST',{silent:true});
-  if((result.imported||0)||(result.restored||0)||(result.trashed||0))await refresh({silent:true});
+  if((result.imported||0)||(result.restored||0)||(result.trashed||0)||(result.labels_refreshed||0))await refresh({silent:true});
   scheduleGmailLiveSync(result.quota_limited?(result.retry_after_ms||70000):GMAIL_LIVE_SYNC_MS);
  }catch(error){
   scheduleGmailLiveSync(/quota|rate|limit/i.test(error.message)?70000:10000);

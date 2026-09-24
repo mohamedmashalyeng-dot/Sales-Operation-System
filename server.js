@@ -2552,11 +2552,30 @@ function uniqueStrings(values) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
-async function gmailLabelNameMap(auth) {
+function isInternalGmailLabelName(value) {
+  return /^Label_[A-Za-z0-9_-]+$/i.test(String(value || '').trim());
+}
+
+function cachedGmailLabelNames(db) {
+  return Object.entries(db.gmail?.label_name_map || {})
+    .filter(([, name]) => name && !isInternalGmailLabelName(name));
+}
+
+async function gmailLabelNameMap(auth, db) {
   const fallback = new Map(Object.entries(GMAIL_SYSTEM_LABELS));
+  for (const [id, name] of cachedGmailLabelNames(db)) fallback.set(id, name);
   try {
     const result = await fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/labels', { headers: auth });
-    for (const label of result.labels || []) fallback.set(label.id, label.name || GMAIL_SYSTEM_LABELS[label.id] || label.id);
+    const labelNameMap = {};
+    for (const label of result.labels || []) {
+      const name = label.name || GMAIL_SYSTEM_LABELS[label.id] || '';
+      if (!name || isInternalGmailLabelName(name)) continue;
+      fallback.set(label.id, name);
+      labelNameMap[label.id] = name;
+    }
+    db.gmail ||= {};
+    db.gmail.label_name_map = { ...(db.gmail.label_name_map || {}), ...labelNameMap };
+    db.gmail.label_names_updated_at = new Date().toISOString();
   } catch (error) {
     if (!/quota|rate|limit/i.test(error.message)) console.warn(`Gmail label lookup failed: ${error.message}`);
   }
@@ -2565,8 +2584,26 @@ async function gmailLabelNameMap(auth) {
 
 function gmailLabelsForMessage(message, labelMap) {
   const ids = uniqueStrings(message?.labelIds || []);
-  const names = uniqueStrings(ids.map(id => labelMap.get(id) || GMAIL_SYSTEM_LABELS[id] || '').filter(name => name && !/^Label_[A-Za-z0-9_-]+$/i.test(name)));
+  const names = uniqueStrings(ids.map(id => labelMap.get(id) || GMAIL_SYSTEM_LABELS[id] || '').filter(name => name && !isInternalGmailLabelName(name)));
   return { gmail_labels: ids, gmail_label_names: names };
+}
+
+function gmailEmailNeedsLabelRefresh(email) {
+  return !email?.gmail_labels?.length || !email?.gmail_label_names?.length || (email.gmail_label_names || []).some(isInternalGmailLabelName);
+}
+
+function refreshStoredGmailLabelNames(db, labelMap, changed) {
+  let refreshed = 0;
+  for (const email of db.emails || []) {
+    if (!email?.gmail_labels?.length) continue;
+    const labels = gmailLabelsForMessage({ labelIds: email.gmail_labels }, labelMap);
+    if (!labels.gmail_label_names.length) continue;
+    if (sameStringList(email.gmail_label_names, labels.gmail_label_names)) continue;
+    email.gmail_label_names = labels.gmail_label_names;
+    changed?.emailIds?.add(email.id);
+    refreshed += 1;
+  }
+  return refreshed;
 }
 
 function sameStringList(a = [], b = []) {
@@ -2711,6 +2748,7 @@ function gmailImportChanged(changed, counts = {}) {
   return Boolean(
     counts.imported ||
     counts.replied ||
+    counts.labels ||
     counts.restored ||
     counts.trashed ||
     changed.leadIds?.size ||
@@ -2817,7 +2855,8 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   if (!GMAIL_IMPORT_ENABLED) throw statusError(403, 'Gmail import is paused. Existing emails remain available.');
   const accessToken = await gmailAccessToken(db);
   const auth = { Authorization: `Bearer ${accessToken}` };
-  const labelMap = await gmailLabelNameMap(auth);
+  db.gmail ||= { connected: false, imported_message_ids: [] };
+  const labelMap = await gmailLabelNameMap(auth, db);
   const known = new Set([...(db.gmail.imported_message_ids || []), ...db.emails.map(email => email.gmail_message_id).filter(Boolean)]);
   const totalLimit = Math.max(1, Math.min(Number(maxResults) || 25, 25));
   const incrementalStart = GMAIL_INCREMENTAL_ONLY ? ensureIncrementalStart(db.gmail, 'incremental_started_at') : null;
@@ -2832,6 +2871,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     sent: latestOnly ? '' : gmailSyncPageToken(db, 'sent', GMAIL_INCREMENTAL_ONLY)
   };
   const changed = { leadIds: new Set(), taskIds: new Set(), emailIds: new Set(), auditIds: new Set() };
+  const labelsRefreshed = refreshStoredGmailLabelNames(db, labelMap, changed);
   const historyResult = options.skipTrash ? { history_trash: 0, history_restored: 0, history_skipped: true } : await syncGmailHistoryChanges(db, auth, changed);
   const trashResult = options.skipTrash ? { trashed: 0, scanned_trash: 0, trash_sync_skipped: true } : await syncGmailTrashLabels(db, auth, changed, { force: options.forceTrash });
   const quotaResponse = async () => {
@@ -2847,10 +2887,10 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
       setGmailSyncPageToken(db, 'sent', pageTokens.sent, false);
     }
     db.gmail.last_sync_at = new Date().toISOString();
-    if (gmailImportChanged(changed, { imported, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0) }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
+    if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0) }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
       await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
     }
-    return { imported, imported_inbox: importedInbox, imported_sent: importedSent, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), quota_limited: true, retry_after_ms: 70000, last_sync_at: db.gmail.last_sync_at };
+    return { imported, imported_inbox: importedInbox, imported_sent: importedSent, labels_refreshed: labelsRefreshed, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), quota_limited: true, retry_after_ms: 70000, last_sync_at: db.gmail.last_sync_at };
   };
 
   async function importSource(source, labelId) {
@@ -2875,7 +2915,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
         const existing = db.emails.find(email => email.gmail_message_id === item.id);
           const wasTrashed = emailIsTrashed(existing);
         let labelChanged = false;
-        if (existing && (!existing.gmail_labels?.length || !existing.gmail_label_names?.length)) {
+        if (existing && gmailEmailNeedsLabelRefresh(existing)) {
           try {
             const message = await fetchJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=metadata&fields=id,labelIds`, { headers: auth });
             labelChanged = applyGmailLabels(existing, message, labelMap);
@@ -3002,10 +3042,10 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     setGmailSyncPageToken(db, 'sent', pageTokens.sent, false);
   }
   db.gmail.last_sync_at = new Date().toISOString();
-  if (gmailImportChanged(changed, { imported, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
+  if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
     await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
   }
-  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
+  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, labels_refreshed: labelsRefreshed, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
 }
 
 function autoSyncUser(db) {
@@ -3043,6 +3083,7 @@ async function importGmailDailyMessages(db, user) {
     imported_inbox: 0,
     imported_sent: 0,
     replies_resolved: 0,
+    labels_refreshed: 0,
     scanned: 0,
     restored: 0,
     trashed: 0,
