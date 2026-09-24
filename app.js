@@ -1315,15 +1315,22 @@ function emailThreadKey(e){
  return String(e.subject||'').toLowerCase().replace(/^(\s*(re|fw|fwd):\s*)+/,'').replace(/\s+/g,' ').trim();
 }
 function emailThreadMessages(email){
- const key=emailThreadKey(email),mail=String(email.email||'').toLowerCase();
- const related=data.emails.filter(item=>{
+ const detailedThread=(data.email_threads&&data.email_threads[email.id])||[];
+ const pool=detailedThread.length?[...detailedThread,...data.emails]:data.emails;
+ const key=emailThreadKey(email),mail=String(email.email||'').toLowerCase(),gmailThread=String(email.gmail_thread_id||'').trim();
+ const related=pool.filter(item=>{
   if(emailIsTrashed(item)!==emailIsTrashed(email))return false;
+  const sameGmailThread=gmailThread&&String(item.gmail_thread_id||'').trim()===gmailThread;
+  if(sameGmailThread)return true;
   const sameLead=email.lead_id&&item.lead_id===email.lead_id;
   const sameMailbox=mail&&String(item.email||'').toLowerCase()===mail;
   const sameSubject=key&&emailThreadKey(item)===key;
   return sameSubject&&(sameLead||sameMailbox);
  });
- const thread=related.length?related:[email];
+ const unique=new Map();
+ related.forEach(item=>unique.set(item.id,item));
+ if(!unique.has(email.id))unique.set(email.id,email);
+ const thread=unique.size?[...unique.values()]:[email];
  return thread.sort((a,b)=>new Date(a.received_at||0)-new Date(b.received_at||0));
 }
 function emailConversationItems(email){
@@ -1444,12 +1451,14 @@ function emailThreadRow(item,activeId,gmailConnected){
 }
 async function openEmailDialog(id){
  let e=data.emails.find(item=>item.id===id);if(!e)return;
- if(!e.body){
-  const result=await api(`/api/emails/${encodeURIComponent(id)}`,undefined,'GET',{silent:true});
-  if(result.email){
-   e={...e,...result.email};
-   data.emails=data.emails.map(item=>item.id===id?e:item);
-  }
+ const result=await api(`/api/emails/${encodeURIComponent(id)}`,undefined,'GET',{silent:true});
+ if(result.email){
+  e={...e,...result.email};
+  data.emails=data.emails.map(item=>item.id===id?e:item);
+ }
+ if(result.thread?.length){
+  data.email_threads||={};
+  data.email_threads[id]=result.thread;
  }
  const lead=emailLead(e),dialog=$('#dialog'),gmailConnected=data.integrations.find(i=>i.name==='Gmail')?.status==='Connected',thread=emailConversationItems(e);
  const visibleMessageCount=thread.length;

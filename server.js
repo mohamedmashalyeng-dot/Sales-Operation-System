@@ -1968,17 +1968,61 @@ async function loadEmailPage(options = {}) {
   };
 }
 
+function emailDetailThread(baseEmail, emails = []) {
+  const baseThreadId = String(baseEmail.gmail_thread_id || '').trim();
+  const baseEmailAddress = normalizeEmail(baseEmail.email || baseEmail.from);
+  const baseLeadId = String(baseEmail.lead_id || '');
+  const baseSubjectKey = emailSubjectKey(baseEmail.subject);
+  const baseTrashed = emailIsTrashed(baseEmail);
+  const related = (emails || []).filter(item => {
+    if (!item || emailIsTrashed(item) !== baseTrashed) return false;
+    if (item.id === baseEmail.id) return true;
+    const sameThread = baseThreadId && String(item.gmail_thread_id || '').trim() === baseThreadId;
+    if (sameThread) return true;
+    const sameSubject = baseSubjectKey && emailSubjectKey(item.subject) === baseSubjectKey;
+    if (!sameSubject) return false;
+    const sameLead = baseLeadId && String(item.lead_id || '') === baseLeadId;
+    const sameMailbox = baseEmailAddress && normalizeEmail(item.email || item.from) === baseEmailAddress;
+    return sameLead || sameMailbox;
+  });
+  const unique = new Map();
+  related.forEach(item => unique.set(item.id, item));
+  if (!unique.has(baseEmail.id)) unique.set(baseEmail.id, baseEmail);
+  return [...unique.values()].sort((a, b) => new Date(a.received_at || a.created_at || 0) - new Date(b.received_at || b.created_at || 0));
+}
+
+async function loadEmailDetailThread(baseEmail) {
+  if (!postgresPool) return [baseEmail];
+  const threadId = String(baseEmail.gmail_thread_id || '').trim();
+  const email = normalizeEmail(baseEmail.email || baseEmail.from);
+  const leadId = String(baseEmail.lead_id || '');
+  const candidates = await postgresPool.query(
+    `select data from app_emails
+     where id = $1
+        or ($2 <> '' and data->>'gmail_thread_id' = $2)
+        or ($3 <> '' and lower(coalesce(email, data->>'email', data->>'from', '')) = lower($3))
+        or ($4 <> '' and coalesce(lead_id, data->>'lead_id', '') = $4)
+     order by received_at asc nulls last, id
+     limit 200`,
+    [baseEmail.id, threadId, email, leadId]
+  );
+  return emailDetailThread(baseEmail, candidates.rows.map(item => item.data));
+}
+
 async function loadEmailDetail(id) {
   await ensureStorage();
   if (postgresPool) {
     const result = await postgresPool.query(`select data from app_emails where id = $1 limit 1`, [id]);
     if (!result.rows[0]) throw statusError(404, 'Email not found.');
-    return { email: publicEmailDetail(result.rows[0].data) };
+    const email = result.rows[0].data;
+    const thread = await loadEmailDetailThread(email);
+    return { email: publicEmailDetail(email), thread: thread.map(publicEmailDetail) };
   }
   const db = await loadDb();
   const email = (db.emails || []).find(item => item.id === id);
   if (!email) throw statusError(404, 'Email not found.');
-  return { email: publicEmailDetail(email) };
+  const thread = emailDetailThread(email, db.emails || []);
+  return { email: publicEmailDetail(email), thread: thread.map(publicEmailDetail) };
 }
 
 async function loadDeveloperConfigDb() {
@@ -3035,7 +3079,7 @@ async function runGmailAutoSync() {
     }
     const result = GMAIL_AUTO_SYNC_MODE === 'daily'
       ? await importGmailDailyMessages(db, autoSyncUser(db))
-      : await importGmailMessages(db, autoSyncUser(db), GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: true, skipTrash: true });
+      : await importGmailMessages(db, autoSyncUser(db), GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: false, skipTrash: true });
     gmailAutoSyncState.last_result = result;
     gmailAutoSyncState.last_error = null;
     const nextDelay = result.quota_limited
