@@ -208,7 +208,7 @@
   cursor: not-allowed;
 }
 
-.table-wrap {
+.dev-panel .table-wrap {
   border: 1px solid rgba(103, 40, 184, .10);
   border-radius: 14px;
   overflow: auto;

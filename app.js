@@ -163,7 +163,7 @@ const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300;
 const GMAIL_IMPORT_ENABLED=true;
 const GMAIL_LIVE_SYNC_MS=60000;
 const GMAIL_TRASH_LIVE_SYNC_MS=120000;
-const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',audit:'Audit trail',more:'Your workspace'};
+const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
 const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['attribution','chart','Attribution']];
 const localUserKey='pathway_local_user';
 const localDataKey='pathway_local_data';
@@ -926,10 +926,30 @@ function integrationActions(i){
  return '';
 }
 function isDeveloperAccount(){return data?.permissions?.developer||String(data?.user?.email||'').toLowerCase()==='mohamedmashalyeng@gmail.com';}
-async function settings(){const dev=isDeveloperAccount();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}${dev?`<a class="button soft" href="/developer.html">${icon('shield')}Developer dashboard</a>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div><p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
+const DEV_ROLE_OPTIONS=[['member','Member'],['monitor','Monitor'],['developer','Developer']];
+const DEV_ASSIGNABLE_ROLE_OPTIONS=DEV_ROLE_OPTIONS.filter(([value])=>value!=='developer');
+function devRoleKey(user){const role=String(user.role_key||user.role||'member').toLowerCase();if(['developer','admin','director'].includes(role))return'developer';if(['monitor','minitor','manager','admissions','qa'].includes(role))return'monitor';return'member';}
+function devPill(text,kind=''){return `<span class="dev-pill ${kind?`status-${esc(kind)}`:''}">${esc(text)}</span>`;}
+function devRoleSelect(user){const selected=devRoleKey(user),options=user.is_configured_developer?DEV_ROLE_OPTIONS:DEV_ASSIGNABLE_ROLE_OPTIONS;return `<select class="dev-role-control" data-dev-role="${esc(user.id)}" data-previous="${esc(selected)}" aria-label="Role for ${esc(user.name)}" ${user.is_configured_developer?'disabled':''}>${options.map(([value,label])=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`).join('')}</select>`;}
+function devUserActions(user){if(user.is_configured_developer)return devPill('Protected','locked');return `<div class="dev-row-actions"><button class="button soft" data-act="reset-user-password" data-id="${esc(user.id)}">Reset</button><button class="button soft" data-act="delete-user" data-id="${esc(user.id)}">Delete</button></div>`;}
+function devField(name,label,attrs=''){return `<label class="dev-field"><span>${esc(label)}</span><input name="${esc(name)}" ${attrs}></label>`;}
+async function developer(){
+ if(!isDeveloperAccount())return empty('Unable to load this view','Developer panel is only available to the configured developer account.');
+ const config=await api('/api/developer/config');
+ const users=config.users||[],tempCount=users.filter(user=>user.temporary_password).length,developerCount=users.filter(user=>devRoleKey(user)==='developer').length;
+ return heading('Developer panel.','Workspace access, roles and runtime status.')+`
+  <section class="dev-hero">
+    <div class="dev-card dev-hero-card"><p class="eyebrow">Access control</p><h1>Invites, roles and runtime status.</h1><p>Manage workspace access, reset temporary passwords and confirm deployment configuration from this tab.</p><div class="dev-hero-meta">${devPill(`Storage: ${config.storage||'unknown'}`,'ok')}${devPill(config.local_only?'Local access':'Configured developer','locked')}</div></div>
+    <div class="dev-stat-grid"><div class="dev-stat"><span class="dev-muted">Users</span><strong>${users.length}</strong><small>Total accounts</small></div><div class="dev-stat"><span class="dev-muted">Developers</span><strong>${developerCount}</strong><small>Protected access</small></div><div class="dev-stat"><span class="dev-muted">Temporary</span><strong>${tempCount}</strong><small>Password visible</small></div></div>
+  </section>
+  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Invite user</h2><p class="dev-muted">Temporary passwords stay visible here until the user changes them.</p></div></div><form class="dev-form" id="developer-invite-form">${devField('name','Full name','placeholder="Full name" required maxlength="120"')}${devField('email','Work email','type="email" placeholder="name@company.com" required maxlength="254"')}${devField('password','Temporary password','placeholder="Leave blank to generate" minlength="8" maxlength="128"')}<label class="dev-field"><span>Role</span><select name="role">${DEV_ASSIGNABLE_ROLE_OPTIONS.map(([value,label])=>`<option value="${esc(value)}">${esc(label)}</option>`).join('')}</select></label><button class="button primary" type="submit">Invite</button></form></section>
+  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Team access</h2><p class="dev-muted">Reset a password if someone forgets it. Leave the prompt blank to generate one.</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>User</th><th>Role</th><th>Temporary password</th><th>Status</th><th></th></tr></thead><tbody>${users.length?users.map(user=>`<tr><td><div class="dev-user-cell"><span class="dev-avatar">${esc((user.name||user.email||'?').slice(0,1).toUpperCase())}</span><div><strong>${esc(user.name)}</strong><code>${esc(user.email)}</code></div></div></td><td><div class="dev-role-stack">${devRoleSelect(user)}</div></td><td><code class="dev-secret">${esc(user.temporary_password||'Changed by user')}</code></td><td>${user.temporary_password?devPill('Temporary','warn'):devPill('Private','ok')}</td><td>${devUserActions(user)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="dev-empty">No users have been invited yet.</div></td></tr>'}</tbody></table></div></section>
+  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Runtime</h2><p class="dev-muted">Storage mode: ${esc(config.storage)}</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>Key</th><th>Status</th><th>Value</th></tr></thead><tbody>${(config.server||[]).map(item=>`<tr><td><strong>${esc(item.label)}</strong><br><code>${esc(item.key)}</code></td><td>${devPill(item.configured?'Configured':'Missing',item.configured?'ok':'warn')}</td><td><code>${esc(item.value||'Not set')}</code></td></tr>`).join('')}</tbody></table></div></section>`;
+}
+async function settings(){const dev=isDeveloperAccount();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div><p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
 function auditView(){return heading('Every decision leaves a trail.','Recorded actions, reviewers and changes.')+`<section class="panel table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr></thead><tbody>${data.audit.map(a=>`<tr><td>${timestamp(a.occurred_at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)}<div class="small muted mono">${esc(a.entity_id)}</div></td></tr>`).join('')}</tbody></table>${data.audit.length?'':empty('No audit records available for this role')}</section>`;}
-function more(){return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.slice(4),['settings','settings','Settings'],...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Demo workspace · Fictional sample records':''}</div>${btn('Sign out','logout')}`;}
-async function render(){if(!data)return;const id=++viewId,current=route();try{let html;if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);else{const view=({today,monitoring,leads,phases,planner,inbox,applications,events,attribution,settings,audit:auditView,more}[current]||today);html=await view();}if(id===viewId){$('#app').innerHTML=shell(html,current);if(current==='today'&&isDeveloperAccount()){const actions=$('.heading .actions')||$('.heading');actions?.insertAdjacentHTML('beforeend',`<a class="button soft" href="/developer.html">${icon('shield')}Developer dashboard</a>`);}hydrateSelectMenus($('#app'));}}catch(e){if(id===viewId&&data){$('#app').innerHTML=shell(empty('Unable to load this view',e.message)+btn('Try again','reload'),current);hydrateSelectMenus($('#app'));}}}
+function more(){return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.slice(4),['settings','settings','Settings'],...(isDeveloperAccount()? [['developer','shield','Developer']] : []),...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Demo workspace · Fictional sample records':''}</div>${btn('Sign out','logout')}`;}
+async function render(){if(!data)return;const id=++viewId,current=route();try{let html;if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);else{const view=({today,monitoring,leads,phases,planner,inbox,applications,events,attribution,settings,developer,audit:auditView,more}[current]||today);html=await view();}if(id===viewId){$('#app').innerHTML=shell(html,current);if(isDeveloperAccount()){const manageLabel=[...document.querySelectorAll('.sidebar .eyebrow')].find(item=>item.textContent.trim()==='Manage');if(manageLabel&&!document.querySelector('.sidebar [data-go="developer"]'))manageLabel.insertAdjacentHTML('afterend',navButton(['developer','shield','Developer'],current.split('/')[0]));}if(current==='today'&&isDeveloperAccount()){const actions=$('.heading .actions')||$('.heading');actions?.insertAdjacentHTML('beforeend',`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`);}hydrateSelectMenus($('#app'));}}catch(e){if(id===viewId&&data){$('#app').innerHTML=shell(empty('Unable to load this view',e.message)+btn('Try again','reload'),current);hydrateSelectMenus($('#app'));}}}
 
 function field(name,label,value='',type='text',extra=''){return `<label class="field"><span>${esc(label)}</span><input name="${name}" type="${type}" value="${esc(value)}" ${extra} required></label>`;}
 function select(name,label,options,selected=''){return `<label class="field"><span>${esc(label)}</span><select name="${name}" required>${options.map(o=>{const [v,t]=Array.isArray(o)?o:[o,o];return `<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(t)}</option>`;}).join('')}</select></label>`;}
@@ -948,6 +968,8 @@ async function action(act,id='',target=null){
  if(act==='close')return $('#dialog').close();
  if(act==='reload')return refresh();
  if(act==='logout'){clearTimeout(gmailLiveTimer);clearTimeout(gmailTrashLiveTimer);await api('/api/logout',{});data=null;location.hash='';login();return;}
+ if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});toast(`Temporary password: ${result.temporary_password}`);},'Reset password');
+ if(act==='delete-user'){if(!confirm('Delete this user?'))return;await api(`/api/users/${encodeURIComponent(id)}`,{},'DELETE');await refresh();toast('User deleted.');return;}
   if(act==='notifications'){if(overdueEmailCount()){Object.assign(filters,{inbox:'Overdue',inboxSort:'due-soon',inboxDate:'due',inboxLabel:'All'});go('inbox');return;}filters.planner='Overdue';go('planner');return;}
   if(act==='planner-filter'){filters.planner=id;return render();}
  if(act==='lead-view'){filters.leadView=id==='board'?'board':'table';return render();}
@@ -1070,6 +1092,23 @@ document.addEventListener('click',async event=>{
  setActionLoading(target,true,target.dataset.loadingLabel||'');
  try{await action(target.dataset.act,target.dataset.id||'',target);}catch(e){toast(e.message);}finally{setActionLoading(target,false);}
 });
+document.addEventListener('submit',async event=>{
+ if(event.target.id!=='developer-invite-form')return;
+ event.preventDefault();
+ const form=event.target,button=form.querySelector('[type=submit]');
+ button.disabled=true;
+ try{
+  const values=Object.fromEntries(new FormData(form));
+  const result=await api('/api/users',values);
+  form.reset();
+  await refresh();
+  toast(`Temporary password: ${result.temporary_password}`);
+ }catch(error){
+  toast(error.message);
+ }finally{
+  button.disabled=false;
+ }
+});
 document.addEventListener('keydown',event=>{
  if(event.key==='Escape')closeSelectMenus();
 });
@@ -1084,6 +1123,23 @@ document.addEventListener('input',event=>{
  }
 });
 document.addEventListener('change',async event=>{
+ const roleControl=event.target.closest('[data-dev-role]');
+ if(roleControl){
+  const previous=roleControl.dataset.previous||roleControl.value;
+  roleControl.disabled=true;
+  try{
+   await api(`/api/users/${encodeURIComponent(roleControl.dataset.devRole)}/role`,{role:roleControl.value},'PATCH');
+   roleControl.dataset.previous=roleControl.value;
+   await refresh();
+   toast('Role updated.');
+  }catch(error){
+   roleControl.value=previous;
+   toast(error.message);
+  }finally{
+   roleControl.disabled=false;
+  }
+  return;
+ }
  if(event.target.classList.contains('crm-stage-select')){
   const lead=data.leads.find(l=>l.id===event.target.dataset.id),stage=event.target.value;
   if(!lead||lead.stage===stage)return;
