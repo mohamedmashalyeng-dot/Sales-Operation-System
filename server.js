@@ -34,6 +34,7 @@ let identityCleanupRunning = false;
 
 const GMAIL_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'];
 const EMAIL_RESPONSE_SLA_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_DEVELOPER_EMAIL = 'mohamedmashalyeng@gmail.com';
 const GMAIL_IMPORT_ENABLED = String(process.env.GMAIL_IMPORT || 'true').toLowerCase() !== 'false';
 const GMAIL_INCREMENTAL_ONLY = String(process.env.GMAIL_INCREMENTAL_ONLY || 'false').toLowerCase() === 'true';
 const GMAIL_AUTO_SYNC_ENABLED = String(process.env.GMAIL_AUTO_SYNC || 'true').toLowerCase() !== 'false';
@@ -129,7 +130,7 @@ function initialUsers() {
 }
 
 function developerBootstrapConfig() {
-  const email = normalizeEmail(process.env.DEV_PANEL_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '');
+  const email = configuredDeveloperEmail();
   const password = String(process.env.DEV_PANEL_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || '');
   return {
     email,
@@ -1374,8 +1375,7 @@ function workspaceRoleLabel(role) {
 }
 
 function isConfiguredDeveloperUser(user) {
-  const devEmail = configuredDeveloperEmail();
-  return Boolean(user && devEmail && normalizeEmail(user.email) === devEmail);
+  return Boolean(user && isDeveloperEmail(user.email));
 }
 
 function visibleWorkspaceRoleKey(user) {
@@ -2109,7 +2109,7 @@ async function createWorkspaceUser(body, actor) {
   if (!name || !email) throw statusError(400, 'Name and email are required.');
   if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
   if (!role) throw statusError(400, 'Choose a valid role.');
-  if (role === 'admin' && email !== configuredDeveloperEmail()) throw statusError(400, 'Only the configured developer account can use Developer.');
+  if (role === 'admin' && !isDeveloperEmail(email)) throw statusError(400, 'Only the configured developer account can use Developer.');
   await ensureUserStorage();
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
@@ -2172,8 +2172,7 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
 function assertUserCanBeManaged(target, actor, action, nextRole = '') {
   if (!target) throw statusError(404, 'User not found.');
   if (target.id === actor.id) throw statusError(400, `You cannot ${action} your own account.`);
-  const devEmail = configuredDeveloperEmail();
-  const targetIsConfiguredDeveloper = devEmail && normalizeEmail(target.email) === devEmail;
+  const targetIsConfiguredDeveloper = isDeveloperEmail(target.email);
   if (nextRole && canonicalWorkspaceRole(nextRole) === 'admin' && !targetIsConfiguredDeveloper) {
     throw statusError(400, 'Only the configured developer account can use Developer.');
   }
@@ -2299,13 +2298,26 @@ function isLocalRequest(req) {
 }
 
 function configuredDeveloperEmail() {
-  return normalizeEmail(process.env.DEV_PANEL_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '');
+  return configuredDeveloperEmails()[0] || '';
+}
+
+function configuredDeveloperEmails() {
+  return uniqueStrings([
+    DEFAULT_DEVELOPER_EMAIL,
+    process.env.DEV_PANEL_EMAIL,
+    process.env.INITIAL_ADMIN_EMAIL
+  ].map(normalizeEmail).filter(Boolean));
+}
+
+function isDeveloperEmail(email) {
+  const normalized = normalizeEmail(email);
+  return Boolean(normalized && configuredDeveloperEmails().includes(normalized));
 }
 
 function canUseDeveloperDashboard(req, user) {
-  if (!user || canonicalWorkspaceRole(user.role) !== 'admin') return false;
-  const devEmail = configuredDeveloperEmail();
-  if (devEmail) return normalizeEmail(user.email) === devEmail;
+  if (!user) return false;
+  if (isDeveloperEmail(user.email)) return true;
+  if (canonicalWorkspaceRole(user.role) !== 'admin') return false;
   return req ? isLocalRequest(req) : true;
 }
 
@@ -4562,7 +4574,7 @@ async function handleApi(req, res) {
     if (!name || !email) throw statusError(400, 'Name and email are required.');
     if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
     if (!role) throw statusError(400, 'Choose a valid role.');
-    if (role === 'admin' && email !== configuredDeveloperEmail()) throw statusError(400, 'Only the configured developer account can use Developer.');
+    if (role === 'admin' && !isDeveloperEmail(email)) throw statusError(400, 'Only the configured developer account can use Developer.');
     if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
     db.users.push({ id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null });
     addAudit(db, user, 'Team member invited', 'user', email);
