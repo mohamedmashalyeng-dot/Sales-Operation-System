@@ -9,7 +9,7 @@ npm install
 npm start
 ```
 
-Open `http://127.0.0.1:5500/`.
+Open `http://127.0.0.1:3000/`, or `http://127.0.0.1:5500/` if your local `.env` sets `PORT=5500`.
 
 For local development, copy `.env.example` to `.env` and change only the values you need.
 
@@ -53,7 +53,7 @@ npm ci --omit=dev
 
 ```env
 NODE_ENV=production
-PORT=5500
+PORT=3000
 DATABASE_URL=postgresql://...?sslmode=verify-full
 INITIAL_ADMIN_EMAIL=...
 INITIAL_ADMIN_PASSWORD=...

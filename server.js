@@ -11,7 +11,7 @@ const ROOT = __dirname;
 
 loadEnv();
 
-const PORT = Number(process.env.PORT || 5500);
+const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_FILE = path.join(DATA_DIR, 'pathway-db.json');
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.MONGODB_URI || process.env.MONGO_URI || '';
