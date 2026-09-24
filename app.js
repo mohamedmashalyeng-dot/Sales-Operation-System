@@ -161,8 +161,8 @@ let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSe
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300;
 const GMAIL_IMPORT_ENABLED=true;
-const GMAIL_LIVE_SYNC_MS=1000;
-const GMAIL_TRASH_LIVE_SYNC_MS=3000;
+const GMAIL_LIVE_SYNC_MS=60000;
+const GMAIL_TRASH_LIVE_SYNC_MS=120000;
 const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
 const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['attribution','chart','Attribution']];
 const localUserKey='pathway_local_user';
