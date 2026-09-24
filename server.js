@@ -2383,10 +2383,7 @@ function isDeveloperEmail(email) {
 }
 
 function canUseDeveloperDashboard(req, user) {
-  if (!user) return false;
-  if (isDeveloperEmail(user.email)) return true;
-  if (canonicalWorkspaceRole(user.role) !== 'admin') return false;
-  return req ? isLocalRequest(req) : true;
+  return Boolean(user && isDeveloperEmail(user.email));
 }
 
 function requireDeveloperAccess(req, user) {

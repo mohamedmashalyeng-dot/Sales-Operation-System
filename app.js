@@ -925,7 +925,7 @@ function integrationActions(i){
  }
  return '';
 }
-function isDeveloperAccount(){return data?.permissions?.developer||String(data?.user?.email||'').toLowerCase()==='mohamedmashalyeng@gmail.com';}
+function isDeveloperAccount(){return data?.permissions?.developer===true;}
 const DEV_ROLE_OPTIONS=[['member','Member'],['monitor','Monitor'],['developer','Developer']];
 const DEV_ASSIGNABLE_ROLE_OPTIONS=DEV_ROLE_OPTIONS.filter(([value])=>value!=='developer');
 function devRoleKey(user){const role=String(user.role_key||user.role||'member').toLowerCase();if(['developer','admin','director'].includes(role))return'developer';if(['monitor','minitor','manager','admissions','qa'].includes(role))return'monitor';return'member';}
