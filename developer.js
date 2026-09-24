@@ -40,10 +40,34 @@ async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
   return value;
 }
 
+const ROLE_OPTIONS = [
+  ['member', 'Member'],
+  ['monitor', 'Monitor'],
+  ['developer', 'Developer']
+];
+
+function roleKey(user) {
+  const role = String(user.role_key || user.role || 'member').toLowerCase();
+  if (['developer', 'admin', 'director'].includes(role)) return 'developer';
+  if (['monitor', 'minitor', 'manager', 'admissions', 'qa'].includes(role)) return 'monitor';
+  return 'member';
+}
+
+function roleLabel(user) {
+  return user.role_label || ROLE_OPTIONS.find(([value]) => value === roleKey(user))?.[1] || 'Member';
+}
+
+function roleSelect(user) {
+  const selected = roleKey(user);
+  return `<select data-act="role" data-id="${esc(user.id)}" aria-label="Role for ${esc(user.name)}">
+    ${ROLE_OPTIONS.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('')}
+  </select>`;
+}
+
 function shell(config) {
   const users = config.users || [];
   const tempCount = users.filter(user => user.temporary_password).length;
-  const adminCount = users.filter(user => ['admin', 'director'].includes(user.role)).length;
+  const developerCount = users.filter(user => roleKey(user) === 'developer').length;
   return `
     <header class="dev-topbar">
       <div class="dev-brand">
@@ -64,7 +88,7 @@ function shell(config) {
       </div>
       <div class="dev-stat-grid">
         <div class="dev-stat"><span class="dev-muted">Users</span><strong>${users.length}</strong></div>
-        <div class="dev-stat"><span class="dev-muted">Admins</span><strong>${adminCount}</strong></div>
+        <div class="dev-stat"><span class="dev-muted">Developers</span><strong>${developerCount}</strong></div>
         <div class="dev-stat"><span class="dev-muted">Temporary</span><strong>${tempCount}</strong></div>
       </div>
     </section>
@@ -81,12 +105,7 @@ function shell(config) {
         <input name="email" type="email" placeholder="Work email" required maxlength="254">
         <input name="password" placeholder="Temporary password" minlength="8" maxlength="128">
         <select name="role">
-          <option value="sales">sales</option>
-          <option value="manager">manager</option>
-          <option value="admissions">admissions</option>
-          <option value="qa">qa</option>
-          <option value="director">director</option>
-          <option value="admin">admin</option>
+          ${ROLE_OPTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
         </select>
         <button class="button primary" type="submit">Invite</button>
       </form>
@@ -106,10 +125,13 @@ function shell(config) {
             ${users.map(user => `
               <tr>
                 <td><strong>${esc(user.name)}</strong><br><code>${esc(user.email)}</code></td>
-                <td>${esc(user.role || 'sales')}</td>
+                <td>${roleSelect(user)}<br><span class="dev-muted">${esc(roleLabel(user))}</span></td>
                 <td><code>${esc(user.temporary_password || 'Changed by user')}</code></td>
                 <td>${user.temporary_password ? 'Temporary' : 'Private'}</td>
-                <td><button class="button soft" data-act="reset" data-id="${esc(user.id)}">Reset</button></td>
+                <td>
+                  <button class="button soft" data-act="reset" data-id="${esc(user.id)}">Reset</button>
+                  <button class="button soft" data-act="delete" data-id="${esc(user.id)}" data-name="${esc(user.name)}">Delete</button>
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -166,6 +188,16 @@ document.addEventListener('click', async event => {
   if (!button) return;
   const action = button.dataset.act;
   if (action === 'refresh') return load();
+  if (action === 'delete') {
+    if (!confirm(`Delete ${button.dataset.name || 'this user'}?`)) return;
+    try {
+      await api(`/api/users/${encodeURIComponent(button.dataset.id)}`, {}, 'DELETE');
+      toast('User deleted.');
+      await load();
+    } catch (error) {
+      toast(error.message);
+    }
+  }
   if (action === 'reset') {
     const password = prompt('New temporary password. Leave empty to generate one.');
     try {
@@ -175,6 +207,19 @@ document.addEventListener('click', async event => {
     } catch (error) {
       toast(error.message);
     }
+  }
+});
+
+document.addEventListener('change', async event => {
+  const input = event.target.closest('[data-act="role"]');
+  if (!input) return;
+  try {
+    await api(`/api/users/${encodeURIComponent(input.dataset.id)}/role`, { role: input.value }, 'PATCH');
+    toast('Role updated.');
+    await load();
+  } catch (error) {
+    toast(error.message);
+    await load();
   }
 });
 

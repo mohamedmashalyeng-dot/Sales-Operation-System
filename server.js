@@ -150,7 +150,7 @@ function ensureConfiguredDeveloperUser(db) {
       id: nextId('U', [db.users]),
       name: config.name,
       email: config.email,
-      role: ['admin', 'director'].includes(config.role) ? config.role : 'admin',
+      role: normalizeWorkspaceRole(config.role) || 'admin',
       password_hash: hashPassword(config.password),
       temporary_password: config.password,
       invited_at: new Date().toISOString(),
@@ -159,7 +159,7 @@ function ensureConfiguredDeveloperUser(db) {
     db.users.push(user);
     return true;
   }
-  if (!['admin', 'director'].includes(user.role)) {
+  if (canonicalWorkspaceRole(user.role) !== 'admin') {
     user.role = 'admin';
     changed = true;
   }
@@ -1115,7 +1115,7 @@ function configuredDeveloperUserRecord() {
     id: 'developer-user',
     name: config.name,
     email: config.email,
-    role: ['admin', 'director'].includes(config.role) ? config.role : 'admin',
+    role: normalizeWorkspaceRole(config.role) || 'admin',
     password_hash: hashPassword(config.password),
     temporary_password: config.password,
     invited_at: new Date().toISOString(),
@@ -1327,11 +1327,42 @@ function publicUser(user) {
 }
 
 function permissions(role) {
+  const canonicalRole = canonicalWorkspaceRole(role);
   return {
-    sales: ['sales', 'manager', 'admissions', 'qa', 'director', 'admin'].includes(role),
-    review: ['manager', 'admissions', 'qa', 'director', 'admin'].includes(role),
-    admin: ['admin', 'director'].includes(role)
+    sales: ['sales', 'manager', 'admissions', 'qa', 'director', 'admin'].includes(canonicalRole),
+    review: ['manager', 'admissions', 'qa', 'director', 'admin'].includes(canonicalRole),
+    admin: ['admin', 'director'].includes(canonicalRole)
   };
+}
+
+function canonicalWorkspaceRole(role) {
+  const key = String(role || 'member').trim().toLowerCase();
+  const roles = {
+    developer: 'admin',
+    dev: 'admin',
+    admin: 'admin',
+    director: 'admin',
+    monitor: 'manager',
+    minitor: 'manager',
+    manager: 'manager',
+    admissions: 'manager',
+    qa: 'manager',
+    member: 'sales',
+    sales: 'sales'
+  };
+  return roles[key] || key;
+}
+
+function normalizeWorkspaceRole(role) {
+  const canonical = canonicalWorkspaceRole(role);
+  return ['admin', 'manager', 'sales'].includes(canonical) ? canonical : '';
+}
+
+function workspaceRoleLabel(role) {
+  const canonical = canonicalWorkspaceRole(role);
+  if (canonical === 'admin') return 'Developer';
+  if (canonical === 'manager') return 'Monitor';
+  return 'Member';
 }
 
 function fullName(item) {
@@ -2057,10 +2088,10 @@ async function createWorkspaceUser(body, actor) {
   const email = normalizeEmail(body.email);
   const name = String(body.name || '').trim();
   const password = String(body.password || '').trim() || temporaryPassword();
-  const role = String(body.role || 'sales').trim();
+  const role = normalizeWorkspaceRole(body.role || 'member');
   if (!name || !email) throw statusError(400, 'Name and email are required.');
   if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
-  if (!['sales', 'manager', 'admissions', 'qa', 'director', 'admin'].includes(role)) throw statusError(400, 'Choose a valid role.');
+  if (!role) throw statusError(400, 'Choose a valid role.');
   await ensureUserStorage();
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
@@ -2118,6 +2149,65 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
   addAudit(db, actor, 'Team member password reset', 'user', target.email);
   await saveDb(db);
   return { ok: true, user: publicUser(target), temporary_password: password };
+}
+
+function assertUserCanBeManaged(target, actor, action, nextRole = '') {
+  if (!target) throw statusError(404, 'User not found.');
+  if (target.id === actor.id) throw statusError(400, `You cannot ${action} your own account.`);
+  const devEmail = configuredDeveloperEmail();
+  const targetIsConfiguredDeveloper = devEmail && normalizeEmail(target.email) === devEmail;
+  if (targetIsConfiguredDeveloper && (action === 'delete' || (nextRole && canonicalWorkspaceRole(nextRole) !== 'admin'))) {
+    throw statusError(400, 'The configured developer account must stay as Developer.');
+  }
+}
+
+async function updateWorkspaceUserRole(userId, body, actor) {
+  const role = normalizeWorkspaceRole(body.role);
+  if (!role) throw statusError(400, 'Choose Developer, Monitor or Member.');
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const current = await postgresPool.query(`select id, name, email, role from ${table} where id = $1 limit 1`, [userId]);
+    const target = current.rows[0];
+    assertUserCanBeManaged(target, actor, 'change the role for', role);
+    const result = await postgresPool.query(
+      `update ${table} set role = $2, updated_at = now() where id = $1 returning id, name, email, role, temporary_password, invited_at, password_changed_at`,
+      [userId, role]
+    );
+    clearUserSessions(userId);
+    dbCache = null;
+    return { ok: true, user: result.rows[0] };
+  }
+  const db = await loadDb();
+  const target = db.users.find(item => item.id === userId);
+  assertUserCanBeManaged(target, actor, 'change the role for', role);
+  target.role = role;
+  clearUserSessions(target.id);
+  addAudit(db, actor, 'Team member role changed', 'user', target.email);
+  await saveDb(db);
+  return { ok: true, user: publicUser(target) };
+}
+
+async function deleteWorkspaceUser(userId, actor) {
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const current = await postgresPool.query(`select id, name, email, role from ${table} where id = $1 limit 1`, [userId]);
+    const target = current.rows[0];
+    assertUserCanBeManaged(target, actor, 'delete');
+    await postgresPool.query(`delete from ${table} where id = $1`, [userId]);
+    clearUserSessions(userId);
+    dbCache = null;
+    return { ok: true, deleted_id: userId };
+  }
+  const db = await loadDb();
+  const target = db.users.find(item => item.id === userId);
+  assertUserCanBeManaged(target, actor, 'delete');
+  db.users = db.users.filter(item => item.id !== userId);
+  clearUserSessions(userId);
+  addAudit(db, actor, 'Team member deleted', 'user', target.email);
+  await saveDb(db);
+  return { ok: true, deleted_id: userId };
 }
 
 async function loadMarketingSummary() {
@@ -2192,7 +2282,7 @@ function configuredDeveloperEmail() {
 }
 
 function canUseDeveloperDashboard(req, user) {
-  if (!user || !['admin', 'director'].includes(user.role)) return false;
+  if (!user || canonicalWorkspaceRole(user.role) !== 'admin') return false;
   const devEmail = configuredDeveloperEmail();
   if (devEmail) return normalizeEmail(user.email) === devEmail;
   return req ? isLocalRequest(req) : true;
@@ -2213,6 +2303,8 @@ function developerConfig(req, db) {
       name: user.name,
       email: user.email,
       role: user.role,
+      role_key: canonicalWorkspaceRole(user.role) === 'admin' ? 'developer' : canonicalWorkspaceRole(user.role) === 'manager' ? 'monitor' : 'member',
+      role_label: workspaceRoleLabel(user.role),
       invited_at: user.invited_at || '',
       password_changed_at: user.password_changed_at || '',
       temporary_password: user.temporary_password || ''
@@ -3935,6 +4027,18 @@ async function handleApi(req, res) {
     requireDeveloperAccess(req, user);
     return sendJson(res, await resetWorkspaceUserPassword(lightweightMatch[1], body, user));
   }
+  lightweightMatch = route.match(/^\/api\/users\/([^/]+)\/role$/);
+  if (lightweightMatch && method === 'PATCH') {
+    const user = await currentSessionUser(req);
+    requireDeveloperAccess(req, user);
+    return sendJson(res, await updateWorkspaceUserRole(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/users\/([^/]+)$/);
+  if (lightweightMatch && method === 'DELETE') {
+    const user = await currentSessionUser(req);
+    requireDeveloperAccess(req, user);
+    return sendJson(res, await deleteWorkspaceUser(lightweightMatch[1], user));
+  }
   const db = await loadDb();
   if (route === '/api/password/forgot' && method === 'POST') {
     if (!postgresPool) throw statusError(500, 'Password reset requires Neon/PostgreSQL storage.');
@@ -4432,9 +4536,10 @@ async function handleApi(req, res) {
     const email = normalizeEmail(body.email);
     const name = String(body.name || '').trim();
     const password = String(body.password || '').trim() || temporaryPassword();
-    const role = String(body.role || 'sales').trim();
+    const role = normalizeWorkspaceRole(body.role || 'member');
     if (!name || !email) throw statusError(400, 'Name and email are required.');
     if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
+    if (!role) throw statusError(400, 'Choose a valid role.');
     if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
     db.users.push({ id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null });
     addAudit(db, user, 'Team member invited', 'user', email);
