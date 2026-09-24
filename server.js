@@ -2560,7 +2560,7 @@ async function gmailLabelNameMap(auth) {
 
 function gmailLabelsForMessage(message, labelMap) {
   const ids = uniqueStrings(message?.labelIds || []);
-  const names = uniqueStrings(ids.map(id => labelMap.get(id) || GMAIL_SYSTEM_LABELS[id] || id));
+  const names = uniqueStrings(ids.map(id => labelMap.get(id) || GMAIL_SYSTEM_LABELS[id] || '').filter(name => name && !/^Label_[A-Za-z0-9_-]+$/i.test(name)));
   return { gmail_labels: ids, gmail_label_names: names };
 }
 

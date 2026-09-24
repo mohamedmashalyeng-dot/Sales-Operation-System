@@ -1228,6 +1228,7 @@ function emailLead(e){return data.leads.find(l=>l.id===e.lead_id);}
 const GMAIL_SYSTEM_LABELS={INBOX:'Inbox',SENT:'Sent',TRASH:'Trash',SPAM:'Spam',DRAFT:'Draft',STARRED:'Starred',IMPORTANT:'Important',UNREAD:'Unread',CATEGORY_PERSONAL:'Personal',CATEGORY_SOCIAL:'Social',CATEGORY_PROMOTIONS:'Promotions',CATEGORY_UPDATES:'Updates',CATEGORY_FORUMS:'Forums'};
 const GMAIL_LOW_PRIORITY_LABELS=['Inbox','Unread','Important','Starred','Sent','Draft','Personal','Social','Promotions','Updates','Forums','Spam'];
 function uniqueLabels(values){return [...new Set((values||[]).map(value=>String(value||'').trim()).filter(Boolean))];}
+function isInternalGmailLabel(text){return /^Label_[A-Za-z0-9_-]+$/i.test(String(text||''));}
 function emailLabelKind(text){
  if(/trash|spam/i.test(text))return 'red';
  if(/sent|draft|updates/i.test(text))return 'blue';
@@ -1237,8 +1238,8 @@ function emailLabelKind(text){
  return 'plain';
 }
 function gmailDisplayLabels(e){
- const names=uniqueLabels([...(e.gmail_label_names||[]),...(e.gmail_labels||[]).map(label=>GMAIL_SYSTEM_LABELS[label]||label)]);
- return names.filter(label=>!/^category_/i.test(label)).map(text=>({text,kind:emailLabelKind(text)}));
+ const names=uniqueLabels([...(e.gmail_label_names||[]),...(e.gmail_labels||[]).map(label=>GMAIL_SYSTEM_LABELS[label]||'')]);
+ return names.filter(label=>!/^category_/i.test(label)&&!isInternalGmailLabel(label)).map(text=>({text,kind:emailLabelKind(text)}));
 }
 function emailLabels(e){
  if(emailIsTrashed(e))return [{text:'Trash',kind:'red'}];
