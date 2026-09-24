@@ -121,6 +121,58 @@ function initialUsers() {
   }];
 }
 
+function developerBootstrapConfig() {
+  const email = normalizeEmail(process.env.DEV_PANEL_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '');
+  const password = String(process.env.DEV_PANEL_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || '');
+  return {
+    email,
+    password,
+    name: process.env.DEV_PANEL_NAME || process.env.INITIAL_ADMIN_NAME || 'Developer',
+    role: process.env.DEV_PANEL_ROLE || process.env.INITIAL_ADMIN_ROLE || 'admin'
+  };
+}
+
+function ensureConfiguredDeveloperUser(db) {
+  const config = developerBootstrapConfig();
+  if (!config.email || !config.password) return false;
+  db.users ||= [];
+  let changed = false;
+  let user = db.users.find(item => normalizeEmail(item.email) === config.email);
+  if (!user) {
+    user = {
+      id: nextId('U', [db.users]),
+      name: config.name,
+      email: config.email,
+      role: ['admin', 'director'].includes(config.role) ? config.role : 'admin',
+      password_hash: hashPassword(config.password),
+      temporary_password: config.password,
+      invited_at: new Date().toISOString(),
+      password_changed_at: null
+    };
+    db.users.push(user);
+    return true;
+  }
+  if (!['admin', 'director'].includes(user.role)) {
+    user.role = 'admin';
+    changed = true;
+  }
+  if (config.name && user.name !== config.name) {
+    user.name = config.name;
+    changed = true;
+  }
+  if (String(process.env.DEV_PANEL_FORCE_PASSWORD || 'true').toLowerCase() !== 'false') {
+    user.password_hash = hashPassword(config.password);
+    user.temporary_password = config.password;
+    user.password_changed_at = null;
+    changed = true;
+  }
+  return changed;
+}
+
+function temporaryPassword() {
+  return crypto.randomBytes(9).toString('base64url') + '#KBC1';
+}
+
 function seedDatabase() {
   const users = initialUsers();
   return recalculate({
@@ -212,11 +264,17 @@ async function connectPostgresStorage() {
       email text not null unique,
       role text not null default 'sales',
       password_hash text not null,
+      temporary_password text,
+      invited_at timestamptz,
+      password_changed_at timestamptz,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
       last_login_at timestamptz
     )
   `);
+  await postgresPool.query(`alter table ${usersTable} add column if not exists temporary_password text`);
+  await postgresPool.query(`alter table ${usersTable} add column if not exists invited_at timestamptz`);
+  await postgresPool.query(`alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
   await postgresPool.query(`
     create table if not exists ${loginEventsTable} (
       id bigserial primary key,
@@ -388,6 +446,7 @@ async function loadDb() {
     const normalized = await loadPostgresTables();
     if (normalized) {
       const data = recalculate(await hydratePostgresUsers(normalized));
+      if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
       dbCache = cloneDb(data);
       return data;
     }
@@ -396,6 +455,7 @@ async function loadDb() {
     const seeded = legacy.rows[0]?.data ? recalculate(legacy.rows[0].data) : seedDatabase();
     await saveDb(seeded);
     const data = recalculate(await hydratePostgresUsers(seeded));
+    if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
     dbCache = cloneDb(data);
     return data;
   }
@@ -408,12 +468,14 @@ async function loadDb() {
       return seeded;
     }
     const data = recalculate(record.data);
+    if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
     dbCache = cloneDb(data);
     return data;
   }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DB_FILE)) await saveDb(seedDatabase());
   const data = recalculate(JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
+  if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
   dbCache = cloneDb(data);
   return data;
 }
@@ -885,15 +947,18 @@ async function upsertPostgresUsers(users = []) {
     if (!user?.email || !user?.password_hash) continue;
     await postgresPool.query(
       `
-        insert into ${table} (id, name, email, role, password_hash, created_at, updated_at)
-        values ($1, $2, $3, $4, $5, now(), now())
+        insert into ${table} (id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
         on conflict (email) do update
         set name = excluded.name,
             role = excluded.role,
             password_hash = excluded.password_hash,
+            temporary_password = excluded.temporary_password,
+            invited_at = coalesce(${table}.invited_at, excluded.invited_at),
+            password_changed_at = excluded.password_changed_at,
             updated_at = now()
       `,
-      [user.id, user.name, normalizeEmail(user.email), user.role || 'sales', user.password_hash]
+      [user.id, user.name, normalizeEmail(user.email), user.role || 'sales', user.password_hash, user.temporary_password || null, dateValue(user.invited_at), dateValue(user.password_changed_at)]
     );
   }
 }
@@ -903,7 +968,7 @@ async function hydratePostgresUsers(db) {
   const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const count = await postgresPool.query(`select count(*)::int as count from ${table}`);
   if (!count.rows[0]?.count && db.users?.length) await upsertPostgresUsers(db.users);
-  const result = await postgresPool.query(`select id, name, email, role, password_hash from ${table} order by created_at, id`);
+  const result = await postgresPool.query(`select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} order by created_at, id`);
   if (result.rows.length) db.users = result.rows;
   return db;
 }
@@ -1067,7 +1132,7 @@ async function sendPasswordResetMail(db, req, user, token) {
 
 function publicUser(user) {
   if (!user) return null;
-  const { password_hash, ...safe } = user;
+  const { password_hash, temporary_password, ...safe } = user;
   return safe;
 }
 
@@ -1644,13 +1709,23 @@ function requireDeveloperAccess(req, user) {
   const devEmail = normalizeEmail(process.env.DEV_PANEL_EMAIL || '');
   const allowedRole = ['admin', 'director'].includes(user.role);
   const allowedEmail = !devEmail || normalizeEmail(user.email) === devEmail;
-  if (!isLocalRequest(req) || !allowedRole || !allowedEmail) throw statusError(403, 'Developer panel is only available locally to an authorized developer account.');
+  const allowedLocation = Boolean(devEmail) || isLocalRequest(req);
+  if (!allowedLocation || !allowedRole || !allowedEmail) throw statusError(403, 'Developer panel is only available to the configured developer account.');
 }
 
 function developerConfig(req, db) {
   return {
-    local_only: true,
+    local_only: !process.env.DEV_PANEL_EMAIL,
     storage: storageMode(),
+    users: (db.users || []).map(user => ({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      invited_at: user.invited_at || '',
+      password_changed_at: user.password_changed_at || '',
+      temporary_password: user.temporary_password || ''
+    })),
     server: [
       envKeyStatus('PORT', 'Backend port', false),
       envKeyStatus('DATABASE_URL', 'Primary database URL', true),
@@ -3168,7 +3243,8 @@ async function handleApi(req, res) {
   const body = ['POST', 'PATCH', 'PUT'].includes(method) ? await readBody(req) : {};
 
   if (route === '/api/health' && method === 'GET') return sendJson(res, { demo: false, storage: storageMode() });
-  const publicRoutes = new Set(['/api/login', '/api/signup', '/api/password/forgot', '/api/password/reset']);
+  if (route === '/api/signup') throw statusError(404, 'Sign up is disabled. Ask the developer to invite your account.');
+  const publicRoutes = new Set(['/api/login', '/api/password/forgot', '/api/password/reset']);
   if (!publicRoutes.has(route) && !parseCookies(req).sid) throw statusError(401, 'Sign in to continue.');
   const db = await loadDb();
   if (route === '/api/password/forgot' && method === 'POST') {
@@ -3214,26 +3290,12 @@ async function handleApi(req, res) {
     const user = db.users.find(item => item.id === reset.user_id);
     if (!user) throw statusError(400, 'This reset link is invalid or expired.');
     user.password_hash = hashPassword(password);
+    user.temporary_password = '';
+    user.password_changed_at = new Date().toISOString();
     await saveDb(db);
     await postgresPool.query(`update ${resetsTable} set used_at = now() where user_id = $1 and used_at is null`, [user.id]);
     clearUserSessions(user.id);
     return sendJson(res, { ok: true });
-  }
-  if (route === '/api/signup' && method === 'POST') {
-    const email = normalizeEmail(body.email);
-    const name = String(body.name || '').trim();
-    const password = String(body.password || '');
-    if (!name || !email || !password) throw statusError(400, 'Name, email, and password are required.');
-    if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
-    if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists. Use Login instead.');
-    const user = { id: nextId('U', [db.users]), name, email, role: db.users.length ? 'sales' : 'admin', password_hash: hashPassword(password) };
-    db.users.push(user);
-    addAudit(db, user, 'User signed up', 'user', email);
-    await saveDb(db);
-    await recordPostgresLogin(user, req);
-    const sid = crypto.randomBytes(24).toString('hex');
-    sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
-    return sendJson(res, { ok: true, user: publicUser(user) }, 201, { 'Set-Cookie': sessionCookie(req, sid) });
   }
   if (route === '/api/login' && method === 'POST') {
     const email = normalizeEmail(body.email);
@@ -3665,18 +3727,42 @@ async function handleApi(req, res) {
   if (route === '/api/password' && method === 'POST') {
     if (!verifyPassword(body.current_password || '', user.password_hash)) throw statusError(400, 'Current password is incorrect.');
     user.password_hash = hashPassword(body.new_password || '');
+    user.temporary_password = '';
+    user.password_changed_at = new Date().toISOString();
     await saveDb(db);
     return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
   }
 
-  if (route === '/api/users' && method === 'POST') {
-    if (!permissions(user.role).admin) throw statusError(403, 'Admin permission is required.');
-    const email = normalizeEmail(body.email);
-    if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
-    db.users.push({ id: nextId('U', [db.users]), name: body.name, email, role: body.role, password_hash: hashPassword(body.password || '') });
-    addAudit(db, user, 'Team member created', 'user', body.email);
+  match = route.match(/^\/api\/users\/([^/]+)\/reset-password$/);
+  if (match && method === 'POST') {
+    requireDeveloperAccess(req, user);
+    const target = db.users.find(item => item.id === match[1]);
+    if (!target) throw statusError(404, 'User not found.');
+    const password = String(body.password || '').trim() || temporaryPassword();
+    if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
+    target.password_hash = hashPassword(password);
+    target.temporary_password = password;
+    target.password_changed_at = null;
+    target.invited_at ||= new Date().toISOString();
+    clearUserSessions(target.id);
+    addAudit(db, user, 'Team member password reset', 'user', target.email);
     await saveDb(db);
-    return sendJson(res, { ok: true }, 201);
+    return sendJson(res, { ok: true, temporary_password: password });
+  }
+
+  if (route === '/api/users' && method === 'POST') {
+    requireDeveloperAccess(req, user);
+    const email = normalizeEmail(body.email);
+    const name = String(body.name || '').trim();
+    const password = String(body.password || '').trim() || temporaryPassword();
+    const role = String(body.role || 'sales').trim();
+    if (!name || !email) throw statusError(400, 'Name and email are required.');
+    if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
+    if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
+    db.users.push({ id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null });
+    addAudit(db, user, 'Team member invited', 'user', email);
+    await saveDb(db);
+    return sendJson(res, { ok: true, temporary_password: password }, 201);
   }
 
   throw statusError(404, 'API route not found.');
