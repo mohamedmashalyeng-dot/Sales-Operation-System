@@ -328,6 +328,9 @@ dialog:has(.email-reader){width:min(1100px,calc(100% - 36px))}
 .auth-tab{min-height:40px;border-radius:7px;background:transparent;color:#6f5b7b;font-size:12px;font-weight:600}
 .auth-tab.active{background:#7c3aed;color:#fff;box-shadow:0 8px 20px #7c3aed22}
 .auth-helper{margin:14px 0 0;text-align:center;font-size:11px;color:#75657f}
+.login-loading{min-height:24px;margin:10px 0 0;text-align:center;color:#6426a8;font-size:12px;font-weight:700}
+.login-loading:empty{display:none}
+.login-loading:not(:empty)::before{content:'';width:14px;height:14px;margin-right:8px;border-radius:50%;display:inline-block;vertical-align:-2px;background:conic-gradient(from 90deg,transparent 0 58%,#c084fc 72%,#7c3aed 88%,transparent 100%);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 0);mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 0);animation:loader-spin .75s linear infinite}
 
 /* Loading */
 body:has(.loading-screen){background:#fff!important;background-image:none!important}

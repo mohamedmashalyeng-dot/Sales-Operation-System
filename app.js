@@ -126,6 +126,10 @@ function syncSelectMenu(select){
 function hydrateSelectMenus(root=document){
  root.querySelectorAll('select:not([data-native-menu])').forEach(select=>{
   if(select.dataset.customSelect){syncSelectMenu(select);return;}
+  if(select.closest('.lead-table,.crm-board,.planner-task-list-panel,.application-grid,.event-table')){
+   select.dataset.nativeMenu='true';
+   return;
+  }
   const parent=select.parentNode;
   if(!parent)return;
   const menu=document.createElement('span');
@@ -156,7 +160,7 @@ function hydrateSelectMenus(root=document){
 const dueLabel=t=>t.status==='Done'?'Done':new Date(t.due_at)<new Date()?'Overdue':date(t.due_at)===date(new Date())?time(t.due_at):date(t.due_at);
 const empty=(title,detail='')=>`<div class="empty">${icon('check')}<h3>${esc(title)}</h3>${esc(detail)}</div>`;
 const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="${act}" data-id="${esc(id)}">${esc(label)}</button>`;
-let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,gmailLiveSyncRunning=false,gmailTrashLiveSyncRunning=false,gmailLiveTimer=null,gmailTrashLiveTimer=null,inboxFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
+let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,gmailLiveSyncRunning=false,gmailTrashLiveSyncRunning=false,gmailLiveTimer=null,gmailTrashLiveTimer=null,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300;
@@ -515,6 +519,19 @@ async function loadInboxEmails(reset=false,options={}){
 function scheduleInboxFilterRefresh(){
  clearTimeout(inboxFilterTimer);
  inboxFilterTimer=setTimeout(()=>loadInboxEmails(true).then(()=>render()).catch(error=>toast(error.message)),350);
+}
+function scheduleLeadFilterRefresh(){
+ clearTimeout(leadFilterTimer);
+ leadFilterTimer=setTimeout(()=>{
+  const results=$('#lead-results');
+  if(!results)return;
+  results.innerHTML=leadResults();
+  hydrateSelectMenus(results);
+ },180);
+}
+function scheduleEventFilterRefresh(){
+ clearTimeout(eventFilterTimer);
+ eventFilterTimer=setTimeout(()=>render(),180);
 }
 function go(route){if(location.hash===`#/${route}`)render();else location.hash=`#/${route}`;}
 function route(){return location.hash.replace(/^#\/?/,'')||'today';}
@@ -1059,15 +1076,15 @@ async function login(){
  if(data)return;
  const forgot=authMode==='forgot',notice=authNotice,emailValue=authEmail||stored?.email||'';
  authNotice='';
- $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':field('password','Password','','password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
- $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]');button.disabled=true;form.querySelector('.form-error').textContent='';try{
+ $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':field('password','Password','','password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><div class="login-loading" role="status" aria-live="polite"></div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
+ $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]'),loading=form.querySelector('.login-loading');form.querySelector('.form-error').textContent='';if(loading)loading.textContent=forgot?'Sending reset link...':'Logging in and loading workspace...';setActionLoading(button,true,forgot?'Sending...':'Logging in');try{
   const values={email:form.elements.email.value.trim(),password:form.elements.password?.value||''};
   if(!values.email || (!forgot&&!values.password))throw new Error(forgot?'Please enter your email.':'Please enter your email and password.');
   if(forgot){const result=await api('/api/password/forgot',{email:values.email});form.reset();if(result.reset_url){toast(result.message||'Opening local reset link.');location.href=result.reset_url;return;}toast(result.message||'If this email is registered, a reset link has been sent.');return;}
   await api('/api/login',values);authEmail='';await refresh();return;
  }catch(err){
   form.querySelector('.form-error').textContent=err.message;
- }finally{button.disabled=false;}});
+ }finally{if(loading)loading.textContent='';setActionLoading(button,false);}});
 }
 function resetTokenFromRoute(){
  const current=route();
@@ -1078,14 +1095,14 @@ function resetPassword(){
  const token=resetTokenFromRoute();
  data=null;
  $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Secure access</div><h1>Reset password.<br>Back to work.</h1><p>Create a new password for your Kent Business College workspace account.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>Choose a new password.</h2><p class="muted">Reset links expire after 30 minutes.</p><form id="reset-form">${field('password','New password','','password','autocomplete="new-password" placeholder="Enter a new password" minlength="8"')}${field('confirm_password','Confirm password','','password','autocomplete="new-password" placeholder="Confirm the new password" minlength="8"')}<div class="form-error" role="alert"></div><button class="button primary full" type="submit">Reset password ${icon('arrow')}</button></form><p class="auth-helper"><button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button></p></div></div></main>`;
- $('#reset-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]');button.disabled=true;form.querySelector('.form-error').textContent='';try{
+ $('#reset-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]');form.querySelector('.form-error').textContent='';setActionLoading(button,true,'Resetting');try{
   const password=form.password.value,confirm=form.confirm_password.value;
   if(!token)throw new Error('Reset token is missing.');
   if(password.length<8)throw new Error('Password must be at least 8 characters.');
   if(password!==confirm)throw new Error('Passwords do not match.');
   await api('/api/password/reset',{token,password});
   authMode='login';location.hash='';login();toast('Password reset. Login with your new password.');
- }catch(err){form.querySelector('.form-error').textContent=err.message;}finally{button.disabled=false;}});
+ }catch(err){form.querySelector('.form-error').textContent=err.message;}finally{setActionLoading(button,false);}});
 }
 document.addEventListener('click',async event=>{
  const selectToggle=event.target.closest('[data-select-toggle]');
@@ -1129,7 +1146,7 @@ document.addEventListener('submit',async event=>{
  if(event.target.id!=='developer-invite-form')return;
  event.preventDefault();
  const form=event.target,button=form.querySelector('[type=submit]');
- button.disabled=true;
+ setActionLoading(button,true,'Inviting');
  try{
   const values=Object.fromEntries(new FormData(form));
   const result=await api('/api/users',values);
@@ -1139,15 +1156,15 @@ document.addEventListener('submit',async event=>{
  }catch(error){
   toast(error.message);
  }finally{
-  button.disabled=false;
+  setActionLoading(button,false);
  }
 });
 document.addEventListener('keydown',event=>{
  if(event.key==='Escape')closeSelectMenus();
 });
 document.addEventListener('input',event=>{
- if(event.target.id==='lead-search'){filters.search=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
- if(event.target.id==='event-search'){filters.eventSearch=event.target.value;return render();}
+ if(event.target.id==='lead-search'){filters.search=event.target.value;scheduleLeadFilterRefresh();return;}
+ if(event.target.id==='event-search'){filters.eventSearch=event.target.value;scheduleEventFilterRefresh();return;}
  if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;scheduleInboxFilterRefresh();return;}
  if(event.target.id==='inbox-day'){
   event.target.value=formatDateInputValue(event.target.value);
