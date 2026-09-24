@@ -37,9 +37,14 @@ const EMAIL_RESPONSE_SLA_MS = 48 * 60 * 60 * 1000;
 const GMAIL_IMPORT_ENABLED = String(process.env.GMAIL_IMPORT || 'true').toLowerCase() !== 'false';
 const GMAIL_INCREMENTAL_ONLY = String(process.env.GMAIL_INCREMENTAL_ONLY || 'false').toLowerCase() === 'true';
 const GMAIL_AUTO_SYNC_ENABLED = String(process.env.GMAIL_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const GMAIL_AUTO_SYNC_MODE = ['daily', 'interval'].includes(String(process.env.GMAIL_AUTO_SYNC_MODE || 'daily').toLowerCase())
+  ? String(process.env.GMAIL_AUTO_SYNC_MODE || 'daily').toLowerCase()
+  : 'daily';
+const GMAIL_AUTO_SYNC_DAILY_TIME = process.env.GMAIL_AUTO_SYNC_DAILY_TIME || '18:00';
 const GMAIL_AUTO_SYNC_BATCH_SIZE = Math.max(1, Math.min(Number(process.env.GMAIL_AUTO_SYNC_BATCH_SIZE || 25), 25));
 const GMAIL_AUTO_SYNC_ACTIVE_MS = Math.max(1000, Number(process.env.GMAIL_AUTO_SYNC_ACTIVE_MS || 90000));
 const GMAIL_AUTO_SYNC_IDLE_MS = Math.max(1000, Number(process.env.GMAIL_AUTO_SYNC_IDLE_MS || 5 * 60 * 1000));
+const GMAIL_AUTO_SYNC_DAILY_BATCHES = Math.max(1, Math.min(Number(process.env.GMAIL_AUTO_SYNC_DAILY_BATCHES || 20), 100));
 const GMAIL_TRASH_SYNC_LIMIT = Math.max(0, Math.min(Number(process.env.GMAIL_TRASH_SYNC_LIMIT || 100), 500));
 const GMAIL_TRASH_SYNC_INTERVAL_MS = Math.max(5000, Number(process.env.GMAIL_TRASH_SYNC_INTERVAL_MS || 60 * 1000));
 const EVENT_AUTO_SYNC_ENABLED = String(process.env.EVENT_AUTO_SYNC || 'true').toLowerCase() !== 'false';
@@ -66,7 +71,7 @@ const PROGRAMME_CATALOG = [
 ];
 let gmailAutoSyncTimer = null;
 let gmailAutoSyncRunning = false;
-let gmailAutoSyncState = { enabled: GMAIL_AUTO_SYNC_ENABLED, running: false, last_result: null, last_error: null, next_run_at: null };
+let gmailAutoSyncState = { enabled: GMAIL_AUTO_SYNC_ENABLED, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME, running: false, last_result: null, last_error: null, next_run_at: null };
 let eventAutoSyncTimer = null;
 let eventAutoSyncRunning = false;
 let eventAutoSyncState = { enabled: EVENT_AUTO_SYNC_ENABLED, running: false, last_result: null, last_error: null, next_run_at: null };
@@ -2958,13 +2963,62 @@ function autoSyncUser(db) {
   return db.users.find(item => ['admin', 'director', 'manager'].includes(item.role)) || db.users[0] || { id: 'system', name: 'System', role: 'admin' };
 }
 
+function gmailDailySyncTarget() {
+  const match = String(GMAIL_AUTO_SYNC_DAILY_TIME || '').match(/^(\d{1,2})(?::(\d{1,2}))?$/);
+  const hour = Math.max(0, Math.min(Number(match?.[1] ?? 18), 23));
+  const minute = Math.max(0, Math.min(Number(match?.[2] ?? 0), 59));
+  return { hour, minute };
+}
+
+function gmailDailySyncDelayMs() {
+  const { hour, minute } = gmailDailySyncTarget();
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hour, minute, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return Math.max(1000, next.getTime() - now.getTime());
+}
+
 function scheduleGmailAutoSync(delayMs) {
   if (!GMAIL_AUTO_SYNC_ENABLED) return;
   if (gmailAutoSyncTimer) clearTimeout(gmailAutoSyncTimer);
-  const delay = Math.max(1000, Number(delayMs) || GMAIL_AUTO_SYNC_IDLE_MS);
+  const delay = Math.max(1000, Number(delayMs) || (GMAIL_AUTO_SYNC_MODE === 'daily' ? gmailDailySyncDelayMs() : GMAIL_AUTO_SYNC_IDLE_MS));
   gmailAutoSyncState.next_run_at = new Date(Date.now() + delay).toISOString();
   gmailAutoSyncTimer = setTimeout(runGmailAutoSync, delay);
   if (gmailAutoSyncTimer.unref) gmailAutoSyncTimer.unref();
+}
+
+async function importGmailDailyMessages(db, user) {
+  const totals = {
+    imported: 0,
+    imported_inbox: 0,
+    imported_sent: 0,
+    replies_resolved: 0,
+    scanned: 0,
+    restored: 0,
+    trashed: 0,
+    scanned_trash: 0,
+    history_trash: 0,
+    history_restored: 0
+  };
+  let lastResult = null;
+  let batchesRun = 0;
+  for (let batch = 0; batch < GMAIL_AUTO_SYNC_DAILY_BATCHES; batch += 1) {
+    lastResult = await importGmailMessages(db, user, GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: false, skipTrash: false });
+    batchesRun += 1;
+    for (const key of Object.keys(totals)) totals[key] += Number(lastResult[key] || 0);
+    if (lastResult.quota_limited || !lastResult.has_more) break;
+  }
+  return {
+    ...(lastResult || {}),
+    ...totals,
+    mode: 'daily',
+    daily_time: GMAIL_AUTO_SYNC_DAILY_TIME,
+    batches_run: batchesRun,
+    batch_limit: GMAIL_AUTO_SYNC_DAILY_BATCHES,
+    has_more: Boolean(lastResult?.has_more),
+    quota_limited: Boolean(lastResult?.quota_limited)
+  };
 }
 
 async function runGmailAutoSync() {
@@ -2977,21 +3031,25 @@ async function runGmailAutoSync() {
     if (!gmailConfigured() || !db.gmail?.connected || !db.gmail?.access_token) {
       gmailAutoSyncState.last_result = { skipped: true, reason: 'Gmail is not connected.' };
       gmailAutoSyncState.last_error = null;
-      return scheduleGmailAutoSync(GMAIL_AUTO_SYNC_IDLE_MS);
+      return scheduleGmailAutoSync();
     }
-    const result = await importGmailMessages(db, autoSyncUser(db), GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: true, skipTrash: true });
+    const result = GMAIL_AUTO_SYNC_MODE === 'daily'
+      ? await importGmailDailyMessages(db, autoSyncUser(db))
+      : await importGmailMessages(db, autoSyncUser(db), GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: true, skipTrash: true });
     gmailAutoSyncState.last_result = result;
     gmailAutoSyncState.last_error = null;
     const nextDelay = result.quota_limited
       ? Number(result.retry_after_ms || 70000) + 5000
-      : result.has_more
+      : GMAIL_AUTO_SYNC_MODE === 'daily'
+        ? gmailDailySyncDelayMs()
+        : result.has_more
         ? GMAIL_AUTO_SYNC_ACTIVE_MS
         : GMAIL_AUTO_SYNC_IDLE_MS;
     scheduleGmailAutoSync(nextDelay);
   } catch (error) {
     gmailAutoSyncState.last_error = error.message || 'Gmail auto sync failed.';
     console.error(`Gmail auto sync failed: ${gmailAutoSyncState.last_error}`);
-    scheduleGmailAutoSync(GMAIL_AUTO_SYNC_IDLE_MS);
+    scheduleGmailAutoSync();
   } finally {
     gmailAutoSyncRunning = false;
     gmailAutoSyncState.running = false;
@@ -3053,12 +3111,16 @@ async function runEventAutoSync() {
 
 function startAutoSync() {
   if (!GMAIL_AUTO_SYNC_ENABLED && !EVENT_AUTO_SYNC_ENABLED) {
-    gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, running: false, next_run_at: null };
+    gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME, running: false, next_run_at: null };
     eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
     return;
   }
-  if (GMAIL_AUTO_SYNC_ENABLED) scheduleGmailAutoSync(20000);
-  else gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, running: false, next_run_at: null };
+  if (GMAIL_AUTO_SYNC_ENABLED) {
+    gmailAutoSyncState = { ...gmailAutoSyncState, enabled: true, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME };
+    scheduleGmailAutoSync(GMAIL_AUTO_SYNC_MODE === 'daily' ? null : 20000);
+  } else {
+    gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME, running: false, next_run_at: null };
+  }
   if (EVENT_AUTO_SYNC_ENABLED) {
     const delay = 15000;
     eventAutoSyncState.next_run_at = new Date(Date.now() + delay).toISOString();
