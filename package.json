@@ -1,0 +1,19 @@
+{
+  "name": "kent-business-college-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Kent Business College sales and admissions workspace backend.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.20.0",
+    "pg": "^8.16.3",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
