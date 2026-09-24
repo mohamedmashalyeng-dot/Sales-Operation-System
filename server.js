@@ -1892,7 +1892,7 @@ function decodeEmailCursor(cursor) {
 async function loadBootstrapDb() {
   if (!postgresPool || !usesPostgresStorage()) return loadDb();
   await ensureStorage();
-  const emailLimit = Math.max(100, Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 100));
+  const emailLimit = Math.max(50, Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 50));
   const data = await loadPostgresTables({
     leadLimit: Math.max(25, Number(process.env.BOOTSTRAP_LEAD_LIMIT || 25)),
     taskLimit: Math.max(25, Number(process.env.BOOTSTRAP_TASK_LIMIT || 25)),
@@ -1917,7 +1917,7 @@ async function loadBootstrapDb() {
 }
 
 async function loadEmailPage(options = {}) {
-  const limit = Math.max(1, Math.min(Number(options.limit || 100), 100));
+  const limit = Math.max(1, Math.min(Number(options.limit || 50), 50));
   const cursor = decodeEmailCursor(options.cursor);
   await ensureStorage();
   if (postgresPool) {
