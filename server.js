@@ -1824,6 +1824,7 @@ function bootstrap(db, user) {
   delete copy.users;
   copy.user = publicUser(user);
   copy.permissions = permissions(user.role);
+  copy.permissions.developer = canUseDeveloperDashboard(null, user);
   copy.demoUser = user.email;
   return copy;
 }
@@ -2190,13 +2191,17 @@ function configuredDeveloperEmail() {
   return normalizeEmail(process.env.DEV_PANEL_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '');
 }
 
-function requireDeveloperAccess(req, user) {
+function canUseDeveloperDashboard(req, user) {
+  if (!user || !['admin', 'director'].includes(user.role)) return false;
   const devEmail = configuredDeveloperEmail();
-  const allowedRole = ['admin', 'director'].includes(user.role);
-  const allowedEmail = !devEmail || normalizeEmail(user.email) === devEmail;
-  const allowedLocation = Boolean(devEmail) || isLocalRequest(req);
-  if (allowedRole) return;
-  if (!allowedLocation || !allowedEmail) throw statusError(403, 'Developer dashboard is only available to administrators.');
+  if (devEmail) return normalizeEmail(user.email) === devEmail;
+  return req ? isLocalRequest(req) : true;
+}
+
+function requireDeveloperAccess(req, user) {
+  if (!canUseDeveloperDashboard(req, user)) {
+    throw statusError(403, 'Developer dashboard is only available to the configured developer account.');
+  }
 }
 
 function developerConfig(req, db) {
