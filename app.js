@@ -343,7 +343,16 @@ async function api(path,body,method='POST',options={}){
  if(!silent)showGlobalLoader();
  try{
   const res=await fetch(path,{method:requestMethod,credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
-  const text=await res.text();let value={};try{value=text?JSON.parse(text):{};}catch(error){if(canUseLocal(path))return localApi(path,body,requestMethod);throw error;}
+  const text=await res.text();let value={};
+  try{
+   value=text?JSON.parse(text):{};
+  }catch(error){
+   if(canUseLocal(path))return localApi(path,body,requestMethod);
+   const preview=text.replace(/\s+/g,' ').slice(0,90);
+   const responseError=new Error(`Server returned ${res.status} ${res.statusText||''} for ${path}, but the response was not JSON. ${preview?`Preview: ${preview}`:''}`.trim());
+   responseError.status=res.status||0;
+   throw responseError;
+  }
   if(!res.ok){if(res.status===401&&path!=='/api/login'){data=null;login();}const error=new Error(value.error||'Unable to complete the request.');error.status=res.status;throw error;}return value;
  }catch(error){if(canUseLocal(path)&&!error.status)return localApi(path,body,requestMethod);throw error;}
  finally{if(!silent)hideGlobalLoader();}
