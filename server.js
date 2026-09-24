@@ -3497,7 +3497,7 @@ async function runGmailAutoSync() {
     }
     const result = GMAIL_AUTO_SYNC_MODE === 'daily'
       ? await importGmailDailyMessages(db, autoSyncUser(db))
-      : await importGmailMessages(db, autoSyncUser(db), GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: false, skipTrash: true });
+      : await importGmailMessages(db, autoSyncUser(db), GMAIL_AUTO_SYNC_BATCH_SIZE, { latest: true, skipTrash: false });
     gmailAutoSyncState.last_result = result;
     gmailAutoSyncState.last_error = null;
     const nextDelay = result.quota_limited
@@ -4476,7 +4476,7 @@ async function handleApi(req, res) {
   if (route === '/api/integrations/gmail/sync' && method === 'POST') {
     if (!GMAIL_IMPORT_ENABLED) throw statusError(403, 'Gmail import is paused. Existing emails remain available.');
     const result = await importGmailMessages(db, user, Number(body.max_results || 10), {
-      latest: Boolean(body.latest),
+      latest: body.latest === undefined ? true : Boolean(body.latest),
       skipTrash: Boolean(body.skip_trash),
       forceTrash: Boolean(body.force_trash)
     });

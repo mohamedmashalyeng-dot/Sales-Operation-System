@@ -160,13 +160,11 @@ function hydrateSelectMenus(root=document){
 const dueLabel=t=>t.status==='Done'?'Done':new Date(t.due_at)<new Date()?'Overdue':date(t.due_at)===date(new Date())?time(t.due_at):date(t.due_at);
 const empty=(title,detail='')=>`<div class="empty">${icon('check')}<h3>${esc(title)}</h3>${esc(detail)}</div>`;
 const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="${act}" data-id="${esc(id)}">${esc(label)}</button>`;
-let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,gmailLiveSyncRunning=false,gmailTrashLiveSyncRunning=false,gmailLiveTimer=null,gmailTrashLiveTimer=null,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
+let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300;
 const GMAIL_IMPORT_ENABLED=true;
-const GMAIL_LIVE_SYNC_MS=3600000;
-const GMAIL_TRASH_LIVE_SYNC_MS=3600000;
 const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
 const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['attribution','chart','Attribution']];
 const localUserKey='pathway_local_user';
@@ -402,89 +400,29 @@ function setActionLoading(target,on,label=''){
  }
 }
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function runGmailSyncAuto(){
  if(!GMAIL_IMPORT_ENABLED){toast('Gmail import is paused. Existing emails stay available.');return;}
  if(gmailSyncRunning){toast('Gmail sync is already running.');return;}
  gmailSyncRunning=true;
  clearTimeout(loadingTimer);
  $('#global-loader')?.classList.remove('show');
- let totalImported=0,totalScanned=0,totalReplies=0,totalLabels=0,batch=0;
  try{
-  while(gmailSyncRunning){
-   batch+=1;
-   const result=await api('/api/integrations/gmail/sync',{max_results:25});
-   totalImported+=result.imported||0;
-   totalScanned+=result.scanned||0;
-   totalReplies+=result.replies_resolved||0;
-   totalLabels+=result.labels_refreshed||0;
-   await refresh();
-   toast(`Gmail sync batch ${batch}: ${result.imported||0} imported, ${result.replies_resolved||0} replies matched, ${result.labels_refreshed||0} labels fixed.${result.has_more?' Continuing automatically...':''}`);
-   if(!result.has_more)break;
-   await sleep(result.retry_after_ms||70000);
-  }
-  toast(`Gmail sync complete. ${totalImported} imported, ${totalReplies} replies matched, ${totalLabels} labels fixed, ${totalScanned} scanned from 2026.`);
+  const result=await api('/api/integrations/gmail/sync',{max_results:25,latest:true});
+  await refresh({silent:true});
+  toast(`Gmail newest sync complete. ${result.imported||0} imported, ${result.replies_resolved||0} replies matched, ${result.labels_refreshed||0} labels fixed.`);
  }catch(error){
   if(/quota|rate|limit/i.test(error.message)){
-   toast('Google quota reached. Waiting and continuing automatically...');
-   setTimeout(()=>runGmailSyncAuto(),70000);
-   return;
+   toast('Google quota reached. Try again later.');
+  }else{
+   toast(error.message);
   }
-  toast(error.message);
  }finally{
   gmailSyncRunning=false;
- }
-}
-function gmailLiveSyncReady(){
- return Boolean(data&&GMAIL_IMPORT_ENABLED&&document.visibilityState==='visible'&&data.integrations?.find(i=>i.name==='Gmail')?.status==='Connected');
-}
-function scheduleGmailLiveSync(delay=GMAIL_LIVE_SYNC_MS){
- clearTimeout(gmailLiveTimer);
- if(!gmailLiveSyncReady())return;
- gmailLiveTimer=setTimeout(runGmailLiveSync,Math.max(1000,delay));
-}
-function scheduleGmailTrashLiveSync(delay=GMAIL_TRASH_LIVE_SYNC_MS){
- clearTimeout(gmailTrashLiveTimer);
- if(!gmailLiveSyncReady())return;
- gmailTrashLiveTimer=setTimeout(runGmailTrashLiveSync,Math.max(1000,delay));
-}
-async function runGmailLiveSync(){
- if(!gmailLiveSyncReady())return scheduleGmailLiveSync(5000);
- if(gmailLiveSyncRunning||gmailSyncRunning)return scheduleGmailLiveSync(GMAIL_LIVE_SYNC_MS);
- gmailLiveSyncRunning=true;
- try{
-  const result=await api('/api/integrations/gmail/sync',{max_results:5,latest:true,skip_trash:true},'POST',{silent:true});
-  if((result.imported||0)||(result.restored||0)||(result.trashed||0)||(result.labels_refreshed||0))await refresh({silent:true});
-  scheduleGmailLiveSync(result.quota_limited?(result.retry_after_ms||70000):GMAIL_LIVE_SYNC_MS);
- }catch(error){
-  scheduleGmailLiveSync(/quota|rate|limit/i.test(error.message)?70000:10000);
- }finally{
-  gmailLiveSyncRunning=false;
- }
-}
-async function runGmailTrashLiveSync(){
- if(!gmailLiveSyncReady())return scheduleGmailTrashLiveSync(10000);
- if(gmailTrashLiveSyncRunning||gmailSyncRunning)return scheduleGmailTrashLiveSync(GMAIL_TRASH_LIVE_SYNC_MS);
- gmailTrashLiveSyncRunning=true;
- try{
-  const result=await api('/api/integrations/gmail/sync',{max_results:1,latest:true,force_trash:true},'POST',{silent:true});
-  if((result.trashed||0)||(result.history_trash||0)||(result.restored||0)||(result.history_restored||0))await refresh({silent:true});
-  scheduleGmailTrashLiveSync(result.quota_limited?(result.retry_after_ms||70000):GMAIL_TRASH_LIVE_SYNC_MS);
- }catch(error){
-  scheduleGmailTrashLiveSync(/quota|rate|limit/i.test(error.message)?70000:10000);
- }finally{
-  gmailTrashLiveSyncRunning=false;
  }
 }
 async function refresh(options={}){
  try{
   data=await api('/api/bootstrap',undefined,'POST',{silent:Boolean(options.silent)});if(data?.user)saveStoredUser(data.user);rebuildClientIndexes(data);await render();
-  if(GMAIL_IMPORT_ENABLED&&data?.gmail?.incremental_page_token&&!gmailSyncRunning&&data.integrations?.find(i=>i.name==='Gmail')?.status==='Connected'){
-   toast('Continuing Gmail new-message sync...');
-   setTimeout(()=>runGmailSyncAuto(),1200);
-  }
-  scheduleGmailLiveSync();
-  scheduleGmailTrashLiveSync();
  }
  catch(error){
   throw error;
@@ -1017,7 +955,7 @@ async function action(act,id='',target=null){
  if(act==='auth-mode'){authMode=id==='forgot'?'forgot':'login';authNotice='';return login();}
  if(act==='close')return $('#dialog').close();
  if(act==='reload')return refresh();
- if(act==='logout'){clearTimeout(gmailLiveTimer);clearTimeout(gmailTrashLiveTimer);await api('/api/logout',{});data=null;location.hash='';login();return;}
+ if(act==='logout'){await api('/api/logout',{});data=null;location.hash='';login();return;}
  if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});toast(`Temporary password: ${result.temporary_password}`);},'Reset password');
  if(act==='delete-user'){if(!confirm('Delete this user?'))return;await api(`/api/users/${encodeURIComponent(id)}`,{},'DELETE');await refresh();toast('User deleted.');return;}
   if(act==='notifications'){if(overdueEmailCount()){Object.assign(filters,{inbox:'Overdue',inboxSort:'due-soon',inboxDate:'due',inboxLabel:'All'});go('inbox');return;}filters.planner='Overdue';go('planner');return;}
@@ -1234,7 +1172,6 @@ function handleRouteChange(){
 window.addEventListener('hashchange',handleRouteChange);
 window.addEventListener('online',()=>{toast('Connection restored.');if(data)refresh().catch(e=>toast(e.message));});
 window.addEventListener('offline',()=>{toast('You’re offline. Reconnect to save changes.');render();});
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){scheduleGmailLiveSync(1000);scheduleGmailTrashLiveSync(1000);}else{clearTimeout(gmailLiveTimer);clearTimeout(gmailTrashLiveTimer);}});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;});
 if('serviceWorker'in navigator){
  const localDev=['localhost','127.0.0.1','0.0.0.0'].includes(location.hostname);
