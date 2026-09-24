@@ -1179,6 +1179,41 @@ dialog .button.danger{
 @media(max-width:850px){.crm-board{grid-auto-columns:minmax(260px,82vw)}.crm-column-body{max-height:none}.crm-summary{align-items:flex-start;flex-direction:column}}
 @media(max-width:560px){.inbox-load-more{align-items:stretch;justify-content:stretch}.inbox-load-more .button{width:100%}.inbox-load-more .small{text-align:center}}
 
+/* Developer role controls */
+.dev-role-stack{min-width:180px;max-width:220px}
+.dev-field .dev-role-control,
+.dev-role-control{
+ min-height:48px!important;
+ width:100%!important;
+ min-width:180px!important;
+ padding:12px 42px 12px 16px!important;
+ border-radius:14px!important;
+ border:1px solid rgba(214,184,237,.92)!important;
+ background-color:#fff!important;
+ color:#2a1737!important;
+ font-weight:800!important;
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.94),0 12px 28px rgba(53,27,82,.08)!important;
+ appearance:none!important;
+ -webkit-appearance:none!important;
+ background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236728b8' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")!important;
+ background-repeat:no-repeat!important;
+ background-position:right 16px center!important;
+ background-size:16px 16px!important;
+}
+.dev-field .dev-role-control:focus,
+.dev-role-control:focus{
+ border-color:#a855f7!important;
+ outline:3px solid rgba(168,85,247,.18)!important;
+ outline-offset:3px!important;
+ box-shadow:0 0 0 4px rgba(168,85,247,.08),0 16px 32px rgba(103,40,184,.13)!important;
+}
+.dev-role-control:disabled{
+ background-color:#f8f2fc!important;
+ color:#796287!important;
+ cursor:not-allowed!important;
+}
+.dev-role-control option{font-weight:700}
+
 /* Monitoring dashboard */
 .monitoring-stats{margin-top:0}.monitoring-stat.risk .stat-value{color:#b5363c}.monitoring-alerts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin:0 0 22px}.monitoring-alert{display:block;text-align:left;padding:16px 18px;color:inherit}.monitoring-alert span{display:block;font-size:11px;color:var(--muted);font-weight:600}.monitoring-alert strong{display:block;font-size:28px;line-height:1;margin:10px 0;color:#1f1230}.monitoring-alert em{display:block;font-style:normal;font-size:10px;color:var(--muted);line-height:1.45}.monitoring-health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:22px}.monitoring-health-card .panel-body{padding-top:0}.monitoring-mini-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-bottom:13px}.monitoring-mini-metrics div{border:1px solid var(--line);border-radius:8px;background:#fbf7fd;padding:10px}.monitoring-mini-metrics span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:5px}.monitoring-mini-metrics b{display:block;font-size:12px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.monitoring-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.monitoring-list{display:grid;gap:12px}.monitoring-list-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(120px,2fr) minmax(42px,auto);gap:12px;align-items:center;font-size:11px}.monitoring-list-row span{color:var(--muted);line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.monitoring-list-row b{font-size:11px;text-align:right}.monitoring-table{border-top:1px solid var(--line)}.monitoring-table table{min-width:620px}.monitoring-table .button{min-height:32px;padding:7px 10px;font-size:10px}.monitoring-risk-pills{display:flex;gap:8px;flex-wrap:wrap}.monitoring-risk-pills .badge{font-size:11px;padding:8px 10px}
 @media(max-width:1050px){.monitoring-alerts{grid-template-columns:repeat(2,minmax(0,1fr))}.monitoring-health-grid,.monitoring-grid{grid-template-columns:1fr}}
