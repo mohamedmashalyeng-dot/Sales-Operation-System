@@ -1848,7 +1848,15 @@ dialog .button.primary:hover{
 }
 
 /* Simple outline buttons */
-.button{
+.button,
+.workspace .button,
+dialog .button,
+.dialog-actions .button,
+.email-message-actions .button,
+.email-thread-actions .button{
+ min-height:44px!important;
+ padding:10px 18px!important;
+ border-radius:10px!important;
  border:1px solid rgba(132,68,214,.7)!important;
  background:#fff!important;
  color:var(--kbc-purple)!important;
@@ -1858,15 +1866,24 @@ dialog .button.primary:hover{
 .button.primary,
 .button.soft,
 .button.lime,
+.workspace .button,
 .workspace .button.primary,
+.workspace .button.soft,
+.workspace .button.lime,
+dialog .button,
 dialog .button.primary,
+dialog .button.soft,
+dialog .button.lime,
+.dialog-actions .button,
 .dialog-actions .button.primary{
  background:#fff!important;
  border-color:rgba(132,68,214,.74)!important;
  color:var(--kbc-purple)!important;
  box-shadow:0 12px 28px rgba(103,40,184,.10)!important;
 }
-.button.danger{
+.button.danger,
+.workspace .button.danger,
+dialog .button.danger{
  background:#fff!important;
  border-color:rgba(165,29,53,.55)!important;
  color:#a51d35!important;
@@ -1878,8 +1895,12 @@ dialog .button.primary,
 .button.lime:hover,
 .workspace .button:hover,
 .workspace .button.primary:hover,
+.workspace .button.soft:hover,
+.workspace .button.lime:hover,
 dialog .button:hover,
 dialog .button.primary:hover,
+dialog .button.soft:hover,
+dialog .button.lime:hover,
 .dialog-actions .button:hover,
 .dialog-actions .button.primary:hover,
 .email-message-actions .button:hover,
@@ -1889,8 +1910,15 @@ dialog .button.primary:hover,
  border-color:rgba(192,132,252,.95)!important;
  box-shadow:0 14px 30px rgba(103,40,184,.14)!important;
 }
-.button.danger:hover{
+.button.danger:hover,
+.workspace .button.danger:hover,
+dialog .button.danger:hover{
  color:#a51d35!important;
  border-color:rgba(225,29,72,.85)!important;
  box-shadow:0 14px 30px rgba(225,29,72,.12)!important;
+}
+.button .icon,
+.workspace .button .icon,
+dialog .button .icon{
+ color:currentColor!important;
 }
