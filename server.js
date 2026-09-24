@@ -2080,6 +2080,29 @@ function publicEmailDetail(email) {
   return detail;
 }
 
+function emailSummaryDataSql() {
+  return `
+    data - 'body' - 'html' - 'html_body' - 'body_html' - 'attachments'
+    || jsonb_build_object(
+      'id', id,
+      'lead_id', coalesce(lead_id, ''),
+      'first_name', coalesce(first_name, ''),
+      'last_name', coalesce(last_name, ''),
+      'email', coalesce(email, ''),
+      'from', coalesce(email, ''),
+      'subject', coalesce(subject, '(No subject)'),
+      'owner', coalesce(owner, ''),
+      'date', received_at,
+      'received_at', received_at,
+      'response_at', response_at,
+      'response_note', coalesce(response_note, ''),
+      'due_at', due_at,
+      'gmail_message_id', coalesce(gmail_message_id, ''),
+      'snippet', left(regexp_replace(coalesce(body, data->>'snippet', ''), '\\s+', ' ', 'g'), 260)
+    )
+  `;
+}
+
 function encodeEmailCursor(email) {
   if (!email?.id) return '';
   return Buffer.from(JSON.stringify({
@@ -2147,7 +2170,7 @@ async function loadEmailPage(options = {}) {
       gmail: (await postgresPool.query(`select gmail from app_workspace where id = $1`, ['main'])).rows[0]?.gmail || {}
     } : await loadDb();
     const rows = postgresPool
-      ? (await postgresPool.query(`select data from app_emails order by received_at desc nulls last, id`)).rows.map(item => item.data)
+      ? (await postgresPool.query(`select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id`)).rows.map(item => item.data)
       : (db.emails || []).slice();
     const filtered = rows
       .filter(email => emailMatchesFilters(db, email, filters))
@@ -2165,9 +2188,10 @@ async function loadEmailPage(options = {}) {
     };
   }
   if (postgresPool) {
+    const total = Number((await postgresPool.query(`select count(*)::int as total from app_emails`)).rows[0]?.total || 0);
     const result = cursor
       ? await postgresPool.query(
-        `select data from app_emails
+        `select ${emailSummaryDataSql()} as data from app_emails
          where (
            ($2::timestamptz is not null and (received_at < $2::timestamptz or (received_at = $2::timestamptz and id > $3) or received_at is null))
            or ($2::timestamptz is null and received_at is null and id > $3)
@@ -2177,13 +2201,14 @@ async function loadEmailPage(options = {}) {
         [limit + 1, cursor.received_at ? cursor.received_at.toISOString() : null, cursor.id]
       )
       : await postgresPool.query(
-        `select data from app_emails order by received_at desc nulls last, id limit $1`,
+        `select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id limit $1`,
         [limit + 1]
       );
     const rows = result.rows.map(item => item.data);
     const emails = rows.slice(0, limit).map(publicEmailSummary);
     return {
       emails,
+      total,
       loaded: emails.length,
       next_cursor: rows.length > limit ? encodeEmailCursor(emails[emails.length - 1]) : '',
       limit,
@@ -2199,6 +2224,7 @@ async function loadEmailPage(options = {}) {
   const emails = rows.slice(startIndex, startIndex + limit).map(publicEmailSummary);
   return {
     emails,
+    total: rows.length,
     loaded: emails.length,
     next_cursor: startIndex + emails.length < rows.length ? encodeEmailCursor(emails[emails.length - 1]) : '',
     limit,
