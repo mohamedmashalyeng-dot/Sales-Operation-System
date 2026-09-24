@@ -581,26 +581,68 @@ function ensureIncrementalStart(container, key) {
   return new Date(container[key]);
 }
 
-async function loadPostgresTables() {
+async function loadPostgresTables(options = {}) {
   const workspace = await postgresPool.query(`select * from app_workspace where id = $1`, ['main']);
   if (!workspace.rows[0]) return null;
   const seeded = seedDatabase();
   const row = workspace.rows[0];
+  const leadLimit = Number(options.leadLimit || 0);
+  const taskLimit = Number(options.taskLimit || 0);
+  const emailLimit = Number(options.emailLimit || 0);
+  const eventLimit = Number(options.eventLimit || 0);
+  const auditLimit = Number(options.auditLimit || 0);
+  const [
+    programmes,
+    leads,
+    tasks,
+    emails,
+    applications,
+    events,
+    intakes,
+    audit,
+    attribution
+  ] = await Promise.all([
+    postgresPool.query(`select data from app_programmes order by id`),
+    leadLimit > 0
+      ? postgresPool.query(`select data from app_leads order by created_at desc nulls last, id limit $1`, [leadLimit])
+      : postgresPool.query(`select data from app_leads order by created_at nulls last, id`),
+    taskLimit > 0
+      ? postgresPool.query(`select data from app_tasks order by due_at desc nulls last, id limit $1`, [taskLimit])
+      : postgresPool.query(`select data from app_tasks order by due_at nulls last, id`),
+    emailLimit > 0
+      ? postgresPool.query(`select data from app_emails order by received_at desc nulls last, id limit $1`, [emailLimit])
+      : postgresPool.query(`select data from app_emails order by received_at desc nulls last, id`),
+    options.skipApplications
+      ? Promise.resolve({ rows: [] })
+      : postgresPool.query(`select data from app_applications order by created_at nulls last, id`),
+    eventLimit > 0
+      ? postgresPool.query(`select data from app_events order by start_at desc nulls last, id limit $1`, [eventLimit])
+      : postgresPool.query(`select data from app_events order by start_at nulls last, id`),
+    postgresPool.query(`select data from app_intakes order by id`),
+    options.skipAudit
+      ? Promise.resolve({ rows: [] })
+      : auditLimit > 0
+      ? postgresPool.query(`select data from app_audit order by occurred_at desc nulls last, id limit $1`, [auditLimit])
+      : postgresPool.query(`select data from app_audit order by occurred_at desc nulls last, id`),
+    options.skipAttribution
+      ? Promise.resolve({ rows: [] })
+      : postgresPool.query(`select data from app_attribution order by id desc`)
+  ]);
   const db = {
     demo: row.demo,
     users: seeded.users,
-    programmes: (await postgresPool.query(`select data from app_programmes order by id`)).rows.map(item => item.data),
+    programmes: programmes.rows.map(item => item.data),
     stages: row.stages || seeded.stages,
     sources: row.sources || seeded.sources,
-    leads: (await postgresPool.query(`select data from app_leads order by created_at nulls last, id`)).rows.map(item => item.data),
-    tasks: (await postgresPool.query(`select data from app_tasks order by due_at nulls last, id`)).rows.map(item => item.data),
-    emails: (await postgresPool.query(`select data from app_emails order by received_at desc nulls last, id`)).rows.map(item => item.data),
-    applications: (await postgresPool.query(`select data from app_applications order by created_at nulls last, id`)).rows.map(item => item.data),
-    events: (await postgresPool.query(`select data from app_events order by start_at nulls last, id`)).rows.map(item => item.data),
+    leads: leads.rows.map(item => item.data),
+    tasks: tasks.rows.map(item => item.data),
+    emails: emails.rows.map(item => item.data),
+    applications: applications.rows.map(item => item.data),
+    events: events.rows.map(item => item.data),
     integrations: seeded.integrations,
-    intakes: (await postgresPool.query(`select data from app_intakes order by id`)).rows.map(item => item.data),
-    audit: (await postgresPool.query(`select data from app_audit order by occurred_at desc nulls last, id`)).rows.map(item => item.data),
-    attribution: (await postgresPool.query(`select data from app_attribution order by id desc`)).rows.map(item => item.data),
+    intakes: intakes.rows.map(item => item.data),
+    audit: audit.rows.map(item => item.data),
+    attribution: attribution.rows.map(item => item.data),
     gmail: row.gmail || { connected: false, imported_message_ids: [] },
     eventbrite: row.eventbrite || { connected: false, imported_event_ids: [], imported_attendee_ids: [] },
     apollo: row.meta?.apollo || { imported_person_ids: [] },
@@ -1090,6 +1132,30 @@ async function findLoginUser(email) {
   }
   const db = await loadDb();
   return db.users.find(item => normalizeEmail(item.email) === normalizeEmail(email)) || null;
+}
+
+async function findUserById(id) {
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const result = await postgresPool.query(
+      `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where id = $1 limit 1`,
+      [id]
+    );
+    return result.rows[0] || null;
+  }
+  const db = await loadDb();
+  return db.users.find(item => item.id === id) || null;
+}
+
+async function currentSessionUser(req) {
+  const sid = parseCookies(req).sid;
+  const session = sessions.get(sid);
+  if (!session || session.expires_at < Date.now()) throw statusError(401, 'Sign in to continue.');
+  const user = await findUserById(session.user_id);
+  if (!user) throw statusError(401, 'Sign in to continue.');
+  session.expires_at = Date.now() + SESSION_TTL;
+  return user;
 }
 
 async function recordPostgresLogin(user, req) {
@@ -1755,6 +1821,50 @@ function bootstrap(db, user) {
   copy.permissions = permissions(user.role);
   copy.demoUser = user.email;
   return copy;
+}
+
+async function loadBootstrapDb() {
+  if (!postgresPool || !usesPostgresStorage()) return loadDb();
+  await ensureStorage();
+  const data = await loadPostgresTables({
+    leadLimit: Math.max(25, Number(process.env.BOOTSTRAP_LEAD_LIMIT || 25)),
+    taskLimit: Math.max(25, Number(process.env.BOOTSTRAP_TASK_LIMIT || 25)),
+    emailLimit: Math.max(25, Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 25)),
+    eventLimit: Math.max(5, Number(process.env.BOOTSTRAP_EVENT_LIMIT || 10)),
+    auditLimit: Math.max(25, Number(process.env.BOOTSTRAP_AUDIT_LIMIT || 25)),
+    skipApplications: true,
+    skipAudit: true,
+    skipAttribution: true
+  });
+  if (!data) return loadDb();
+  return recalculate(data);
+}
+
+async function loadDeveloperConfigDb() {
+  await ensureUserStorage();
+  const seeded = seedDatabase();
+  if (!postgresPool || !usesPostgresStorage()) {
+    const db = await loadDb();
+    return { ...seeded, users: db.users, gmail: db.gmail, eventbrite: db.eventbrite, meta: db.meta };
+  }
+  const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+  const users = (await postgresPool.query(
+    `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} order by created_at, id`
+  )).rows;
+  let workspace = null;
+  try {
+    workspace = (await postgresPool.query(`select gmail, eventbrite, meta from app_workspace where id = $1`, ['main'])).rows[0] || null;
+  } catch {
+    workspace = null;
+  }
+  return recalculate({
+    ...seeded,
+    users,
+    gmail: workspace?.gmail || { connected: false, imported_message_ids: [] },
+    eventbrite: workspace?.eventbrite || { connected: false, imported_event_ids: [], imported_attendee_ids: [] },
+    meta: workspace?.meta || { imported_lead_ids: [], imported_form_ids: [] },
+    apollo: workspace?.meta?.apollo || { imported_person_ids: [] }
+  });
 }
 
 async function loadMarketingSummary() {
@@ -3379,6 +3489,18 @@ async function handleApi(req, res) {
     const sid = crypto.randomBytes(24).toString('hex');
     sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
     return sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
+  }
+  if (route === '/api/bootstrap' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    const db = await loadBootstrapDb();
+    const payload = bootstrap(db, user);
+    payload.marketing = null;
+    return sendJson(res, payload);
+  }
+  if (route === '/api/developer/config' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    requireDeveloperAccess(req, user);
+    return sendJson(res, developerConfig(req, await loadDeveloperConfigDb()));
   }
   const db = await loadDb();
   if (route === '/api/password/forgot' && method === 'POST') {
