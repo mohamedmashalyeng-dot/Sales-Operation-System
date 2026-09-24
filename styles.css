@@ -704,18 +704,42 @@ button:hover,
 .email-message-card{
  background:#fff!important;
  border:1px solid rgba(214,184,237,.82)!important;
- box-shadow:0 14px 34px rgba(53,27,82,.08)!important;
+ border-radius:16px!important;
+ box-shadow:0 12px 26px rgba(53,27,82,.07)!important;
+ overflow:hidden!important;
 }
 .email-message-card.quoted,
 .email-message-card.response{
  background:#fff!important;
 }
 .email-message-card.response{
- border-color:rgba(103,40,184,.32)!important;
+ border-color:rgba(199,142,35,.34)!important;
 }
 .email-message-row,
 .email-reader-body{
  background:#fff!important;
+}
+.email-message-row{
+ padding:16px 18px!important;
+ gap:14px!important;
+ border-radius:0!important;
+ box-shadow:none!important;
+}
+.email-message-row-main strong{
+ font-size:13px!important;
+ letter-spacing:0!important;
+}
+.email-message-row-main span{
+ margin-top:4px!important;
+ color:#6f5b7b!important;
+}
+.email-message-row-meta{
+ line-height:1.4!important;
+ color:#705f79!important;
+}
+.email-message-row-meta time{
+ font-weight:800!important;
+ color:#2b1839!important;
 }
 .email-thread-item:not(.response){
  background:#fbf7ff!important;
@@ -733,20 +757,38 @@ button:hover,
 }
 .email-thread-item.response,
 .email-message-card.response{
- background:#fff8e8!important;
- border-color:rgba(175,117,23,.42)!important;
+ background:#fffaf0!important;
+ border-color:rgba(205,154,58,.46)!important;
+ box-shadow:0 12px 30px rgba(148,94,21,.1)!important;
 }
 .email-thread-item.response .email-thread-summary,
 .email-message-card.response .email-message-row{
- background:#fff3d8!important;
+ background:linear-gradient(90deg,#fff6df,#fffaf0)!important;
+ border-bottom:1px solid rgba(205,154,58,.22)!important;
 }
 .email-message-card.response .email-reader-body{
- background:#fffdf7!important;
- border-left:4px solid rgba(175,117,23,.72)!important;
+ margin:14px!important;
+ background:#fffefb!important;
+ border:1px solid rgba(205,154,58,.28)!important;
+ border-left:4px solid rgba(187,126,32,.74)!important;
+ border-radius:14px!important;
+ padding:18px 22px!important;
 }
 .email-message-meta,
 .email-message-detail{
  border-color:rgba(214,184,237,.62)!important;
+}
+.email-message-card.response .email-message-meta{
+ display:flex!important;
+ flex-wrap:wrap!important;
+ gap:8px 14px!important;
+ padding:12px 18px!important;
+ background:rgba(255,255,255,.64)!important;
+ color:#6f5b7b!important;
+ border-bottom:1px solid rgba(205,154,58,.22)!important;
+}
+.email-message-card.response .email-message-meta span{
+ overflow-wrap:anywhere!important;
 }
 .workspace .button,
 dialog .button,
