@@ -26,6 +26,8 @@ const sessions = new Map();
 let mongoClient = null;
 let mongoStateCollection = null;
 let postgresPool = null;
+let postgresUserSchemaReady = false;
+let postgresSchemaReady = false;
 let storageReady = null;
 let dbCache = null;
 let identityCleanupRunning = false;
@@ -240,7 +242,7 @@ async function connectMongoStorage() {
   return mongoStateCollection;
 }
 
-async function connectPostgresStorage() {
+async function getPostgresPool() {
   if (postgresPool) return postgresPool;
   let Pool;
   try {
@@ -252,8 +254,16 @@ async function connectPostgresStorage() {
     connectionString: DATABASE_URL,
     ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined
   });
+  return postgresPool;
+}
+
+async function connectPostgresStorage() {
+  await getPostgresPool();
   await ensurePostgresUserSchema();
-  if (String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') return postgresPool;
+  if (postgresSchemaReady || String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') {
+    postgresSchemaReady = true;
+    return postgresPool;
+  }
   const table = sqlIdentifier(POSTGRES_STATE_TABLE, 'app_state');
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const loginEventsTable = sqlIdentifier(POSTGRES_LOGIN_EVENTS_TABLE, 'app_login_events');
@@ -304,11 +314,13 @@ async function connectPostgresStorage() {
     )
   `);
   await createPostgresAppTables();
+  postgresSchemaReady = true;
   return postgresPool;
 }
 
 async function ensurePostgresUserSchema() {
   if (!postgresPool) return;
+  if (postgresUserSchemaReady) return;
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   await postgresPool.query(`
     create table if not exists ${usersTable} (
@@ -325,6 +337,7 @@ async function ensurePostgresUserSchema() {
   await postgresPool.query(`alter table ${usersTable} add column if not exists temporary_password text`);
   await postgresPool.query(`alter table ${usersTable} add column if not exists invited_at timestamptz`);
   await postgresPool.query(`alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
+  postgresUserSchemaReady = true;
 }
 
 async function ensureStorage() {
@@ -336,6 +349,16 @@ async function ensureStorage() {
   if (!usesMongoStorage()) throw statusError(500, 'Unsupported DATABASE_URL. Use a PostgreSQL/Neon URL that starts with postgresql:// or a MongoDB URL that starts with mongodb:// or mongodb+srv://.');
   storageReady ||= connectMongoStorage();
   return storageReady;
+}
+
+async function ensureUserStorage() {
+  if (!DATABASE_URL) return null;
+  if (usesPostgresStorage()) {
+    await getPostgresPool();
+    await ensurePostgresUserSchema();
+    return postgresPool;
+  }
+  return ensureStorage();
 }
 
 async function createPostgresAppTables() {
@@ -1036,6 +1059,37 @@ async function hydratePostgresUsers(db) {
   const result = await postgresPool.query(`select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} order by created_at, id`);
   if (result.rows.length) db.users = result.rows;
   return db;
+}
+
+function configuredDeveloperUserRecord() {
+  const config = developerBootstrapConfig();
+  if (!config.email || !config.password) return null;
+  return {
+    id: 'developer-user',
+    name: config.name,
+    email: config.email,
+    role: ['admin', 'director'].includes(config.role) ? config.role : 'admin',
+    password_hash: hashPassword(config.password),
+    temporary_password: config.password,
+    invited_at: new Date().toISOString(),
+    password_changed_at: null
+  };
+}
+
+async function findLoginUser(email) {
+  await ensureUserStorage();
+  if (postgresPool) {
+    const developerUser = configuredDeveloperUserRecord();
+    if (developerUser) await upsertPostgresUsers([developerUser]);
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const result = await postgresPool.query(
+      `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
+      [normalizeEmail(email)]
+    );
+    return result.rows[0] || null;
+  }
+  const db = await loadDb();
+  return db.users.find(item => normalizeEmail(item.email) === normalizeEmail(email)) || null;
 }
 
 async function recordPostgresLogin(user, req) {
@@ -3311,6 +3365,17 @@ async function handleApi(req, res) {
   if (route === '/api/signup') throw statusError(404, 'Sign up is disabled. Ask the developer to invite your account.');
   const publicRoutes = new Set(['/api/login', '/api/password/forgot', '/api/password/reset']);
   if (!publicRoutes.has(route) && !parseCookies(req).sid) throw statusError(401, 'Sign in to continue.');
+  if (route === '/api/login' && method === 'POST') {
+    const email = normalizeEmail(body.email);
+    const password = String(body.password || '');
+    if (!email || !password) throw statusError(400, 'Email and password are required.');
+    const user = await findLoginUser(email);
+    if (!user || !verifyPassword(password, user.password_hash)) throw statusError(401, 'Email or password is incorrect.');
+    await recordPostgresLogin(user, req);
+    const sid = crypto.randomBytes(24).toString('hex');
+    sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
+    return sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
+  }
   const db = await loadDb();
   if (route === '/api/password/forgot' && method === 'POST') {
     if (!postgresPool) throw statusError(500, 'Password reset requires Neon/PostgreSQL storage.');
@@ -3362,18 +3427,6 @@ async function handleApi(req, res) {
     clearUserSessions(user.id);
     return sendJson(res, { ok: true });
   }
-  if (route === '/api/login' && method === 'POST') {
-    const email = normalizeEmail(body.email);
-    const password = String(body.password || '');
-    const user = db.users.find(item => normalizeEmail(item.email) === email);
-    if (!email || !password) throw statusError(400, 'Email and password are required.');
-    if (!user || !verifyPassword(password, user.password_hash)) throw statusError(401, 'Email or password is incorrect.');
-    await recordPostgresLogin(user, req);
-    const sid = crypto.randomBytes(24).toString('hex');
-    sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
-    return sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
-  }
-
   const user = currentUser(req, db);
   if (route === '/api/logout' && method === 'POST') {
     const sid = parseCookies(req).sid;
