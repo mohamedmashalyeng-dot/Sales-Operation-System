@@ -156,13 +156,13 @@ function hydrateSelectMenus(root=document){
 const dueLabel=t=>t.status==='Done'?'Done':new Date(t.due_at)<new Date()?'Overdue':date(t.due_at)===date(new Date())?time(t.due_at):date(t.due_at);
 const empty=(title,detail='')=>`<div class="empty">${icon('check')}<h3>${esc(title)}</h3>${esc(detail)}</div>`;
 const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="${act}" data-id="${esc(id)}">${esc(label)}</button>`;
-let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,gmailLiveSyncRunning=false,gmailTrashLiveSyncRunning=false,gmailLiveTimer=null,gmailTrashLiveTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
+let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,gmailLiveSyncRunning=false,gmailTrashLiveSyncRunning=false,gmailLiveTimer=null,gmailTrashLiveTimer=null,inboxFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300;
 const GMAIL_IMPORT_ENABLED=true;
-const GMAIL_LIVE_SYNC_MS=60000;
-const GMAIL_TRASH_LIVE_SYNC_MS=120000;
+const GMAIL_LIVE_SYNC_MS=3600000;
+const GMAIL_TRASH_LIVE_SYNC_MS=3600000;
 const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
 const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['attribution','chart','Attribution']];
 const localUserKey='pathway_local_user';
@@ -486,6 +486,36 @@ async function refresh(options={}){
   throw error;
  }
 }
+function inboxFilterKey(){
+ return JSON.stringify({status:filters.inbox,label:filters.inboxLabel,search:filters.inboxSearch.trim(),day:displayDateToIso(filters.inboxDay)||filters.inboxDay,date_field:filters.inboxDate,sort:filters.inboxSort});
+}
+function inboxQuery(cursor=''){
+ const params=new URLSearchParams({limit:'50',status:filters.inbox,label:filters.inboxLabel,date_field:filters.inboxDate,sort:filters.inboxSort});
+ const search=filters.inboxSearch.trim(),day=displayDateToIso(filters.inboxDay)||filters.inboxDay.trim();
+ if(search)params.set('search',search);
+ if(day)params.set('day',day);
+ if(cursor)params.set('cursor',cursor);
+ return `/api/emails?${params.toString()}`;
+}
+function mergeEmailSummaries(emails){
+ const merged=new Map((data.emails||[]).map(email=>[email.id,email]));
+ (emails||[]).forEach(email=>merged.set(email.id,{...(merged.get(email.id)||{}),...email}));
+ data.emails=[...merged.values()];
+}
+async function loadInboxEmails(reset=false,options={}){
+ const key=inboxFilterKey(),page=data.email_paging||{},cursor=reset||page.filter_key!==key?'':page.next_cursor||'';
+ const result=await api(inboxQuery(cursor),undefined,'GET',options);
+ mergeEmailSummaries(result.emails||[]);
+ const ids=reset||page.filter_key!==key?[...(result.emails||[]).map(email=>email.id)]:[...(data.inbox_view_ids||[]),...(result.emails||[]).map(email=>email.id)];
+ data.inbox_view_ids=[...new Set(ids)];
+ data.email_paging={loaded:data.inbox_view_ids.length,total:result.total,filter_key:key,next_cursor:result.next_cursor,limit:result.limit,has_more:result.has_more};
+ rebuildClientIndexes(data);
+ return result;
+}
+function scheduleInboxFilterRefresh(){
+ clearTimeout(inboxFilterTimer);
+ inboxFilterTimer=setTimeout(()=>loadInboxEmails(true).then(()=>render()).catch(error=>toast(error.message)),350);
+}
 function go(route){if(location.hash===`#/${route}`)render();else location.hash=`#/${route}`;}
 function route(){return location.hash.replace(/^#\/?/,'')||'today';}
 function breadcrumbLabel(){
@@ -787,10 +817,10 @@ function planner(){
   <div class="planner-task-list-panel"><div class="chips planner-chips planner-list-filter">${['Open','Overdue','Today','Upcoming','Done','All'].map(s=>`<button class="chip ${filters.planner===s?'active':''}" data-act="planner-filter" data-id="${s}">${s}</button>`).join('')}</div><section class="panel"><div class="panel-header"><div><h2>${esc(filters.planner)} task list</h2><p>${filtered.length} ${filtered.length===1?'task':'tasks'} in this view</p></div>${icon('calendar')}</div><div class="panel-body planner-list">${filtered.slice(0,160).map(plannerTaskCard).join('')||empty('Nothing here right now','Create a task or change the filter.')}</div>${filtered.length>160?`<div class="crm-more">Showing first 160 tasks. Use the filter chips to narrow the list.</div>`:''}</section></div>
  </div>`;
 }
-function applications(){return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.')+(data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+`<div class="application-grid">${data.applications.map(a=>`<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${badge(a.learner?'Enrolled':a.status)}</div>${a.learner?`<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>`:`<div class="requirements">${a.requirements.map(r=>requirement(a,r)).join('')}</div><div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${data.permissions.review?`${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}`:'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>'}</div>`}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`).join('')}</div>${data.applications.length?'':empty('No applications yet','Open a lead to start an application.')}`;}
+async function applications(){const result=await api('/api/applications',undefined,'GET',{silent:true});data.applications=result.applications||[];return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.')+(data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+`<div class="application-grid">${data.applications.map(a=>`<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${badge(a.learner?'Enrolled':a.status)}</div>${a.learner?`<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>`:`<div class="requirements">${a.requirements.map(r=>requirement(a,r)).join('')}</div><div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${data.permissions.review?`${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}`:'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>'}</div>`}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`).join('')}</div>${data.applications.length?'':empty('No applications yet','Open a lead to start an application.')}`;}
 function requirement(a,r){return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} · Version ${r.latest.version}${r.latest.reviewer?' · Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${data.permissions.sales||data.permissions.review?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload new version':'Upload document'}</button>`:''}${r.latest&&data.permissions.review?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>Download</a>${btn('Review','review-evidence',r.latest.id)}`:''}</div></div>`;}
 function events(){const evb=data.integrations.find(i=>i.name==='Eventbrite');return heading('Good conversations start here.','Programme discovery, attendance and follow-up.')+`<div class="notice">${evb?.status==='Connected'?'Eventbrite is connected. Sync from Settings to refresh events and attendees.':evb?.status==='Ready to connect'?'Eventbrite is ready to connect from Settings.':'Eventbrite needs credentials before live events can sync.'} Locally stored event records still support check-in and follow-up.</div>${data.events.map(e=>`<article class="event-card"><div class="lead-top"><div class="event-date">${date(e.start_at,{month:'short'})}<b>${date(e.start_at,{day:'numeric'})}</b></div><div><h3>${esc(e.name)}</h3><p class="muted small">${esc(e.location)} · ${time(e.start_at)}</p></div></div><div class="stats-grid">${stat('Registered',e.registrations,`Capacity ${e.capacity}`,'users')}${stat('Checked in',e.attendance,'Confirmed attendance','check')}${stat('Attendance',e.registrations?Math.round(100*e.attendance/e.registrations)+'%':'—','Of registrations','chart')}</div><p class="small muted">Campaign: ${esc(e.campaign)}</p>${e.attendees.map((a,i)=>`<div class="person-row">${avatar(a,i)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${a.attended_at?'Checked in '+timestamp(a.attended_at):'Registered'}</p></div>${!a.attended_at&&['admin','manager'].includes(data.user.role)?btn('Check in','checkin',a.id,'soft'):badge(a.attended_at?'Attended':'Registered')}</div>`).join('')}</article>`).join('')}${data.events.length?'':empty('No events available','Events are visible to managers and admissions.')}`;}
-function attribution(){return heading('Know where progress begins.','Trace acquisition through to confirmed enrolment.')+`<div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Acquisition sources</h2></div><div class="panel-body source-bars">${sourceBars()}<p class="bottom-note">One lead is counted for each programme opportunity.</p></div></section><section class="panel"><div class="panel-header"><h2>First-touch outcomes</h2></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Enrolled</th></tr></thead><tbody>${data.source_counts.map(s=>`<tr><td>${esc(s.source)}</td><td>${s.leads}</td><td>${s.enrolled}</td></tr>`).join('')}</tbody></table></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Enrolment snapshots</h2><p>Saved at confirmation · First-touch model</p></div>${icon('shield')}</div><div class="panel-body">${data.attribution.map(s=>`<div class="person-row">${avatar(s)}<div class="person-main"><strong>${esc(fullName(s))}</strong><p>${esc(s.programme)}<br>First: ${esc(s.snapshot.first_touch)} · Capture: ${esc(s.snapshot.lead_capture)}<br>Conversion: ${esc(s.snapshot.conversion_source)}</p></div>${badge('100% '+s.snapshot.first_touch,'green')}</div>`).join('')||empty('No enrolment snapshots yet','A snapshot is saved automatically when enrolment is confirmed.')}</div></section>`;}
+async function attribution(){const result=await api('/api/attribution?limit=100',undefined,'GET',{silent:true});data.attribution=result.attribution||[];return heading('Know where progress begins.','Trace acquisition through to confirmed enrolment.')+`<div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Acquisition sources</h2></div><div class="panel-body source-bars">${sourceBars()}<p class="bottom-note">One lead is counted for each programme opportunity.</p></div></section><section class="panel"><div class="panel-header"><h2>First-touch outcomes</h2></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Enrolled</th></tr></thead><tbody>${data.source_counts.map(s=>`<tr><td>${esc(s.source)}</td><td>${s.leads}</td><td>${s.enrolled}</td></tr>`).join('')}</tbody></table></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Enrolment snapshots</h2><p>Saved at confirmation · First-touch model</p></div>${icon('shield')}</div><div class="panel-body">${data.attribution.map(s=>`<div class="person-row">${avatar(s)}<div class="person-main"><strong>${esc(fullName(s))}</strong><p>${esc(s.programme)}<br>First: ${esc(s.snapshot.first_touch)} · Capture: ${esc(s.snapshot.lead_capture)}<br>Conversion: ${esc(s.snapshot.conversion_source)}</p></div>${badge('100% '+s.snapshot.first_touch,'green')}</div>`).join('')||empty('No enrolment snapshots yet','A snapshot is saved automatically when enrolment is confirmed.')}</div></section>`;}
 function events(){const evb=data.integrations.find(i=>i.name==='Eventbrite'),actions=`<div class="actions">${data.permissions.sales?`<button class="button primary" data-act="import-events">${icon('file')}Import Excel</button>`:''}${evb?.status==='Connected'?`<button class="button soft" data-act="eventbrite-sync">${icon('calendar')}Sync Eventbrite</button>`:''}</div>`;return heading('Good conversations start here.','Programme discovery, attendance and follow-up.',actions)+`<div class="notice">${evb?.status==='Connected'?'Eventbrite is connected. Sync from Settings to refresh events and attendees.':evb?.status==='Ready to connect'?'Eventbrite is ready to connect from Settings.':'Eventbrite needs credentials before live events can sync.'} Excel imports create event records, attendees and linked leads from email.</div>${data.events.map(e=>`<article class="event-card"><div class="lead-top"><div class="event-date">${date(e.start_at,{month:'short'})}<b>${date(e.start_at,{day:'numeric'})}</b></div><div><h3>${esc(e.name)}</h3><p class="muted small">${esc(e.location)} Â· ${time(e.start_at)}</p></div></div><div class="stats-grid">${stat('Registered',e.registrations,`Capacity ${e.capacity}`,'users')}${stat('Checked in',e.attendance,'Confirmed attendance','check')}${stat('Attendance',e.registrations?Math.round(100*e.attendance/e.registrations)+'%':'â€”','Of registrations','chart')}</div><p class="small muted">Campaign: ${esc(e.campaign)}</p>${e.attendees.map((a,i)=>`<div class="person-row">${avatar(a,i)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${a.attended_at?'Checked in '+timestamp(a.attended_at):'Registered'}</p></div>${!a.attended_at&&['admin','manager'].includes(data.user.role)?btn('Check in','checkin',a.id,'soft'):badge(a.attended_at?'Attended':'Registered')}</div>`).join('')}</article>`).join('')}${data.events.length?'':empty('No events available','Events are visible to managers and admissions.')}`;}
 const eventHubTabs=[['dashboard','Dashboard','grid'],['events','Events','calendar'],['people','People','users'],['callbacks','Call backs','phone'],['reports','Reports','chart'],['marketing','Marketing','mail']];
 const eventRangeTabs=[['next7','Next 7 days'],['next30','Next 30 days'],['next90','Next 90 days'],['upcoming','All upcoming'],['past','Past events'],['all','All time']];
@@ -947,7 +977,7 @@ async function developer(){
   <section class="dev-panel"><div class="dev-panel-header"><div><h2>Runtime</h2><p class="dev-muted">Storage mode: ${esc(config.storage)}</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>Key</th><th>Status</th><th>Value</th></tr></thead><tbody>${(config.server||[]).map(item=>`<tr><td><strong>${esc(item.label)}</strong><br><code>${esc(item.key)}</code></td><td>${devPill(item.configured?'Configured':'Missing',item.configured?'ok':'warn')}</td><td><code>${esc(item.value||'Not set')}</code></td></tr>`).join('')}</tbody></table></div></section>`;
 }
 async function settings(){const dev=isDeveloperAccount();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div><p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
-function auditView(){return heading('Every decision leaves a trail.','Recorded actions, reviewers and changes.')+`<section class="panel table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr></thead><tbody>${data.audit.map(a=>`<tr><td>${timestamp(a.occurred_at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)}<div class="small muted mono">${esc(a.entity_id)}</div></td></tr>`).join('')}</tbody></table>${data.audit.length?'':empty('No audit records available for this role')}</section>`;}
+async function auditView(){const result=await api('/api/audit?limit=100',undefined,'GET',{silent:true});data.audit=result.audit||[];return heading('Every decision leaves a trail.','Recorded actions, reviewers and changes.')+`<section class="panel table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr></thead><tbody>${data.audit.map(a=>`<tr><td>${timestamp(a.occurred_at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)}<div class="small muted mono">${esc(a.entity_id)}</div></td></tr>`).join('')}</tbody></table>${data.audit.length?'':empty('No audit records available for this role')}</section>`;}
 function more(){return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.slice(4),['settings','settings','Settings'],...(isDeveloperAccount()? [['developer','shield','Developer']] : []),...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Demo workspace · Fictional sample records':''}</div>${btn('Sign out','logout')}`;}
 async function render(){if(!data)return;const id=++viewId,current=route();try{let html;if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);else{const view=({today,monitoring,leads,phases,planner,inbox,applications,events,attribution,settings,developer,audit:auditView,more}[current]||today);html=await view();}if(id===viewId){$('#app').innerHTML=shell(html,current);if(isDeveloperAccount()){const manageLabel=[...document.querySelectorAll('.sidebar .eyebrow')].find(item=>item.textContent.trim()==='Manage');if(manageLabel&&!document.querySelector('.sidebar [data-go="developer"]'))manageLabel.insertAdjacentHTML('afterend',navButton(['developer','shield','Developer'],current.split('/')[0]));}if(current==='today'&&isDeveloperAccount()){const actions=$('.heading .actions')||$('.heading');actions?.insertAdjacentHTML('beforeend',`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`);}hydrateSelectMenus($('#app'));}}catch(e){if(id===viewId&&data){$('#app').innerHTML=shell(empty('Unable to load this view',e.message)+btn('Try again','reload'),current);hydrateSelectMenus($('#app'));}}}
 
@@ -976,8 +1006,8 @@ async function action(act,id='',target=null){
  if(act==='event-hub-view'){filters.eventView=id;return render();}
  if(act==='event-hub-range'){filters.eventRange=id;return render();}
  if(act==='event-open')return eventInfoDialog(id);
- if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'Unanswered'});return render();}
- if(act==='load-more-emails'){const page=data.email_paging||{},cursor=encodeURIComponent(page.next_cursor||'');const result=await api(`/api/emails?cursor=${cursor}&limit=50`,undefined,'GET');const seen=new Set((data.emails||[]).map(e=>e.id));data.emails=[...(data.emails||[]),...(result.emails||[]).filter(e=>!seen.has(e.id))];data.email_paging={loaded:data.emails.length,next_cursor:result.next_cursor,limit:result.limit,has_more:result.has_more};rebuildClientIndexes(data);await render();toast(`${(result.emails||[]).length} more emails loaded.`);return;}
+ if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'Unanswered'});await loadInboxEmails(true);return render();}
+ if(act==='load-more-emails'){const result=await loadInboxEmails(false);await render();toast(`${(result.emails||[]).length} more emails loaded.`);return;}
  if(act==='date-picker'){openDatePicker(id);return;}
  if(act==='open-email')return openEmailDialog(id);
  if(act==='open-email-lead'){const dialog=$('#dialog');if(dialog.open)dialog.close();go('leads/'+id);return;}
@@ -1115,7 +1145,7 @@ document.addEventListener('keydown',event=>{
 document.addEventListener('input',event=>{
  if(event.target.id==='lead-search'){filters.search=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
  if(event.target.id==='event-search'){filters.eventSearch=event.target.value;return render();}
- if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;return updateInboxResults();}
+ if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;scheduleInboxFilterRefresh();return;}
  if(event.target.id==='inbox-day'){
   event.target.value=formatDateInputValue(event.target.value);
   filters.inboxDay=event.target.value;
@@ -1163,17 +1193,18 @@ document.addEventListener('change',async event=>{
  if(event.target.id==='stage-filter'){filters.stage=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
  if(event.target.id==='event-sort'){filters.eventSort=event.target.value;return render();}
  if(event.target.id==='event-marketing-status'){filters.eventMarketingStatus=event.target.value;return render();}
- if(event.target.id==='inbox-day'){filters.inboxDay=formatDateInputValue(event.target.value);event.target.value=filters.inboxDay;return updateInboxResults();}
+ if(event.target.id==='inbox-day'){filters.inboxDay=formatDateInputValue(event.target.value);event.target.value=filters.inboxDay;await loadInboxEmails(true);return render();}
  if(event.target.classList.contains('native-date')){
   const id=event.target.id.replace('-native',''),visible=document.getElementById(id),value=isoToDisplayDate(event.target.value);
   if(visible)visible.value=value;
   if(id==='inbox-day')filters.inboxDay=value;
-  return updateInboxResults();
+  scheduleInboxFilterRefresh();
+  return;
  }
- if(event.target.id==='inbox-status'){filters.inbox=event.target.value;return updateInboxResults();}
- if(event.target.id==='inbox-sort'){filters.inboxSort=event.target.value;return render();}
- if(event.target.id==='inbox-date-field'){filters.inboxDate=event.target.value;return render();}
- if(event.target.id==='inbox-label'){filters.inboxLabel=event.target.value;return render();}
+ if(event.target.id==='inbox-status'){filters.inbox=event.target.value;await loadInboxEmails(true);return render();}
+ if(event.target.id==='inbox-sort'){filters.inboxSort=event.target.value;await loadInboxEmails(true);return render();}
+ if(event.target.id==='inbox-date-field'){filters.inboxDate=event.target.value;await loadInboxEmails(true);return render();}
+ if(event.target.id==='inbox-label'){filters.inboxLabel=event.target.value;await loadInboxEmails(true);return render();}
 });
 function handleRouteChange(){
  if(route().startsWith('reset-password'))return resetPassword();
@@ -1253,7 +1284,9 @@ function inboxLabelOptions(){
 }
 function inboxResults(){
  const q=filters.inboxSearch.trim().toLowerCase(),dayStart=parseDisplayDate(filters.inboxDay),dayEnd=parseDisplayDate(filters.inboxDay,true);
- return data.emails.filter(e=>{
+ const currentKey=inboxFilterKey(),emailById=new Map((data.emails||[]).map(email=>[email.id,email]));
+ const source=data.email_paging?.filter_key===currentKey&&data.inbox_view_ids?.length?data.inbox_view_ids.map(id=>emailById.get(id)).filter(Boolean):(data.emails||[]);
+ return source.filter(e=>{
   const trashed=emailIsTrashed(e);
   if(filters.inbox==='Trash'&&!trashed)return false;
   if(filters.inbox!=='Trash'&&trashed)return false;
@@ -1282,12 +1315,12 @@ function datePickerField(id,label,value){
  return `<div class="date-field"><input id="${id}" class="date-input" aria-label="${esc(label)}" inputmode="numeric" dir="ltr" placeholder="DD/MM/YYYY" value="${esc(value)}"><input id="${id}-native" class="native-date" type="date" value="${esc(displayDateToIso(value))}" tabindex="-1" aria-hidden="true"><button class="icon-button date-picker-button" data-act="date-picker" data-id="${id}" aria-label="Open ${esc(label)} calendar">${icon('calendar')}</button></div>`;
 }
 function inboxToolbar(list){
- const total=filters.inbox==='Trash'?(data.emails||[]).filter(emailIsTrashed).length:activeEmails().length;
+ const currentKey=inboxFilterKey(),total=data.email_paging?.filter_key===currentKey&&Number.isFinite(Number(data.email_paging.total))?Number(data.email_paging.total):(filters.inbox==='Trash'?(data.emails||[]).filter(emailIsTrashed).length:activeEmails().length);
  return `<div class="toolbar inbox-toolbar"><div class="search">${icon('search')}<input id="inbox-search" aria-label="Search inbox" placeholder="Search name, email, subject or message..." value="${esc(filters.inboxSearch)}"></div><select id="inbox-label" aria-label="Filter by label">${inboxLabelOptions().map(label=>`<option value="${esc(label)}" ${filters.inboxLabel===label?'selected':''}>${esc(label==='All'?'All labels':label)}</option>`).join('')}</select><select id="inbox-date-field" aria-label="Date field"><option value="received" ${filters.inboxDate==='received'?'selected':''}>Received date</option><option value="due" ${filters.inboxDate==='due'?'selected':''}>Due date</option></select>${datePickerField('inbox-day','Filter day',filters.inboxDay)}<select id="inbox-status" aria-label="Filter by response status">${['Unanswered','Unread','Seen, no reply','Overdue','Resolved','Sent','All','Trash'].map(status=>`<option value="${esc(status)}" ${filters.inbox===status?'selected':''}>${esc(status)}</option>`).join('')}</select><select id="inbox-sort" aria-label="Sort inbox"><option value="newest" ${filters.inboxSort==='newest'?'selected':''}>Newest first</option><option value="oldest" ${filters.inboxSort==='oldest'?'selected':''}>Oldest first</option><option value="due-soon" ${filters.inboxSort==='due-soon'?'selected':''}>Due soon</option><option value="name" ${filters.inboxSort==='name'?'selected':''}>Name A-Z</option><option value="name-desc" ${filters.inboxSort==='name-desc'?'selected':''}>Name Z-A</option></select><button class="button inbox-clear-button" data-act="inbox-clear" aria-label="Clear filters" title="Clear filters">${icon('close')}</button></div><div class="result-summary">${list.length} of ${total} ${list.length===1?'message':'messages'} shown</div>`;
 }
 function updateInboxResults(){
  const list=inboxResults(),results=$('#inbox-results'),summary=$('.result-summary');
- const total=filters.inbox==='Trash'?(data.emails||[]).filter(emailIsTrashed).length:activeEmails().length;
+ const currentKey=inboxFilterKey(),total=data.email_paging?.filter_key===currentKey&&Number.isFinite(Number(data.email_paging.total))?Number(data.email_paging.total):(filters.inbox==='Trash'?(data.emails||[]).filter(emailIsTrashed).length:activeEmails().length);
  if(results)results.innerHTML=emailCards(list);
  if(summary)summary.textContent=`${list.length} of ${total} ${list.length===1?'message':'messages'} shown`;
 }
@@ -1297,7 +1330,8 @@ function inboxLoadMoreButton(){
  const loaded=Number(page.loaded||data.emails?.length||0);
  return `<div class="crm-more inbox-load-more"><button class="button soft" data-act="load-more-emails">Read more</button><span class="small muted">${loaded.toLocaleString()} emails loaded. Next click loads 50 more.</span></div>`;
 }
-function inbox(){
+async function inbox(){
+ if(data.email_paging?.filter_key!==inboxFilterKey())await loadInboxEmails(true,{silent:true});
  const list=inboxResults();
  return heading('Every conversation matters.','Incoming mail that still needs a company response.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>${inboxLoadMoreButton()}`;
 }

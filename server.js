@@ -1516,6 +1516,96 @@ function emailNeedsResponse(db, email) {
   return !emailIsTrashed(email) && emailIsInboundExternal(db, email) && !email.response_at;
 }
 
+function uniqueEmailLabelValues(values) {
+  return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function emailIsUnread(email) {
+  return (email.gmail_labels || []).includes('UNREAD') || (email.gmail_label_names || []).includes('Unread') || email.is_read === false;
+}
+
+function emailDueAt(email) {
+  const received = new Date(email.received_at || email.date || 0);
+  return Number.isNaN(received.getTime()) ? email.due_at : new Date(received.getTime() + EMAIL_RESPONSE_SLA_MS).toISOString();
+}
+
+function emailServerLabelTexts(email) {
+  if (emailIsTrashed(email)) return ['Trash'];
+  const gmailLabels = uniqueEmailLabelValues([
+    ...(email.gmail_label_names || []),
+    ...(email.gmail_labels || []).map(label => GMAIL_SYSTEM_LABELS[label] || '')
+  ]).filter(label => !/^category_/i.test(label) && !/^Label_[A-Za-z0-9_-]+$/i.test(label) && label !== 'Trash');
+  if (gmailLabels.length) return gmailLabels;
+  const text = [email.subject, email.body, email.snippet].join(' ').toLowerCase();
+  const labels = [];
+  if (/zoho|zoho crm|zoho contracts?/.test(text)) labels.push('Zoho');
+  if (/eventbrite|attendee|attendance|webinar|open day|booking|bookings/.test(text)) labels.push('Events');
+  if (/contract|agreement|sign|commitment/.test(text)) labels.push('Contract Matter');
+  if (/das|digital apprenticeship service/.test(text)) labels.push('DAS Matter');
+  if (/aptem|lrs|learning/.test(text)) labels.push('Aptem Matter');
+  if (!labels.length) labels.push(email.response_at ? 'Resolved' : 'Inbox');
+  return labels;
+}
+
+function parseEmailFilterDay(value, end = false) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const display = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  const date = iso
+    ? new Date(`${iso[1]}-${iso[2]}-${iso[3]}T00:00:00.000Z`)
+    : display
+      ? new Date(`${display[3]}-${display[2]}-${display[1]}T00:00:00.000Z`)
+      : new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  if (end) date.setUTCHours(23, 59, 59, 999);
+  return date;
+}
+
+function emailFilterDateValue(email, filters) {
+  return filters.dateField === 'due' ? emailDueAt(email) : (email.received_at || email.date || email.created_at);
+}
+
+function emailMatchesFilters(db, email, filters) {
+  const status = filters.status || 'All';
+  const trashed = emailIsTrashed(email);
+  if (status === 'Trash' && !trashed) return false;
+  if (status !== 'Trash' && trashed) return false;
+  if (status === 'Sent' && email.direction !== 'outbound') return false;
+  if (!['Sent', 'All', 'Trash'].includes(status) && email.direction === 'outbound') return false;
+  const needsResponse = emailNeedsResponse(db, email);
+  if (status === 'Unanswered' && !needsResponse) return false;
+  if (status === 'Unread' && !(needsResponse && emailIsUnread(email))) return false;
+  if (status === 'Seen, no reply' && !(needsResponse && !emailIsUnread(email))) return false;
+  if (status === 'Resolved' && needsResponse) return false;
+  const due = new Date(emailDueAt(email));
+  if (status === 'Overdue' && !(needsResponse && !Number.isNaN(due.getTime()) && due < new Date())) return false;
+  const labels = emailServerLabelTexts(email);
+  if (filters.label && filters.label !== 'All' && !labels.includes(filters.label)) return false;
+  const dayStart = parseEmailFilterDay(filters.day);
+  if (dayStart) {
+    const dayEnd = parseEmailFilterDay(filters.day, true);
+    const date = new Date(emailFilterDateValue(email, filters) || 0);
+    if (Number.isNaN(date.getTime()) || date < dayStart || date > dayEnd) return false;
+  }
+  const query = String(filters.search || '').trim().toLowerCase();
+  if (query) {
+    const haystack = [email.first_name, email.last_name, email.email, email.from, email.subject, email.body, email.snippet, email.owner, ...labels].join(' ').toLowerCase();
+    if (!haystack.includes(query)) return false;
+  }
+  return true;
+}
+
+function compareEmailsForFilters(a, b, filters) {
+  const dateA = new Date(emailFilterDateValue(a, filters) || 0);
+  const dateB = new Date(emailFilterDateValue(b, filters) || 0);
+  if (filters.sort === 'oldest') return dateA - dateB || String(a.id).localeCompare(String(b.id));
+  if (filters.sort === 'name') return `${a.first_name || ''} ${a.last_name || ''}`.localeCompare(`${b.first_name || ''} ${b.last_name || ''}`) || dateB - dateA;
+  if (filters.sort === 'name-desc') return `${b.first_name || ''} ${b.last_name || ''}`.localeCompare(`${a.first_name || ''} ${a.last_name || ''}`) || dateB - dateA;
+  if (filters.sort === 'due-soon') return new Date(emailDueAt(a) || 0) - new Date(emailDueAt(b) || 0) || dateB - dateA;
+  return dateB - dateA || String(a.id).localeCompare(String(b.id));
+}
+
 function isExcludedLeadSender(email, firstName = '', lastName = '') {
   const address = normalizeEmail(email);
   const name = `${firstName} ${lastName}`.trim().toLowerCase();
@@ -2042,7 +2132,38 @@ async function loadBootstrapDb() {
 async function loadEmailPage(options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 50), 50));
   const cursor = decodeEmailCursor(options.cursor);
+  const filters = {
+    status: String(options.status || '').trim(),
+    label: String(options.label || '').trim(),
+    search: String(options.search || '').trim(),
+    day: String(options.day || '').trim(),
+    dateField: String(options.date_field || options.dateField || 'received').trim() === 'due' ? 'due' : 'received',
+    sort: String(options.sort || 'newest').trim()
+  };
+  const hasFilters = Boolean(filters.status || filters.label || filters.search || filters.day || filters.dateField === 'due' || filters.sort !== 'newest');
   await ensureStorage();
+  if (hasFilters) {
+    const db = postgresPool ? {
+      gmail: (await postgresPool.query(`select gmail from app_workspace where id = $1`, ['main'])).rows[0]?.gmail || {}
+    } : await loadDb();
+    const rows = postgresPool
+      ? (await postgresPool.query(`select data from app_emails order by received_at desc nulls last, id`)).rows.map(item => item.data)
+      : (db.emails || []).slice();
+    const filtered = rows
+      .filter(email => emailMatchesFilters(db, email, filters))
+      .sort((a, b) => compareEmailsForFilters(a, b, filters));
+    const cursorIndex = cursor ? filtered.findIndex(item => item.id === cursor.id) : -1;
+    const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+    const pageRows = filtered.slice(startIndex, startIndex + limit);
+    return {
+      emails: pageRows.map(publicEmailSummary),
+      loaded: startIndex + pageRows.length,
+      total: filtered.length,
+      next_cursor: startIndex + pageRows.length < filtered.length ? encodeEmailCursor(pageRows[pageRows.length - 1]) : '',
+      limit,
+      has_more: startIndex + pageRows.length < filtered.length
+    };
+  }
   if (postgresPool) {
     const result = cursor
       ? await postgresPool.query(
@@ -2468,6 +2589,66 @@ function developerConfig(req, db) {
       }
     ]
   };
+}
+
+function publicApplication(app) {
+  return {
+    ...app,
+    requirements: (app.requirements || []).map(req => ({
+      ...req,
+      latest: req.latest ? { ...req.latest, content_base64: undefined } : null
+    }))
+  };
+}
+
+function loadApplicationList(db) {
+  return (db.applications || [])
+    .slice()
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    .map(publicApplication);
+}
+
+function loadAuditList(db, limit = 100) {
+  return (db.audit || [])
+    .slice()
+    .sort((a, b) => new Date(b.occurred_at || 0) - new Date(a.occurred_at || 0))
+    .slice(0, Math.max(1, Math.min(Number(limit || 100), 250)));
+}
+
+function loadAttributionList(db, limit = 100) {
+  return (db.attribution || [])
+    .slice()
+    .sort((a, b) => new Date(b.learner?.enrolled_at || b.created_at || 0) - new Date(a.learner?.enrolled_at || a.created_at || 0))
+    .slice(0, Math.max(1, Math.min(Number(limit || 100), 250)));
+}
+
+async function loadApplicationListDb() {
+  await ensureStorage();
+  if (postgresPool) {
+    const result = await postgresPool.query(`select data from app_applications order by created_at desc nulls last, id`);
+    return result.rows.map(item => publicApplication(item.data));
+  }
+  return loadApplicationList(await loadDb());
+}
+
+async function loadAuditListDb(limit = 100) {
+  await ensureStorage();
+  const safeLimit = Math.max(1, Math.min(Number(limit || 100), 250));
+  if (postgresPool) {
+    const result = await postgresPool.query(`select data from app_audit order by occurred_at desc nulls last, id limit $1`, [safeLimit]);
+    return result.rows.map(item => item.data);
+  }
+  return loadAuditList(await loadDb(), safeLimit);
+}
+
+async function loadAttributionListDb(limit = 100) {
+  await ensureStorage();
+  const safeLimit = Math.max(1, Math.min(Number(limit || 100), 250));
+  if (postgresPool) {
+    const result = await postgresPool.query(`select data from app_attribution order by id desc limit $1`, [safeLimit]);
+    return result.rows.map(item => item.data);
+  }
+  return loadAttributionList(await loadDb(), safeLimit);
 }
 
 function leadFor(db, id) {
@@ -4119,7 +4300,13 @@ async function handleApi(req, res) {
     await currentSessionUser(req);
     return sendJson(res, await loadEmailPage({
       cursor: url.searchParams.get('cursor'),
-      limit: url.searchParams.get('limit')
+      limit: url.searchParams.get('limit'),
+      status: url.searchParams.get('status'),
+      label: url.searchParams.get('label'),
+      search: url.searchParams.get('search'),
+      day: url.searchParams.get('day'),
+      date_field: url.searchParams.get('date_field'),
+      sort: url.searchParams.get('sort')
     }));
   }
   if (route === '/api/users' && method === 'POST') {
@@ -4144,6 +4331,18 @@ async function handleApi(req, res) {
     const user = await currentSessionUser(req);
     requireDeveloperAccess(req, user);
     return sendJson(res, await deleteWorkspaceUser(lightweightMatch[1], user));
+  }
+  if (route === '/api/applications' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, { applications: await loadApplicationListDb() });
+  }
+  if (route === '/api/audit' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, { audit: await loadAuditListDb(url.searchParams.get('limit')) });
+  }
+  if (route === '/api/attribution' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, { attribution: await loadAttributionListDb(url.searchParams.get('limit')) });
   }
   const db = await loadDb();
   if (route === '/api/password/forgot' && method === 'POST') {
