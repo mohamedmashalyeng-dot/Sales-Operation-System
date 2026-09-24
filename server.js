@@ -140,6 +140,10 @@ function developerBootstrapConfig() {
   };
 }
 
+function developerPasswordConfigured() {
+  return Boolean(String(process.env.DEV_PANEL_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || '').trim());
+}
+
 function ensureConfiguredDeveloperUser(db) {
   const config = developerBootstrapConfig();
   if (!config.email || !config.password) return false;
@@ -4019,7 +4023,12 @@ async function handleApi(req, res) {
     const password = String(body.password || '');
     if (!email || !password) throw statusError(400, 'Email and password are required.');
     const user = await findLoginUser(email);
-    if (!user || !verifyPassword(password, user.password_hash)) throw statusError(401, 'Email or password is incorrect.');
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      if (isDeveloperEmail(email) && !developerPasswordConfigured()) {
+        throw statusError(500, 'Developer password is not configured on this deployment. Add DEV_PANEL_PASSWORD and redeploy.');
+      }
+      throw statusError(401, 'Email or password is incorrect.');
+    }
     await recordPostgresLogin(user, req);
     const sid = crypto.randomBytes(24).toString('hex');
     sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
