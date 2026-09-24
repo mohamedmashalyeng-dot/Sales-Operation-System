@@ -35,6 +35,7 @@ let identityCleanupRunning = false;
 const GMAIL_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'];
 const EMAIL_RESPONSE_SLA_MS = 48 * 60 * 60 * 1000;
 const DEFAULT_DEVELOPER_EMAIL = 'mohamedmashalyeng@gmail.com';
+const LEGACY_DEVELOPER_EMAILS = ['alteam.kbc@gmail.com'];
 const GMAIL_IMPORT_ENABLED = String(process.env.GMAIL_IMPORT || 'true').toLowerCase() !== 'false';
 const GMAIL_INCREMENTAL_ONLY = String(process.env.GMAIL_INCREMENTAL_ONLY || 'false').toLowerCase() === 'true';
 const GMAIL_AUTO_SYNC_ENABLED = String(process.env.GMAIL_AUTO_SYNC || 'true').toLowerCase() !== 'false';
@@ -184,6 +185,30 @@ function ensureConfiguredDeveloperUser(db) {
     changed = true;
   }
   return changed;
+}
+
+function isLegacyDeveloperEmail(email) {
+  const normalized = normalizeEmail(email);
+  return LEGACY_DEVELOPER_EMAILS.includes(normalized) && !isDeveloperEmail(normalized);
+}
+
+function removeLegacyDeveloperUsers(db) {
+  db.users ||= [];
+  const before = db.users.length;
+  db.users = db.users.filter(user => !isLegacyDeveloperEmail(user.email));
+  return db.users.length !== before;
+}
+
+async function removeLegacyPostgresDeveloperUsers() {
+  if (!postgresPool || !LEGACY_DEVELOPER_EMAILS.length) return false;
+  const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+  const emails = LEGACY_DEVELOPER_EMAILS
+    .map(normalizeEmail)
+    .filter(email => email && !isDeveloperEmail(email));
+  if (!emails.length) return false;
+  const result = await postgresPool.query(`delete from ${table} where lower(email) = any($1::text[])`, [emails]);
+  if (result.rowCount) dbCache = null;
+  return Boolean(result.rowCount);
 }
 
 async function persistDeveloperBootstrap(data) {
@@ -509,6 +534,7 @@ async function loadDb() {
   if (postgresPool) {
     const normalized = await loadPostgresTables();
     if (normalized) {
+      await removeLegacyPostgresDeveloperUsers();
       const data = recalculate(await hydratePostgresUsers(normalized));
       if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
       dbCache = cloneDb(data);
@@ -518,6 +544,7 @@ async function loadDb() {
     const legacy = await postgresPool.query(`select data from ${table} where id = $1`, ['main']);
     const seeded = legacy.rows[0]?.data ? recalculate(legacy.rows[0].data) : seedDatabase();
     await saveDb(seeded);
+    await removeLegacyPostgresDeveloperUsers();
     const data = recalculate(await hydratePostgresUsers(seeded));
     if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
     dbCache = cloneDb(data);
@@ -527,19 +554,27 @@ async function loadDb() {
     const record = await mongoStateCollection.findOne({ _id: 'main' });
     if (!record?.data) {
       const seeded = seedDatabase();
+      removeLegacyDeveloperUsers(seeded);
+      ensureConfiguredDeveloperUser(seeded);
       await saveDb(seeded);
       dbCache = cloneDb(seeded);
       return seeded;
     }
     const data = recalculate(record.data);
-    if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
+    const removedLegacy = removeLegacyDeveloperUsers(data);
+    const ensuredDeveloper = ensureConfiguredDeveloperUser(data);
+    const changed = removedLegacy || ensuredDeveloper;
+    if (changed) await persistDeveloperBootstrap(data);
     dbCache = cloneDb(data);
     return data;
   }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DB_FILE)) await saveDb(seedDatabase());
   const data = recalculate(JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
-  if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
+  const removedLegacy = removeLegacyDeveloperUsers(data);
+  const ensuredDeveloper = ensureConfiguredDeveloperUser(data);
+  const changed = removedLegacy || ensuredDeveloper;
+  if (changed) await persistDeveloperBootstrap(data);
   dbCache = cloneDb(data);
   return data;
 }
@@ -2114,6 +2149,7 @@ async function loadDeveloperConfigDb() {
     const db = await loadDb();
     return { ...seeded, users: db.users, gmail: db.gmail, eventbrite: db.eventbrite, meta: db.meta };
   }
+  await removeLegacyPostgresDeveloperUsers();
   const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const users = (await postgresPool.query(
     `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} order by created_at, id`
@@ -2337,8 +2373,7 @@ function configuredDeveloperEmail() {
 function configuredDeveloperEmails() {
   return uniqueStrings([
     DEFAULT_DEVELOPER_EMAIL,
-    process.env.DEV_PANEL_EMAIL,
-    process.env.INITIAL_ADMIN_EMAIL
+    process.env.DEV_PANEL_EMAIL
   ].map(normalizeEmail).filter(Boolean));
 }
 
