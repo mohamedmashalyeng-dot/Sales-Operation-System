@@ -189,7 +189,7 @@ function ensureConfiguredDeveloperUser(db) {
 
 function isLegacyDeveloperEmail(email) {
   const normalized = normalizeEmail(email);
-  return LEGACY_DEVELOPER_EMAILS.includes(normalized) && !isDeveloperEmail(normalized);
+  return LEGACY_DEVELOPER_EMAILS.includes(normalized);
 }
 
 function removeLegacyDeveloperUsers(db) {
@@ -204,7 +204,7 @@ async function removeLegacyPostgresDeveloperUsers() {
   const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const emails = LEGACY_DEVELOPER_EMAILS
     .map(normalizeEmail)
-    .filter(email => email && !isDeveloperEmail(email));
+    .filter(Boolean);
   if (!emails.length) return false;
   const result = await postgresPool.query(`delete from ${table} where lower(email) = any($1::text[])`, [emails]);
   if (result.rowCount) dbCache = null;
