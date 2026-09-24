@@ -603,12 +603,17 @@ function monitoringOperations(){
  return {leads,apps,openTasks,overdue,unanswered,stageCount,enrolled,applicationRate,enrolRate,programmePressure:programmePressure.map(r=>({...r,max}))};
 }
 function monitoringTeam(){
- const owners=data.owners||[],leads=data.leads||[],tasks=data.tasks||[],apps=data.applications||[],emails=data.emails||[],leadById=new Map(leads.map(l=>[String(l.id),l]));
+ const owners=data.owners||[],leads=data.leads||[],tasks=data.tasks||[],apps=data.applications||[],emails=data.emails||[],leadById=new Map(leads.map(l=>[String(l.id),l])),leadIdsByOwner=new Map(),openTasksByLead=new Map(),overdueTasksByLead=new Map(),responsesByLead=new Map(),enrolmentsByLead=new Set();
+ leads.forEach(l=>{const keys=[l.owner_id,l.owner].filter(Boolean);keys.forEach(key=>{const list=leadIdsByOwner.get(String(key))||[];list.push(String(l.id));leadIdsByOwner.set(String(key),list);});});
+ tasks.forEach(t=>{if(t.status!=='Open')return;const key=String(t.lead_id||'');openTasksByLead.set(key,(openTasksByLead.get(key)||0)+1);if(taskDueBucket(t)==='Overdue')overdueTasksByLead.set(key,(overdueTasksByLead.get(key)||0)+1);});
+ emails.forEach(e=>{const key=String(e.lead_id||''),end=responseDate(e),start=emailResponseStartAt(e);if(key&&start&&end){const list=responsesByLead.get(key)||[];list.push(end-start);responsesByLead.set(key,list);}});
+ apps.forEach(a=>{if(a.learner&&a.lead_id)enrolmentsByLead.add(String(a.lead_id));});
  return owners.map(owner=>{
-  const ownerLeads=leads.filter(l=>l.owner_id===owner.id||l.owner===owner.name),ownerLeadIds=new Set(ownerLeads.map(l=>String(l.id)));
-  const overdue=tasks.filter(t=>t.status==='Open'&&ownerLeadIds.has(String(t.lead_id))&&taskDueBucket(t)==='Overdue').length;
-  const responseTimes=emails.filter(e=>ownerLeadIds.has(String(e.lead_id))&&responseDate(e)).map(e=>{const start=emailResponseStartAt(e),end=responseDate(e);return start&&end?end-start:null;}).filter(n=>Number.isFinite(n)&&n>=0);
-  const enrolments=apps.filter(a=>a.learner&&ownerLeadIds.has(String(a.lead_id))).length,openTasks=tasks.filter(t=>t.status==='Open'&&ownerLeadIds.has(String(t.lead_id))).length;
+  const ownerLeadIds=new Set([...(leadIdsByOwner.get(String(owner.id))||[]),...(leadIdsByOwner.get(String(owner.name))||[])]);
+  const ownerLeads=[...ownerLeadIds].map(id=>leadById.get(id)).filter(Boolean);
+  const overdue=[...ownerLeadIds].reduce((sum,id)=>sum+(overdueTasksByLead.get(id)||0),0);
+  const responseTimes=[...ownerLeadIds].flatMap(id=>responsesByLead.get(id)||[]).filter(n=>Number.isFinite(n)&&n>=0);
+  const enrolments=[...ownerLeadIds].filter(id=>enrolmentsByLead.has(id)).length,openTasks=[...ownerLeadIds].reduce((sum,id)=>sum+(openTasksByLead.get(id)||0),0);
   return {owner,leads:ownerLeads.length,overdue,response_time:durationLabel(avg(responseTimes)),enrolments,workload:openTasks+ownerLeads.filter(l=>!['Enrolled','Lost','Not Eligible'].includes(l.stage)).length,leadById};
  }).sort((a,b)=>b.workload-a.workload);
 }
@@ -647,29 +652,27 @@ function monitoringAlerts(ops,risks,quality,health){
   {label:'Data quality',value:quality.missingContact.length+quality.duplicateEmails.length+quality.unlinkedAttendees.length,detail:'Records to clean up',go:'leads'}
  ];
 }
-async function monitoringHealth(){
- const endpoints=[['Gmail','/api/integrations/gmail/status','gmail-sync'],['Eventbrite','/api/integrations/eventbrite/status','eventbrite-sync'],['Meta','/api/integrations/meta/status','meta-sync'],['Apollo','/api/integrations/apollo/status','apollo-sync']];
- const results=await Promise.allSettled(endpoints.map(([,url])=>api(url)));
- return endpoints.map(([name,,action],index)=>{
-  const status=results[index].status==='fulfilled'?results[index].value:{};
+function monitoringHealth(){
+ const endpoints=[['Gmail','gmail-sync'],['Eventbrite','eventbrite-sync'],['Meta','meta-sync'],['Apollo','apollo-sync']];
+ return endpoints.map(([name,action])=>{
+  const status={};
   const fallback=(data.integrations||[]).find(i=>i.name===name)||{};
   const connected=Boolean(status.connected)||fallback.status==='Connected',configured=Boolean(status.configured)||['Connected','Ready to connect'].includes(fallback.status);
   const auto=status.auto_sync||{},container=name==='Gmail'?data.gmail:name==='Eventbrite'?data.eventbrite:name==='Apollo'?data.apollo:data.meta;
   const imported=name==='Gmail'?(container?.imported_message_ids?.length||0):name==='Eventbrite'?((container?.imported_event_ids?.length||0)+(container?.imported_attendee_ids?.length||0)):name==='Apollo'?(container?.imported_person_ids?.length||0):(container?.imported_lead_ids?.length||0);
   const skipped=auto.last_result?.skipped?1:0,last_error=auto.last_error||auto.last_result?.error||'',last_sync_at=status.last_sync_at||container?.last_sync_at||null;
   const helpAction=name==='Gmail'?'gmail-help':name==='Eventbrite'?'eventbrite-help':name==='Apollo'?'apollo-help':'meta-help';
-  return {name,action:configured?action:helpAction,action_label:configured?'Retry sync':'Setup details',connected,configured,status:connected?'Connected':configured?'Ready':'Needs credentials',last_sync_at,imported,failed:last_error?1:0,skipped,last_error,account:status.email||status.name||status.page_id||''};
+ return {name,action:configured?action:helpAction,action_label:configured?'Retry sync':'Setup details',connected,configured,status:connected?'Connected':configured?'Ready':'Needs credentials',last_sync_at,imported,failed:last_error?1:0,skipped,last_error,account:status.email||status.name||status.page_id||''};
  });
 }
-async function monitoringSystem(){
- try{return await api('/api/monitoring/system');}
- catch(error){return {storage:'unknown',uptime_ms:0,last_save_at:null,api_errors:[{message:error.message,status:error.status||0,route:'/api/monitoring/system',occurred_at:new Date().toISOString()}],api_error_count:1,background_jobs:{},audit_24h:0};}
+function monitoringSystem(){
+ return {storage:data.demo?'demo':'workspace',uptime_ms:0,last_save_at:null,api_errors:[],api_error_count:0,background_jobs:{},audit_24h:data.audit?.length||0};
 }
 function monitoringIntegrationCards(health){
  return `<div class="monitoring-health-grid">${health.map(i=>`<section class="panel monitoring-health-card"><div class="panel-header"><div><h2>${esc(i.name)}</h2><p>${esc(i.account||'No account shown')}</p></div>${badge(i.status,i.connected?'green':i.configured?'amber':'red')}</div><div class="panel-body"><div class="monitoring-mini-metrics"><div><span>Last sync</span><b>${i.last_sync_at?timestamp(i.last_sync_at):'Never'}</b></div><div><span>Imported</span><b>${fmtNumber(i.imported)}</b></div><div><span>Failed</span><b>${fmtNumber(i.failed)}</b></div><div><span>Skipped</span><b>${fmtNumber(i.skipped)}</b></div></div>${i.last_error?`<div class="notice warning">${esc(i.last_error)}</div>`:''}<button class="button full" data-act="${esc(i.action)}">${icon('arrow')}${esc(i.action_label)}</button></div></section>`).join('')}</div>`;
 }
 async function monitoring(){
- const [system,health]=await Promise.all([monitoringSystem(),monitoringHealth()]);
+ const system=monitoringSystem(),health=monitoringHealth();
  const ops=monitoringOperations(),team=monitoringTeam(),risks=monitoringRisks(),quality=monitoringQuality(),charts=monitoringCharts(ops),alerts=monitoringAlerts(ops,risks,quality,health);
  const staleRows=risks.stale.map(l=>`<tr><td><strong>${esc(fullName(l))}</strong><div class="small muted">${esc(l.programme||'No programme')}</div></td><td>${esc(l.stage||'No stage')}</td><td>${Math.floor((Date.now()-(safeDate(l.created_at)||new Date()))/msDay)}d</td><td><button class="button" data-go="leads/${esc(l.id)}">Open</button></td></tr>`);
  const teamRows=team.map(row=>`<tr><td><strong>${esc(row.owner.name)}</strong><div class="small muted">${esc(row.owner.role||'team')}</div></td><td>${row.leads}</td><td>${row.overdue}</td><td>${esc(row.response_time)}</td><td>${row.enrolments}</td><td>${row.workload}</td></tr>`);
