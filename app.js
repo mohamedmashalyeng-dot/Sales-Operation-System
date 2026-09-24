@@ -931,6 +931,7 @@ async function action(act,id='',target=null){
  if(act==='event-hub-range'){filters.eventRange=id;return render();}
  if(act==='event-open')return eventInfoDialog(id);
  if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'Unanswered'});return render();}
+ if(act==='load-more-emails'){const page=data.email_paging||{},offset=Number(page.next_offset||data.emails?.length||0);const result=await api(`/api/emails?offset=${offset}&limit=100`,undefined,'GET');const seen=new Set((data.emails||[]).map(e=>e.id));data.emails=[...(data.emails||[]),...(result.emails||[]).filter(e=>!seen.has(e.id))];data.email_paging={loaded:data.emails.length,next_offset:result.next_offset,limit:result.limit,has_more:result.has_more};rebuildClientIndexes(data);await render();toast(`${(result.emails||[]).length} more emails loaded.`);return;}
  if(act==='date-picker'){openDatePicker(id);return;}
  if(act==='open-email')return openEmailDialog(id);
  if(act==='open-email-lead'){const dialog=$('#dialog');if(dialog.open)dialog.close();go('leads/'+id);return;}
@@ -1207,9 +1208,15 @@ function updateInboxResults(){
  if(results)results.innerHTML=emailCards(list);
  if(summary)summary.textContent=`${list.length} of ${total} ${list.length===1?'message':'messages'} shown`;
 }
+function inboxLoadMoreButton(){
+ const page=data.email_paging||{};
+ if(!page.has_more)return '';
+ const loaded=Number(page.next_offset||data.emails?.length||0);
+ return `<div class="crm-more inbox-load-more"><button class="button soft" data-act="load-more-emails">Read more</button><span class="small muted">${loaded.toLocaleString()} emails loaded. Next click loads 100 more.</span></div>`;
+}
 function inbox(){
  const list=inboxResults();
- return heading('Every conversation matters.','Incoming mail that still needs a company response.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>`;
+ return heading('Every conversation matters.','Incoming mail that still needs a company response.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>${inboxLoadMoreButton()}`;
 }
 function emailLead(e){return data.leads.find(l=>l.id===e.lead_id);}
 const GMAIL_SYSTEM_LABELS={INBOX:'Inbox',SENT:'Sent',TRASH:'Trash',SPAM:'Spam',DRAFT:'Draft',STARRED:'Starred',IMPORTANT:'Important',UNREAD:'Unread',CATEGORY_PERSONAL:'Personal',CATEGORY_SOCIAL:'Social',CATEGORY_PROMOTIONS:'Promotions',CATEGORY_UPDATES:'Updates',CATEGORY_FORUMS:'Forums'};

@@ -1826,10 +1826,11 @@ function bootstrap(db, user) {
 async function loadBootstrapDb() {
   if (!postgresPool || !usesPostgresStorage()) return loadDb();
   await ensureStorage();
+  const emailLimit = Math.max(100, Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 100));
   const data = await loadPostgresTables({
     leadLimit: Math.max(25, Number(process.env.BOOTSTRAP_LEAD_LIMIT || 25)),
     taskLimit: Math.max(25, Number(process.env.BOOTSTRAP_TASK_LIMIT || 25)),
-    emailLimit: Math.max(25, Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 25)),
+    emailLimit: emailLimit + 1,
     eventLimit: Math.max(5, Number(process.env.BOOTSTRAP_EVENT_LIMIT || 10)),
     auditLimit: Math.max(25, Number(process.env.BOOTSTRAP_AUDIT_LIMIT || 25)),
     skipApplications: true,
@@ -1837,7 +1838,48 @@ async function loadBootstrapDb() {
     skipAttribution: true
   });
   if (!data) return loadDb();
+  const hasMoreEmails = data.emails.length > emailLimit;
+  data.emails = data.emails.slice(0, emailLimit);
+  data.email_paging = {
+    loaded: data.emails.length,
+    next_offset: data.emails.length,
+    limit: emailLimit,
+    has_more: hasMoreEmails
+  };
   return recalculate(data);
+}
+
+async function loadEmailPage(options = {}) {
+  const limit = Math.max(1, Math.min(Number(options.limit || 100), 100));
+  const offset = Math.max(0, Number(options.offset || 0));
+  await ensureStorage();
+  if (postgresPool) {
+    const result = await postgresPool.query(
+      `select data from app_emails order by received_at desc nulls last, id limit $1 offset $2`,
+      [limit + 1, offset]
+    );
+    const rows = result.rows.map(item => item.data);
+    const emails = rows.slice(0, limit);
+    return {
+      emails,
+      loaded: emails.length,
+      next_offset: offset + emails.length,
+      limit,
+      has_more: rows.length > limit
+    };
+  }
+  const db = await loadDb();
+  const rows = (db.emails || [])
+    .slice()
+    .sort((a, b) => new Date(b.received_at || 0) - new Date(a.received_at || 0));
+  const emails = rows.slice(offset, offset + limit);
+  return {
+    emails,
+    loaded: emails.length,
+    next_offset: offset + emails.length,
+    limit,
+    has_more: offset + emails.length < rows.length
+  };
 }
 
 async function loadDeveloperConfigDb() {
@@ -3569,6 +3611,13 @@ async function handleApi(req, res) {
     const user = await currentSessionUser(req);
     requireDeveloperAccess(req, user);
     return sendJson(res, developerConfig(req, await loadDeveloperConfigDb()));
+  }
+  if (route === '/api/emails' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadEmailPage({
+      offset: url.searchParams.get('offset'),
+      limit: url.searchParams.get('limit')
+    }));
   }
   if (route === '/api/users' && method === 'POST') {
     const user = await currentSessionUser(req);
