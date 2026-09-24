@@ -3692,14 +3692,13 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`Kent Business College backend running at http://127.0.0.1:${PORT}/`);
-    startAutoSync();
-  });
-}
+server.listen(PORT, () => {
+  console.log(`Kent Business College backend running at http://127.0.0.1:${PORT}/`);
+  startAutoSync();
+});
 
 module.exports = {
+  server,
   loadDb,
   saveDb,
   saveEventImportTables,
