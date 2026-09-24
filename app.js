@@ -237,7 +237,7 @@ function rebuildClientIndexes(d){
  const emailTextByLead=new Map(),emailTextByAddress=new Map(),leadSearchText=new Map();
  eventMetricCache=new WeakMap();
  (d.emails||[]).forEach(e=>{
-  const text=[fullName(e),e.email,e.subject,e.body,e.owner].join(' ').toLowerCase();
+  const text=[fullName(e),e.email,e.subject,e.snippet,e.owner].join(' ').toLowerCase();
   pushIndexText(emailTextByLead,String(e.lead_id||''),text);
   pushIndexText(emailTextByAddress,normalizeEmail(e.email),text);
  });
@@ -1280,7 +1280,7 @@ function leadEmailThreadRow(e){
  const gmailConnected=data.integrations.find(i=>i.name==='Gmail')?.status==='Connected',actions=emailNeedsResponse(e)&&data.permissions.sales?`${gmailConnected?`<button class="icon-button" data-act="send-email-response" data-id="${esc(e.id)}" aria-label="Send response">${icon('mail')}</button>`:''}<button class="icon-button" data-act="resolve-email" data-id="${esc(e.id)}" aria-label="Record response">${icon('back')}</button>`:'';
  return `<article class="lead-email-thread-row"><button class="lead-email-open" data-act="open-email" data-id="${esc(e.id)}">${avatar(e)}<span class="lead-email-thread-main"><strong>${esc(fullName(e))}</strong><span>${esc(emailSnippet(e))}</span></span></button><div class="lead-email-thread-meta"><time>${time(e.received_at)} (${esc(emailWaitLabel(e))})</time><span class="lead-email-date">${date(e.received_at)}</span><span class="lead-email-actions">${actions}<button class="icon-button" data-act="open-email" data-id="${esc(e.id)}" aria-label="Open email">${icon('chevron')}</button></span></div></article>`;
 }
-function emailSnippet(e){return String(e.body||'').replace(/\s+/g,' ').trim().slice(0,260);}
+function emailSnippet(e){return String(e.snippet||e.body||'').replace(/\s+/g,' ').trim().slice(0,260);}
 function inboxLabelGroups(list){
  const groups=new Map(),order=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Inbox','Resolved'];
  list.forEach(e=>{
@@ -1436,8 +1436,15 @@ function emailThreadRow(item,activeId,gmailConnected){
   ${expanded?`<div class="email-thread-dates">${emailQuotedSentAt(email)?`<span>Original sent ${timestamp(emailQuotedSentAt(email))}</span>`:''}<span>Received ${timestamp(email.received_at)}</span><span>Due ${timestamp(emailDueAt(email))}</span>${responseDate(email)?`<span>Responded ${timestamp(responseDate(email))}</span>`:''}</div>${emailMessageCards(email)}`:''}
  </article>`;
 }
-function openEmailDialog(id){
- const e=data.emails.find(item=>item.id===id);if(!e)return;
+async function openEmailDialog(id){
+ let e=data.emails.find(item=>item.id===id);if(!e)return;
+ if(!e.body){
+  const result=await api(`/api/emails/${encodeURIComponent(id)}`,undefined,'GET',{silent:true});
+  if(result.email){
+   e={...e,...result.email};
+   data.emails=data.emails.map(item=>item.id===id?e:item);
+  }
+ }
  const lead=emailLead(e),dialog=$('#dialog'),gmailConnected=data.integrations.find(i=>i.name==='Gmail')?.status==='Connected',thread=emailConversationItems(e);
  const visibleMessageCount=thread.length;
  const byDay=new Map();

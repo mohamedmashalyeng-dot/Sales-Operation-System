@@ -1823,6 +1823,50 @@ function bootstrap(db, user) {
   return copy;
 }
 
+function emailSnippetValue(email) {
+  return String(email.snippet || email.body || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+}
+
+function publicEmailSummary(email) {
+  return {
+    id: email.id,
+    from: email.from || email.email || '',
+    first_name: email.first_name || '',
+    last_name: email.last_name || '',
+    email: email.email || email.from || '',
+    lead_id: email.lead_id || '',
+    subject: email.subject || '(No subject)',
+    date: email.date || email.received_at || email.created_at || '',
+    received_at: email.received_at || email.date || '',
+    snippet: emailSnippetValue(email),
+    is_read: !(email.gmail_labels || []).includes('UNREAD'),
+    owner: email.owner || '',
+    direction: email.direction || 'inbound',
+    response_at: email.response_at || null,
+    response_note: email.response_note || '',
+    due_at: email.due_at || null,
+    gmail_message_id: email.gmail_message_id || '',
+    gmail_labels: email.gmail_labels || [],
+    gmail_label_names: email.gmail_label_names || [],
+    dashboard_folder: email.dashboard_folder || '',
+    trashed_at: email.trashed_at || '',
+    trash_reason: email.trash_reason || ''
+  };
+}
+
+function publicEmailDetail(email) {
+  const detail = {
+    ...publicEmailSummary(email),
+    body: String(email.body || email.snippet || ''),
+    response_note: email.response_note || ''
+  };
+  delete detail.html;
+  delete detail.html_body;
+  delete detail.body_html;
+  delete detail.attachments;
+  return detail;
+}
+
 async function loadBootstrapDb() {
   if (!postgresPool || !usesPostgresStorage()) return loadDb();
   await ensureStorage();
@@ -1840,6 +1884,7 @@ async function loadBootstrapDb() {
   if (!data) return loadDb();
   const hasMoreEmails = data.emails.length > emailLimit;
   data.emails = data.emails.slice(0, emailLimit);
+  data.emails = data.emails.map(publicEmailSummary);
   data.email_paging = {
     loaded: data.emails.length,
     next_offset: data.emails.length,
@@ -1859,7 +1904,7 @@ async function loadEmailPage(options = {}) {
       [limit + 1, offset]
     );
     const rows = result.rows.map(item => item.data);
-    const emails = rows.slice(0, limit);
+    const emails = rows.slice(0, limit).map(publicEmailSummary);
     return {
       emails,
       loaded: emails.length,
@@ -1872,7 +1917,7 @@ async function loadEmailPage(options = {}) {
   const rows = (db.emails || [])
     .slice()
     .sort((a, b) => new Date(b.received_at || 0) - new Date(a.received_at || 0));
-  const emails = rows.slice(offset, offset + limit);
+  const emails = rows.slice(offset, offset + limit).map(publicEmailSummary);
   return {
     emails,
     loaded: emails.length,
@@ -1880,6 +1925,19 @@ async function loadEmailPage(options = {}) {
     limit,
     has_more: offset + emails.length < rows.length
   };
+}
+
+async function loadEmailDetail(id) {
+  await ensureStorage();
+  if (postgresPool) {
+    const result = await postgresPool.query(`select data from app_emails where id = $1 limit 1`, [id]);
+    if (!result.rows[0]) throw statusError(404, 'Email not found.');
+    return { email: publicEmailDetail(result.rows[0].data) };
+  }
+  const db = await loadDb();
+  const email = (db.emails || []).find(item => item.id === id);
+  if (!email) throw statusError(404, 'Email not found.');
+  return { email: publicEmailDetail(email) };
 }
 
 async function loadDeveloperConfigDb() {
@@ -3589,6 +3647,7 @@ async function handleApi(req, res) {
   if (route === '/api/signup') throw statusError(404, 'Sign up is disabled. Ask the developer to invite your account.');
   const publicRoutes = new Set(['/api/login', '/api/password/forgot', '/api/password/reset']);
   if (!publicRoutes.has(route) && !parseCookies(req).sid) throw statusError(401, 'Sign in to continue.');
+  let lightweightMatch = null;
   if (route === '/api/login' && method === 'POST') {
     const email = normalizeEmail(body.email);
     const password = String(body.password || '');
@@ -3612,6 +3671,11 @@ async function handleApi(req, res) {
     requireDeveloperAccess(req, user);
     return sendJson(res, developerConfig(req, await loadDeveloperConfigDb()));
   }
+  lightweightMatch = route.match(/^\/api\/emails\/([^/]+)$/);
+  if (lightweightMatch && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadEmailDetail(lightweightMatch[1]));
+  }
   if (route === '/api/emails' && method === 'GET') {
     await currentSessionUser(req);
     return sendJson(res, await loadEmailPage({
@@ -3624,7 +3688,7 @@ async function handleApi(req, res) {
     requireDeveloperAccess(req, user);
     return sendJson(res, await createWorkspaceUser(body, user), 201);
   }
-  let lightweightMatch = route.match(/^\/api\/users\/([^/]+)\/reset-password$/);
+  lightweightMatch = route.match(/^\/api\/users\/([^/]+)\/reset-password$/);
   if (lightweightMatch && method === 'POST') {
     const user = await currentSessionUser(req);
     requireDeveloperAccess(req, user);
