@@ -1335,6 +1335,14 @@ function permissions(role) {
   };
 }
 
+function permissionsForUser(user) {
+  const developer = canUseDeveloperDashboard(null, user);
+  if (developer) return { sales: true, review: true, admin: true, developer: true };
+  const canonicalRole = canonicalWorkspaceRole(user?.role);
+  if (canonicalRole === 'manager' || canonicalRole === 'admin') return { sales: true, review: true, admin: false, developer: false };
+  return { sales: true, review: false, admin: false, developer: false };
+}
+
 function canonicalWorkspaceRole(role) {
   const key = String(role || 'member').trim().toLowerCase();
   const roles = {
@@ -1363,6 +1371,16 @@ function workspaceRoleLabel(role) {
   if (canonical === 'admin') return 'Developer';
   if (canonical === 'manager') return 'Monitor';
   return 'Member';
+}
+
+function isConfiguredDeveloperUser(user) {
+  const devEmail = configuredDeveloperEmail();
+  return Boolean(user && devEmail && normalizeEmail(user.email) === devEmail);
+}
+
+function visibleWorkspaceRoleKey(user) {
+  if (isConfiguredDeveloperUser(user)) return 'developer';
+  return canonicalWorkspaceRole(user?.role) === 'sales' ? 'member' : 'monitor';
 }
 
 function fullName(item) {
@@ -1854,8 +1872,7 @@ function bootstrap(db, user) {
   const copy = JSON.parse(JSON.stringify(recalculate(db)));
   delete copy.users;
   copy.user = publicUser(user);
-  copy.permissions = permissions(user.role);
-  copy.permissions.developer = canUseDeveloperDashboard(null, user);
+  copy.permissions = permissionsForUser(user);
   copy.demoUser = user.email;
   return copy;
 }
@@ -2092,6 +2109,7 @@ async function createWorkspaceUser(body, actor) {
   if (!name || !email) throw statusError(400, 'Name and email are required.');
   if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
   if (!role) throw statusError(400, 'Choose a valid role.');
+  if (role === 'admin' && email !== configuredDeveloperEmail()) throw statusError(400, 'Only the configured developer account can use Developer.');
   await ensureUserStorage();
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
@@ -2156,6 +2174,9 @@ function assertUserCanBeManaged(target, actor, action, nextRole = '') {
   if (target.id === actor.id) throw statusError(400, `You cannot ${action} your own account.`);
   const devEmail = configuredDeveloperEmail();
   const targetIsConfiguredDeveloper = devEmail && normalizeEmail(target.email) === devEmail;
+  if (nextRole && canonicalWorkspaceRole(nextRole) === 'admin' && !targetIsConfiguredDeveloper) {
+    throw statusError(400, 'Only the configured developer account can use Developer.');
+  }
   if (targetIsConfiguredDeveloper && (action === 'delete' || (nextRole && canonicalWorkspaceRole(nextRole) !== 'admin'))) {
     throw statusError(400, 'The configured developer account must stay as Developer.');
   }
@@ -2303,8 +2324,9 @@ function developerConfig(req, db) {
       name: user.name,
       email: user.email,
       role: user.role,
-      role_key: canonicalWorkspaceRole(user.role) === 'admin' ? 'developer' : canonicalWorkspaceRole(user.role) === 'manager' ? 'monitor' : 'member',
-      role_label: workspaceRoleLabel(user.role),
+      role_key: visibleWorkspaceRoleKey(user),
+      role_label: visibleWorkspaceRoleKey(user) === 'developer' ? 'Developer' : visibleWorkspaceRoleKey(user) === 'monitor' ? 'Monitor' : 'Member',
+      is_configured_developer: isConfiguredDeveloperUser(user),
       invited_at: user.invited_at || '',
       password_changed_at: user.password_changed_at || '',
       temporary_password: user.temporary_password || ''
@@ -4540,6 +4562,7 @@ async function handleApi(req, res) {
     if (!name || !email) throw statusError(400, 'Name and email are required.');
     if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
     if (!role) throw statusError(400, 'Choose a valid role.');
+    if (role === 'admin' && email !== configuredDeveloperEmail()) throw statusError(400, 'Only the configured developer account can use Developer.');
     if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
     db.users.push({ id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null });
     addAudit(db, user, 'Team member invited', 'user', email);

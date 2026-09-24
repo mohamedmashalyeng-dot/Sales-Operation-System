@@ -45,6 +45,7 @@ const ROLE_OPTIONS = [
   ['monitor', 'Monitor'],
   ['developer', 'Developer']
 ];
+const ASSIGNABLE_ROLE_OPTIONS = ROLE_OPTIONS.filter(([value]) => value !== 'developer');
 
 function roleKey(user) {
   const role = String(user.role_key || user.role || 'member').toLowerCase();
@@ -59,8 +60,9 @@ function roleLabel(user) {
 
 function roleSelect(user) {
   const selected = roleKey(user);
+  const options = user.is_configured_developer ? ROLE_OPTIONS : ASSIGNABLE_ROLE_OPTIONS;
   return `<select data-act="role" data-id="${esc(user.id)}" aria-label="Role for ${esc(user.name)}">
-    ${ROLE_OPTIONS.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('')}
+    ${options.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('')}
   </select>`;
 }
 
@@ -105,7 +107,7 @@ function shell(config) {
         <input name="email" type="email" placeholder="Work email" required maxlength="254">
         <input name="password" placeholder="Temporary password" minlength="8" maxlength="128">
         <select name="role">
-          ${ROLE_OPTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
+          ${ASSIGNABLE_ROLE_OPTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
         </select>
         <button class="button primary" type="submit">Invite</button>
       </form>
