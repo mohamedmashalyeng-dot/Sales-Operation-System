@@ -1138,7 +1138,10 @@ function isCompanySender(e){
 function emailIsTrashed(e){return Boolean(e?.trashed_at||e?.dashboard_folder==='trash'||(e?.gmail_labels||[]).includes('TRASH'));}
 function activeEmails(){return (data?.emails||[]).filter(e=>!emailIsTrashed(e));}
 function emailIsInboundExternal(e){return e.direction!=='outbound'&&!isCompanySender(e);}
+function emailIsUnread(e){return e.is_read===false||(e.gmail_labels||[]).includes('UNREAD')||(e.gmail_label_names||[]).includes('Unread');}
 function emailNeedsResponse(e){return !emailIsTrashed(e)&&emailIsInboundExternal(e)&&!e.response_at;}
+function emailUnseenNeedsResponse(e){return emailNeedsResponse(e)&&emailIsUnread(e);}
+function emailSeenNeedsResponse(e){return emailNeedsResponse(e)&&!emailIsUnread(e);}
 function emailIsOverdue(e){const due=safeDate(emailDueAt(e));return emailNeedsResponse(e)&&due&&due<new Date();}
 function unansweredEmailCount(){return data?.emails?.filter(emailNeedsResponse).length||0;}
 function overdueEmailCount(){return data?.emails?.filter(emailIsOverdue).length||0;}
@@ -1159,8 +1162,8 @@ function emailWaitLabel(e){
  if(due&&now>due)return `Overdue by ${durationLabel(now-due)}`;
  return `Waiting ${durationLabel(now-received)}`;
 }
-function emailStatusLabel(e){return !emailIsInboundExternal(e)?'Sent by us':e.response_at?'Resolved':emailIsOverdue(e)?'Overdue':'Awaiting reply';}
-function emailStatusClass(e){return !emailIsInboundExternal(e)?'blue':e.response_at?'green':emailIsOverdue(e)?'red':'amber';}
+function emailStatusLabel(e){return !emailIsInboundExternal(e)?'Sent by us':e.response_at?'Resolved':emailIsOverdue(e)?'Overdue':emailIsUnread(e)?'Not seen':'Seen, no reply';}
+function emailStatusClass(e){return !emailIsInboundExternal(e)?'blue':e.response_at?'green':emailIsOverdue(e)?'red':emailIsUnread(e)?'orange':'amber';}
 function emailDateValue(e){return filters.inboxDate==='due'?emailDueAt(e):e.received_at;}
 function inboxLabelOptions(){
  const fixed=['Inbox','Unread','Important','Starred','Sent','Resolved','Trash','Zoho','Events','Contract Matter','DAS Matter','Aptem Matter'];
@@ -1180,6 +1183,8 @@ function inboxResults(){
   if(filters.inbox==='Sent'&&e.direction!=='outbound')return false;
   if(filters.inbox!=='Sent'&&filters.inbox!=='All'&&filters.inbox!=='Trash'&&e.direction==='outbound')return false;
   if(filters.inbox==='Unanswered'&&!emailNeedsResponse(e))return false;
+  if(filters.inbox==='Unread'&&!emailUnseenNeedsResponse(e))return false;
+  if(filters.inbox==='Seen, no reply'&&!emailSeenNeedsResponse(e))return false;
   if(filters.inbox==='Resolved'&&emailNeedsResponse(e))return false;
   if(filters.inbox==='Overdue'&&!emailIsOverdue(e))return false;
   const labels=emailLabels(e).map(label=>label.text);
@@ -1201,7 +1206,7 @@ function datePickerField(id,label,value){
 }
 function inboxToolbar(list){
  const total=filters.inbox==='Trash'?(data.emails||[]).filter(emailIsTrashed).length:activeEmails().length;
- return `<div class="toolbar inbox-toolbar"><div class="search">${icon('search')}<input id="inbox-search" aria-label="Search inbox" placeholder="Search name, email, subject or message..." value="${esc(filters.inboxSearch)}"></div><select id="inbox-label" aria-label="Filter by label">${inboxLabelOptions().map(label=>`<option value="${esc(label)}" ${filters.inboxLabel===label?'selected':''}>${esc(label==='All'?'All labels':label)}</option>`).join('')}</select><select id="inbox-date-field" aria-label="Date field"><option value="received" ${filters.inboxDate==='received'?'selected':''}>Received date</option><option value="due" ${filters.inboxDate==='due'?'selected':''}>Due date</option></select>${datePickerField('inbox-day','Filter day',filters.inboxDay)}<select id="inbox-status" aria-label="Filter by response status">${['Unanswered','Overdue','Resolved','Sent','All','Trash'].map(status=>`<option value="${esc(status)}" ${filters.inbox===status?'selected':''}>${esc(status)}</option>`).join('')}</select><select id="inbox-sort" aria-label="Sort inbox"><option value="newest" ${filters.inboxSort==='newest'?'selected':''}>Newest first</option><option value="oldest" ${filters.inboxSort==='oldest'?'selected':''}>Oldest first</option><option value="due-soon" ${filters.inboxSort==='due-soon'?'selected':''}>Due soon</option><option value="name" ${filters.inboxSort==='name'?'selected':''}>Name A-Z</option><option value="name-desc" ${filters.inboxSort==='name-desc'?'selected':''}>Name Z-A</option></select><button class="button inbox-clear-button" data-act="inbox-clear" aria-label="Clear filters" title="Clear filters">${icon('close')}</button></div><div class="result-summary">${list.length} of ${total} ${list.length===1?'message':'messages'} shown</div>`;
+ return `<div class="toolbar inbox-toolbar"><div class="search">${icon('search')}<input id="inbox-search" aria-label="Search inbox" placeholder="Search name, email, subject or message..." value="${esc(filters.inboxSearch)}"></div><select id="inbox-label" aria-label="Filter by label">${inboxLabelOptions().map(label=>`<option value="${esc(label)}" ${filters.inboxLabel===label?'selected':''}>${esc(label==='All'?'All labels':label)}</option>`).join('')}</select><select id="inbox-date-field" aria-label="Date field"><option value="received" ${filters.inboxDate==='received'?'selected':''}>Received date</option><option value="due" ${filters.inboxDate==='due'?'selected':''}>Due date</option></select>${datePickerField('inbox-day','Filter day',filters.inboxDay)}<select id="inbox-status" aria-label="Filter by response status">${['Unanswered','Unread','Seen, no reply','Overdue','Resolved','Sent','All','Trash'].map(status=>`<option value="${esc(status)}" ${filters.inbox===status?'selected':''}>${esc(status)}</option>`).join('')}</select><select id="inbox-sort" aria-label="Sort inbox"><option value="newest" ${filters.inboxSort==='newest'?'selected':''}>Newest first</option><option value="oldest" ${filters.inboxSort==='oldest'?'selected':''}>Oldest first</option><option value="due-soon" ${filters.inboxSort==='due-soon'?'selected':''}>Due soon</option><option value="name" ${filters.inboxSort==='name'?'selected':''}>Name A-Z</option><option value="name-desc" ${filters.inboxSort==='name-desc'?'selected':''}>Name Z-A</option></select><button class="button inbox-clear-button" data-act="inbox-clear" aria-label="Clear filters" title="Clear filters">${icon('close')}</button></div><div class="result-summary">${list.length} of ${total} ${list.length===1?'message':'messages'} shown</div>`;
 }
 function updateInboxResults(){
  const list=inboxResults(),results=$('#inbox-results'),summary=$('.result-summary');
@@ -1250,11 +1255,11 @@ function emailLabels(e){
 }
 function groupedEmailLabels(e){
  if((e.gmail_label_names||[]).length||(e.gmail_labels||[]).length)return emailLabels(e);
- const labels=emailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Inbox','Unread','Important','Starred','Sent','Resolved','Trash'],grouped=labels.filter(label=>priority.includes(label.text));
+ const labels=emailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Unread','Inbox','Important','Starred','Sent','Resolved','Trash'],grouped=labels.filter(label=>priority.includes(label.text));
  return grouped.length?grouped:labels;
 }
 function primaryEmailLabel(e){
- const labels=groupedEmailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Inbox','Unread','Important','Starred','Sent','Resolved','Trash'];
+ const labels=groupedEmailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Unread','Inbox','Important','Starred','Sent','Resolved','Trash'];
  if((e.gmail_label_names||[]).length||(e.gmail_labels||[]).length){
   const custom=labels.find(label=>!GMAIL_LOW_PRIORITY_LABELS.includes(label.text)&&label.text!=='Trash');
   if(custom)return custom;
