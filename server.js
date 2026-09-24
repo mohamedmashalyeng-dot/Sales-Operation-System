@@ -594,12 +594,12 @@ async function savePostgresTables(db) {
     for (const item of db.tasks || []) {
       await client.query(`insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`, [item.id, item.title || null, item.lead_id || null, item.kind || null, item.status || null, dateValue(item.due_at), dateValue(item.completed_at), item.priority || null, item.owner_id || null, jsonValue(item)]);
     }
-    for (const item of db.emails || []) {
+    for (const item of importEmailRows(db)) {
       await client.query(
         `insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
          on conflict (gmail_message_id) do nothing`,
-        [item.id, item.lead_id || null, item.first_name || null, item.last_name || null, normalizeEmail(item.email), item.subject || null, item.body || null, item.owner || null, dateValue(item.response_at), item.response_note || null, dateValue(item.due_at), dateValue(item.received_at), item.gmail_message_id || null, jsonValue(item)]
+        [item.id, item.lead_id || null, item.first_name || null, item.last_name || null, normalizeEmail(item.email), item.subject || null, item.body || null, item.owner || null, dateValue(item.response_at), item.response_note || null, dateValue(item.due_at), dateValue(item.received_at), item.gmail_message_id || null, jsonValue(item.data || item)]
       );
     }
     for (const item of db.applications || []) {
@@ -674,8 +674,28 @@ function importTaskRows(db) {
   }));
 }
 
+function uniqueEmailRows(rows = []) {
+  const preferNewest = (current, existing) => {
+    const currentTime = new Date(current.received_at || 0).getTime() || 0;
+    const existingTime = new Date(existing?.received_at || 0).getTime() || 0;
+    return !existing || currentTime >= existingTime;
+  };
+  const byGmailOrId = new Map();
+  for (const row of rows) {
+    const key = row.gmail_message_id ? `gmail:${row.gmail_message_id}` : `id:${row.id}`;
+    const existing = byGmailOrId.get(key);
+    if (preferNewest(row, existing)) byGmailOrId.set(key, row);
+  }
+  const byId = new Map();
+  for (const row of byGmailOrId.values()) {
+    const existing = byId.get(row.id);
+    if (preferNewest(row, existing)) byId.set(row.id, row);
+  }
+  return [...byId.values()];
+}
+
 function importEmailRows(db) {
-  return (db.emails || []).map(item => ({
+  return uniqueEmailRows((db.emails || []).map(item => ({
     id: item.id,
     lead_id: item.lead_id || null,
     first_name: item.first_name || null,
@@ -690,7 +710,7 @@ function importEmailRows(db) {
     received_at: item.received_at || null,
     gmail_message_id: item.gmail_message_id || null,
     data: item
-  }));
+  })));
 }
 
 function importEventRows(db) {
@@ -907,9 +927,28 @@ async function saveGmailImportTables(db, options = {}) {
            id text, lead_id text, first_name text, last_name text, email text, subject text, body text, owner text,
            response_at text, response_note text, due_at text, received_at text, gmail_message_id text, data jsonb
          )
+       ),
+       deduped as (
+         select * from (
+           select rows.*, row_number() over (
+             partition by coalesce(nullif(gmail_message_id, ''), 'id:' || id)
+             order by received_at::timestamptz desc nulls last, id
+           ) as rn
+           from rows
+         ) ranked
+         where rn = 1
+       ),
+       removed_duplicates as (
+         delete from app_emails existing
+         using deduped incoming
+         where incoming.gmail_message_id is not null
+           and incoming.gmail_message_id <> ''
+           and existing.gmail_message_id = incoming.gmail_message_id
+           and existing.id <> incoming.id
+         returning existing.id
        )
        insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
-       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, gmail_message_id, data from rows
+       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, nullif(gmail_message_id, ''), data from deduped
        on conflict (id) do update set
          lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
          subject = excluded.subject, body = excluded.body, owner = excluded.owner, response_at = excluded.response_at,
