@@ -169,7 +169,7 @@ function shell(config) {
             ${users.length ? users.map(user => `
               <tr>
                 <td><div class="dev-user-cell"><span class="dev-avatar">${esc((user.name || user.email || '?').slice(0, 1).toUpperCase())}</span><div><strong>${esc(user.name)}</strong><code>${esc(user.email)}</code></div></div></td>
-                <td><div class="dev-role-stack">${roleBadge(user)}${roleSelect(user)}</div></td>
+                <td><div class="dev-role-stack">${roleSelect(user)}</div></td>
                 <td><code class="dev-secret">${esc(user.temporary_password || 'Changed by user')}</code></td>
                 <td>${user.temporary_password ? statusBadge('Temporary', 'warn') : statusBadge('Private', 'ok')}</td>
                 <td>${userActions(user)}</td>
