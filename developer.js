@@ -71,20 +71,37 @@ function roleLabel(user) {
   return user.role_label || ROLE_OPTIONS.find(([value]) => value === roleKey(user))?.[1] || 'Member';
 }
 
+function roleBadge(user) {
+  const key = roleKey(user);
+  return `<span class="dev-pill role-${esc(key)}">${esc(roleLabel(user))}</span>`;
+}
+
+function statusBadge(text, kind = '') {
+  return `<span class="dev-pill ${kind ? `status-${esc(kind)}` : ''}">${esc(text)}</span>`;
+}
+
 function roleSelect(user) {
   const selected = roleKey(user);
   const options = user.is_configured_developer ? ROLE_OPTIONS : ASSIGNABLE_ROLE_OPTIONS;
-  return `<select data-act="role" data-id="${esc(user.id)}" data-previous="${esc(selected)}" aria-label="Role for ${esc(user.name)}" ${user.is_configured_developer ? 'disabled' : ''}>
+  return `<select class="dev-role-control" data-act="role" data-id="${esc(user.id)}" data-previous="${esc(selected)}" aria-label="Role for ${esc(user.name)}" ${user.is_configured_developer ? 'disabled' : ''}>
     ${options.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('')}
   </select>`;
 }
 
 function userActions(user) {
-  if (user.is_configured_developer) return '<span class="dev-muted">Protected</span>';
-  return `
+  if (user.is_configured_developer) return statusBadge('Protected', 'locked');
+  return `<div class="dev-row-actions">
     <button class="button soft" data-act="reset" data-id="${esc(user.id)}">Reset</button>
     <button class="button soft" data-act="delete" data-id="${esc(user.id)}" data-name="${esc(user.name)}">Delete</button>
-  `;
+  </div>`;
+}
+
+function field(name, label, attrs = '') {
+  return `<label class="dev-field"><span>${esc(label)}</span><input name="${esc(name)}" ${attrs}></label>`;
+}
+
+function runtimeStatus(item) {
+  return statusBadge(item.configured ? 'Configured' : 'Missing', item.configured ? 'ok' : 'warn');
 }
 
 function shell(config) {
@@ -104,15 +121,19 @@ function shell(config) {
     </header>
 
     <section class="dev-hero">
-      <div class="dev-card">
+      <div class="dev-card dev-hero-card">
         <p class="eyebrow">Access control</p>
-        <h1>Invites, passwords and runtime status.</h1>
-        <p>Use this page to invite users and reset temporary passwords without loading the full workspace.</p>
+        <h1>Invites, roles and runtime status.</h1>
+        <p>Manage workspace access, reset temporary passwords and confirm deployment configuration from one focused panel.</p>
+        <div class="dev-hero-meta">
+          ${statusBadge(`Storage: ${config.storage || 'unknown'}`, 'ok')}
+          ${statusBadge(config.local_only ? 'Local access' : 'Configured developer', 'locked')}
+        </div>
       </div>
       <div class="dev-stat-grid">
-        <div class="dev-stat"><span class="dev-muted">Users</span><strong>${users.length}</strong></div>
-        <div class="dev-stat"><span class="dev-muted">Developers</span><strong>${developerCount}</strong></div>
-        <div class="dev-stat"><span class="dev-muted">Temporary</span><strong>${tempCount}</strong></div>
+        <div class="dev-stat"><span class="dev-muted">Users</span><strong>${users.length}</strong><small>Total accounts</small></div>
+        <div class="dev-stat"><span class="dev-muted">Developers</span><strong>${developerCount}</strong><small>Protected access</small></div>
+        <div class="dev-stat"><span class="dev-muted">Temporary</span><strong>${tempCount}</strong><small>Password visible</small></div>
       </div>
     </section>
 
@@ -124,12 +145,12 @@ function shell(config) {
         </div>
       </div>
       <form class="dev-form" id="invite-form">
-        <input name="name" placeholder="Full name" required maxlength="120">
-        <input name="email" type="email" placeholder="Work email" required maxlength="254">
-        <input name="password" placeholder="Temporary password" minlength="8" maxlength="128">
-        <select name="role">
+        ${field('name', 'Full name', 'placeholder="Full name" required maxlength="120"')}
+        ${field('email', 'Work email', 'type="email" placeholder="name@company.com" required maxlength="254"')}
+        ${field('password', 'Temporary password', 'placeholder="Leave blank to generate" minlength="8" maxlength="128"')}
+        <label class="dev-field"><span>Role</span><select name="role">
           ${ASSIGNABLE_ROLE_OPTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
-        </select>
+        </select></label>
         <button class="button primary" type="submit">Invite</button>
       </form>
     </section>
@@ -145,15 +166,15 @@ function shell(config) {
         <table class="dev-table">
           <thead><tr><th>User</th><th>Role</th><th>Temporary password</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            ${users.map(user => `
+            ${users.length ? users.map(user => `
               <tr>
-                <td><strong>${esc(user.name)}</strong><br><code>${esc(user.email)}</code></td>
-                <td>${roleSelect(user)}<br><span class="dev-muted">${esc(roleLabel(user))}</span></td>
-                <td><code>${esc(user.temporary_password || 'Changed by user')}</code></td>
-                <td>${user.temporary_password ? 'Temporary' : 'Private'}</td>
+                <td><div class="dev-user-cell"><span class="dev-avatar">${esc((user.name || user.email || '?').slice(0, 1).toUpperCase())}</span><div><strong>${esc(user.name)}</strong><code>${esc(user.email)}</code></div></div></td>
+                <td><div class="dev-role-stack">${roleBadge(user)}${roleSelect(user)}</div></td>
+                <td><code class="dev-secret">${esc(user.temporary_password || 'Changed by user')}</code></td>
+                <td>${user.temporary_password ? statusBadge('Temporary', 'warn') : statusBadge('Private', 'ok')}</td>
                 <td>${userActions(user)}</td>
               </tr>
-            `).join('')}
+            `).join('') : '<tr><td colspan="5"><div class="dev-empty">No users have been invited yet.</div></td></tr>'}
           </tbody>
         </table>
       </div>
@@ -173,7 +194,7 @@ function shell(config) {
             ${(config.server || []).map(item => `
               <tr>
                 <td><strong>${esc(item.label)}</strong><br><code>${esc(item.key)}</code></td>
-                <td>${item.configured ? 'Configured' : 'Missing'}</td>
+                <td>${runtimeStatus(item)}</td>
                 <td><code>${esc(item.value || 'Not set')}</code></td>
               </tr>
             `).join('')}
