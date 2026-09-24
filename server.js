@@ -660,7 +660,7 @@ async function loadPostgresTables(options = {}) {
       ? postgresPool.query(`select data from app_tasks order by due_at desc nulls last, id limit $1`, [taskLimit])
       : postgresPool.query(`select data from app_tasks order by due_at nulls last, id`),
     emailLimit > 0
-      ? postgresPool.query(`select data from app_emails order by received_at desc nulls last, id limit $1`, [emailLimit])
+      ? postgresPool.query(`select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id limit $1`, [emailLimit])
       : postgresPool.query(`select data from app_emails order by received_at desc nulls last, id`),
     options.skipApplications
       ? Promise.resolve({ rows: [] })
@@ -4300,10 +4300,11 @@ async function handleApi(req, res) {
       }
       throw statusError(401, 'Email or password is incorrect.');
     }
-    await recordPostgresLogin(user, req);
     const sid = crypto.randomBytes(24).toString('hex');
     sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
-    return sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
+    sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
+    recordPostgresLogin(user, req).catch(error => console.error(`Login audit failed: ${error.message || error}`));
+    return;
   }
   if (route === '/api/bootstrap' && method === 'GET') {
     const user = await currentSessionUser(req);

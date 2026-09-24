@@ -483,6 +483,9 @@ function headingActions(action=''){
  return String(action).includes('class="actions"')?action:`<div class="actions">${action}</div>`;
 }
 function heading(title,sub,action=''){return `<div class="heading"><div>${pageBreadcrumb()}<h1>${esc(title)}</h1><p class="muted">${esc(sub)}</p></div>${headingActions(action)}</div>`;}
+function showAppLoading(){
+ $('#app').innerHTML='<div class="loading-screen" aria-label="Loading workspace"><span class="loading-mark"></span></div>';
+}
 function navButton(n,current){
  const overdue=overdueEmailCount(),inboxCount=unansweredEmailCount();
  return `<button class="nav-button ${current===n[0]?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${n[0]==='inbox'&&inboxCount?`<span class="nav-count ${overdue?'danger':''}">${inboxCount}</span>`:''}</button>`;
@@ -1019,7 +1022,18 @@ async function login(){
   const values={email:form.elements.email.value.trim(),password:form.elements.password?.value||''};
   if(!values.email || (!forgot&&!values.password))throw new Error(forgot?'Please enter your email.':'Please enter your email and password.');
   if(forgot){const result=await api('/api/password/forgot',{email:values.email},'POST',{silent:true});form.reset();if(result.reset_url){toast(result.message||'Opening local reset link.');location.href=result.reset_url;return;}toast(result.message||'If this email is registered, a reset link has been sent.');return;}
-  await api('/api/login',values,'POST',{silent:true});authEmail='';await refresh({silent:true});return;
+  await api('/api/login',values,'POST',{silent:true});
+  authEmail='';
+  setActionLoading(button,false);
+  showAppLoading();
+  try{
+   await refresh({silent:true});
+  }catch(error){
+   data=null;
+   authNotice=error.message;
+   login();
+  }
+  return;
  }catch(err){
   form.querySelector('.form-error').textContent=err.message;
  }finally{setActionLoading(button,false);}});
