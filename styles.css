@@ -338,6 +338,21 @@ body:has(.loading-screen){background:#fff!important;background-image:none!import
 .global-loader.show{opacity:1}
 .global-loader .loading-mark{opacity:.9;transition:opacity .28s ease}
 .global-loader.show .loading-mark{opacity:1}
+.button.is-loading,
+button.is-loading{
+ pointer-events:none;
+ cursor:wait!important;
+}
+.button-spinner{
+ width:14px;
+ height:14px;
+ border-radius:50%;
+ border:2px solid currentColor;
+ border-right-color:transparent;
+ display:inline-block;
+ flex:0 0 auto;
+ animation:loader-spin .65s linear infinite;
+}
 @keyframes loader-spin{to{transform:rotate(360deg)}}
 .nav-count.danger{background:#fde6e8!important;color:#b5363c!important}
 

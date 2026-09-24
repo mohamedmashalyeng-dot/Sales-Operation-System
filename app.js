@@ -377,6 +377,26 @@ function hideGlobalLoader(){
  clearTimeout(loadingTimer);
  $('#global-loader')?.classList.remove('show');
 }
+function setActionLoading(target,on,label='Loading'){
+ if(!target||!target.matches('button,.button,.icon-button,.text-button'))return;
+ if(on){
+  target.dataset.loadingHtml=target.innerHTML;
+  target.dataset.loadingWidth=target.style.minWidth||'';
+  target.style.minWidth=`${target.getBoundingClientRect().width}px`;
+  if('disabled'in target)target.disabled=true;
+  target.classList.add('is-loading');
+  target.setAttribute('aria-busy','true');
+  target.innerHTML=`<span class="button-spinner" aria-hidden="true"></span><span>${esc(label)}</span>`;
+ }else if(target.dataset.loadingHtml){
+  target.innerHTML=target.dataset.loadingHtml;
+  target.style.minWidth=target.dataset.loadingWidth;
+  if('disabled'in target)target.disabled=false;
+  target.classList.remove('is-loading');
+  target.removeAttribute('aria-busy');
+  delete target.dataset.loadingHtml;
+  delete target.dataset.loadingWidth;
+ }
+}
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function runGmailSyncAuto(){
@@ -1054,7 +1074,8 @@ document.addEventListener('click',async event=>{
  if(event.target.classList.contains('date-input')){openDatePicker(event.target.id);return;}
  const target=event.target.closest('[data-go],[data-act]');if(!target||target.disabled)return;
  if(target.dataset.go){go(target.dataset.go);window.scrollTo(0,0);return;}
- try{await action(target.dataset.act,target.dataset.id||'',target);}catch(e){toast(e.message);}
+ setActionLoading(target,true,target.dataset.loadingLabel||'Loading');
+ try{await action(target.dataset.act,target.dataset.id||'',target);}catch(e){toast(e.message);}finally{setActionLoading(target,false);}
 });
 document.addEventListener('keydown',event=>{
  if(event.key==='Escape')closeSelectMenus();
@@ -1240,7 +1261,7 @@ function inboxLoadMoreButton(){
  const page=data.email_paging||{};
  if(!page.has_more)return '';
  const loaded=Number(page.loaded||data.emails?.length||0);
- return `<div class="crm-more inbox-load-more"><button class="button soft" data-act="load-more-emails">Read more</button><span class="small muted">${loaded.toLocaleString()} emails loaded. Next click loads 50 more.</span></div>`;
+ return `<div class="crm-more inbox-load-more"><button class="button soft" data-act="load-more-emails" data-loading-label="Loading...">Read more</button><span class="small muted">${loaded.toLocaleString()} emails loaded. Next click loads 50 more.</span></div>`;
 }
 function inbox(){
  const list=inboxResults();
