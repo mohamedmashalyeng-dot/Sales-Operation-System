@@ -1867,6 +1867,73 @@ async function loadDeveloperConfigDb() {
   });
 }
 
+async function createWorkspaceUser(body, actor) {
+  const email = normalizeEmail(body.email);
+  const name = String(body.name || '').trim();
+  const password = String(body.password || '').trim() || temporaryPassword();
+  const role = String(body.role || 'sales').trim();
+  if (!name || !email) throw statusError(400, 'Name and email are required.');
+  if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
+  if (!['sales', 'manager', 'admissions', 'qa', 'director', 'admin'].includes(role)) throw statusError(400, 'Choose a valid role.');
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const existing = await postgresPool.query(`select id from ${table} where email = $1 limit 1`, [email]);
+    if (existing.rows[0]) throw statusError(400, 'A user with this email already exists.');
+    const user = {
+      id: `U-${crypto.randomBytes(8).toString('hex')}`,
+      name,
+      email,
+      role,
+      password_hash: hashPassword(password),
+      temporary_password: password,
+      invited_at: new Date().toISOString(),
+      password_changed_at: null
+    };
+    await upsertPostgresUsers([user]);
+    dbCache = null;
+    return { ok: true, user: publicUser(user), temporary_password: password };
+  }
+  const db = await loadDb();
+  if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
+  const user = { id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null };
+  db.users.push(user);
+  addAudit(db, actor, 'Team member invited', 'user', email);
+  await saveDb(db);
+  return { ok: true, user: publicUser(user), temporary_password: password };
+}
+
+async function resetWorkspaceUserPassword(userId, body, actor) {
+  const password = String(body.password || '').trim() || temporaryPassword();
+  if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const result = await postgresPool.query(
+      `update ${table}
+       set password_hash = $2, temporary_password = $3, password_changed_at = null, invited_at = coalesce(invited_at, now()), updated_at = now()
+       where id = $1
+       returning id, name, email, role, temporary_password, invited_at, password_changed_at`,
+      [userId, hashPassword(password), password]
+    );
+    if (!result.rows[0]) throw statusError(404, 'User not found.');
+    clearUserSessions(userId);
+    dbCache = null;
+    return { ok: true, user: result.rows[0], temporary_password: password };
+  }
+  const db = await loadDb();
+  const target = db.users.find(item => item.id === userId);
+  if (!target) throw statusError(404, 'User not found.');
+  target.password_hash = hashPassword(password);
+  target.temporary_password = password;
+  target.password_changed_at = null;
+  target.invited_at ||= new Date().toISOString();
+  clearUserSessions(target.id);
+  addAudit(db, actor, 'Team member password reset', 'user', target.email);
+  await saveDb(db);
+  return { ok: true, user: publicUser(target), temporary_password: password };
+}
+
 async function loadMarketingSummary() {
   if (!postgresPool) return null;
   try {
@@ -1943,7 +2010,8 @@ function requireDeveloperAccess(req, user) {
   const allowedRole = ['admin', 'director'].includes(user.role);
   const allowedEmail = !devEmail || normalizeEmail(user.email) === devEmail;
   const allowedLocation = Boolean(devEmail) || isLocalRequest(req);
-  if (!allowedLocation || !allowedRole || !allowedEmail) throw statusError(403, 'Developer panel is only available to the configured developer account.');
+  if (allowedRole) return;
+  if (!allowedLocation || !allowedEmail) throw statusError(403, 'Developer dashboard is only available to administrators.');
 }
 
 function developerConfig(req, db) {
@@ -3501,6 +3569,17 @@ async function handleApi(req, res) {
     const user = await currentSessionUser(req);
     requireDeveloperAccess(req, user);
     return sendJson(res, developerConfig(req, await loadDeveloperConfigDb()));
+  }
+  if (route === '/api/users' && method === 'POST') {
+    const user = await currentSessionUser(req);
+    requireDeveloperAccess(req, user);
+    return sendJson(res, await createWorkspaceUser(body, user), 201);
+  }
+  let lightweightMatch = route.match(/^\/api\/users\/([^/]+)\/reset-password$/);
+  if (lightweightMatch && method === 'POST') {
+    const user = await currentSessionUser(req);
+    requireDeveloperAccess(req, user);
+    return sendJson(res, await resetWorkspaceUserPassword(lightweightMatch[1], body, user));
   }
   const db = await loadDb();
   if (route === '/api/password/forgot' && method === 'POST') {
