@@ -169,6 +169,14 @@ function ensureConfiguredDeveloperUser(db) {
   return changed;
 }
 
+async function persistDeveloperBootstrap(data) {
+  if (postgresPool) {
+    await upsertPostgresUsers(data.users || []);
+    return;
+  }
+  await saveDb(data);
+}
+
 function temporaryPassword() {
   return crypto.randomBytes(9).toString('base64url') + '#KBC1';
 }
@@ -464,7 +472,7 @@ async function loadDb() {
     const normalized = await loadPostgresTables();
     if (normalized) {
       const data = recalculate(await hydratePostgresUsers(normalized));
-      if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
+      if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
       dbCache = cloneDb(data);
       return data;
     }
@@ -473,7 +481,7 @@ async function loadDb() {
     const seeded = legacy.rows[0]?.data ? recalculate(legacy.rows[0].data) : seedDatabase();
     await saveDb(seeded);
     const data = recalculate(await hydratePostgresUsers(seeded));
-    if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
+    if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
     dbCache = cloneDb(data);
     return data;
   }
@@ -486,14 +494,14 @@ async function loadDb() {
       return seeded;
     }
     const data = recalculate(record.data);
-    if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
+    if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
     dbCache = cloneDb(data);
     return data;
   }
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(DB_FILE)) await saveDb(seedDatabase());
   const data = recalculate(JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
-  if (ensureConfiguredDeveloperUser(data)) await saveDb(data);
+  if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
   dbCache = cloneDb(data);
   return data;
 }
@@ -2625,7 +2633,7 @@ function startAutoSync() {
     eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
     return;
   }
-  if (GMAIL_AUTO_SYNC_ENABLED) scheduleGmailAutoSync(1000);
+  if (GMAIL_AUTO_SYNC_ENABLED) scheduleGmailAutoSync(20000);
   else gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, running: false, next_run_at: null };
   if (EVENT_AUTO_SYNC_ENABLED) {
     const delay = 15000;
