@@ -1867,6 +1867,28 @@ function publicEmailDetail(email) {
   return detail;
 }
 
+function encodeEmailCursor(email) {
+  if (!email?.id) return '';
+  return Buffer.from(JSON.stringify({
+    received_at: email.received_at || email.date || null,
+    id: email.id
+  })).toString('base64url');
+}
+
+function decodeEmailCursor(cursor) {
+  if (!cursor) return null;
+  try {
+    const value = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    if (!value?.id) return null;
+    return {
+      id: String(value.id),
+      received_at: value.received_at ? new Date(value.received_at) : null
+    };
+  } catch {
+    throw statusError(400, 'Invalid email cursor.');
+  }
+}
+
 async function loadBootstrapDb() {
   if (!postgresPool || !usesPostgresStorage()) return loadDb();
   await ensureStorage();
@@ -1887,7 +1909,7 @@ async function loadBootstrapDb() {
   data.emails = data.emails.map(publicEmailSummary);
   data.email_paging = {
     loaded: data.emails.length,
-    next_offset: data.emails.length,
+    next_cursor: hasMoreEmails ? encodeEmailCursor(data.emails[data.emails.length - 1]) : '',
     limit: emailLimit,
     has_more: hasMoreEmails
   };
@@ -1896,19 +1918,30 @@ async function loadBootstrapDb() {
 
 async function loadEmailPage(options = {}) {
   const limit = Math.max(1, Math.min(Number(options.limit || 100), 100));
-  const offset = Math.max(0, Number(options.offset || 0));
+  const cursor = decodeEmailCursor(options.cursor);
   await ensureStorage();
   if (postgresPool) {
-    const result = await postgresPool.query(
-      `select data from app_emails order by received_at desc nulls last, id limit $1 offset $2`,
-      [limit + 1, offset]
-    );
+    const result = cursor
+      ? await postgresPool.query(
+        `select data from app_emails
+         where (
+           ($2::timestamptz is not null and (received_at < $2::timestamptz or (received_at = $2::timestamptz and id > $3) or received_at is null))
+           or ($2::timestamptz is null and received_at is null and id > $3)
+         )
+         order by received_at desc nulls last, id
+         limit $1`,
+        [limit + 1, cursor.received_at ? cursor.received_at.toISOString() : null, cursor.id]
+      )
+      : await postgresPool.query(
+        `select data from app_emails order by received_at desc nulls last, id limit $1`,
+        [limit + 1]
+      );
     const rows = result.rows.map(item => item.data);
     const emails = rows.slice(0, limit).map(publicEmailSummary);
     return {
       emails,
       loaded: emails.length,
-      next_offset: offset + emails.length,
+      next_cursor: rows.length > limit ? encodeEmailCursor(emails[emails.length - 1]) : '',
       limit,
       has_more: rows.length > limit
     };
@@ -1917,11 +1950,13 @@ async function loadEmailPage(options = {}) {
   const rows = (db.emails || [])
     .slice()
     .sort((a, b) => new Date(b.received_at || 0) - new Date(a.received_at || 0));
+  const cursorIndex = cursor ? rows.findIndex(item => item.id === cursor.id) : -1;
+  const offset = cursorIndex >= 0 ? cursorIndex + 1 : Math.max(0, Number(options.offset || 0));
   const emails = rows.slice(offset, offset + limit).map(publicEmailSummary);
   return {
     emails,
     loaded: emails.length,
-    next_offset: offset + emails.length,
+    next_cursor: offset + emails.length < rows.length ? encodeEmailCursor(emails[emails.length - 1]) : '',
     limit,
     has_more: offset + emails.length < rows.length
   };
@@ -3679,6 +3714,7 @@ async function handleApi(req, res) {
   if (route === '/api/emails' && method === 'GET') {
     await currentSessionUser(req);
     return sendJson(res, await loadEmailPage({
+      cursor: url.searchParams.get('cursor'),
       offset: url.searchParams.get('offset'),
       limit: url.searchParams.get('limit')
     }));
