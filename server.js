@@ -1824,8 +1824,12 @@ function isLocalRequest(req) {
   return hostLocal && socketLocal;
 }
 
+function configuredDeveloperEmail() {
+  return normalizeEmail(process.env.DEV_PANEL_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '');
+}
+
 function requireDeveloperAccess(req, user) {
-  const devEmail = normalizeEmail(process.env.DEV_PANEL_EMAIL || '');
+  const devEmail = configuredDeveloperEmail();
   const allowedRole = ['admin', 'director'].includes(user.role);
   const allowedEmail = !devEmail || normalizeEmail(user.email) === devEmail;
   const allowedLocation = Boolean(devEmail) || isLocalRequest(req);
@@ -1834,7 +1838,7 @@ function requireDeveloperAccess(req, user) {
 
 function developerConfig(req, db) {
   return {
-    local_only: !process.env.DEV_PANEL_EMAIL,
+    local_only: !configuredDeveloperEmail(),
     storage: storageMode(),
     users: (db.users || []).map(user => ({
       id: user.id,
