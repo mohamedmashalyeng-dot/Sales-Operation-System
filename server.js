@@ -244,6 +244,7 @@ async function connectPostgresStorage() {
     connectionString: DATABASE_URL,
     ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined
   });
+  await ensurePostgresUserSchema();
   if (String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') return postgresPool;
   const table = sqlIdentifier(POSTGRES_STATE_TABLE, 'app_state');
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
@@ -272,9 +273,6 @@ async function connectPostgresStorage() {
       last_login_at timestamptz
     )
   `);
-  await postgresPool.query(`alter table ${usersTable} add column if not exists temporary_password text`);
-  await postgresPool.query(`alter table ${usersTable} add column if not exists invited_at timestamptz`);
-  await postgresPool.query(`alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
   await postgresPool.query(`
     create table if not exists ${loginEventsTable} (
       id bigserial primary key,
@@ -299,6 +297,26 @@ async function connectPostgresStorage() {
   `);
   await createPostgresAppTables();
   return postgresPool;
+}
+
+async function ensurePostgresUserSchema() {
+  if (!postgresPool) return;
+  const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+  await postgresPool.query(`
+    create table if not exists ${usersTable} (
+      id text primary key,
+      name text not null,
+      email text not null unique,
+      role text not null default 'sales',
+      password_hash text not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      last_login_at timestamptz
+    )
+  `);
+  await postgresPool.query(`alter table ${usersTable} add column if not exists temporary_password text`);
+  await postgresPool.query(`alter table ${usersTable} add column if not exists invited_at timestamptz`);
+  await postgresPool.query(`alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
 }
 
 async function ensureStorage() {
