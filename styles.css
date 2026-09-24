@@ -702,6 +702,33 @@ button:hover,
 .email-reader-body{
  background:#fff!important;
 }
+.email-thread-item:not(.response){
+ background:#fbf7ff!important;
+}
+.email-thread-item:not(.response) .email-message-card.current{
+ background:#fbf7ff!important;
+ border-color:rgba(103,40,184,.34)!important;
+}
+.email-thread-item:not(.response) .email-message-row{
+ background:#f6efff!important;
+}
+.email-thread-item:not(.response) .email-reader-body{
+ background:#fffafe!important;
+ border-left:4px solid rgba(103,40,184,.62)!important;
+}
+.email-thread-item.response,
+.email-message-card.response{
+ background:#fff8e8!important;
+ border-color:rgba(175,117,23,.42)!important;
+}
+.email-thread-item.response .email-thread-summary,
+.email-message-card.response .email-message-row{
+ background:#fff3d8!important;
+}
+.email-message-card.response .email-reader-body{
+ background:#fffdf7!important;
+ border-left:4px solid rgba(175,117,23,.72)!important;
+}
 .email-message-meta,
 .email-message-detail{
  border-color:rgba(214,184,237,.62)!important;
