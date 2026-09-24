@@ -107,6 +107,7 @@ function verifyPassword(password, stored) {
 function loadEnv() {
   const envFile = path.join(ROOT, '.env');
   if (!fs.existsSync(envFile)) return;
+  const fileWins = new Set(['DEV_PANEL_PASSWORD', 'INITIAL_ADMIN_PASSWORD']);
   for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -114,7 +115,7 @@ function loadEnv() {
     if (index === -1) continue;
     const key = trimmed.slice(0, index).trim();
     const value = trimmed.slice(index + 1).trim().replace(/^"|"$/g, '');
-    if (!process.env[key]) process.env[key] = value;
+    if (fileWins.has(key) || !process.env[key]) process.env[key] = value;
   }
 }
 
@@ -142,6 +143,10 @@ function developerBootstrapConfig() {
 
 function developerPasswordConfigured() {
   return Boolean(String(process.env.DEV_PANEL_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || '').trim());
+}
+
+function configuredDeveloperPassword() {
+  return String(process.env.DEV_PANEL_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || '');
 }
 
 function ensureConfiguredDeveloperUser(db) {
@@ -1142,6 +1147,30 @@ async function findLoginUser(email) {
   }
   const db = await loadDb();
   return db.users.find(item => normalizeEmail(item.email) === normalizeEmail(email)) || null;
+}
+
+async function forceConfiguredDeveloperLogin(email, password) {
+  if (!isDeveloperEmail(email)) return null;
+  const configuredPassword = configuredDeveloperPassword();
+  if (!configuredPassword || password !== configuredPassword) return null;
+  const developerUser = configuredDeveloperUserRecord();
+  if (!developerUser) return null;
+  await ensureUserStorage();
+  if (postgresPool) {
+    await upsertPostgresUsers([developerUser]);
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const result = await postgresPool.query(
+      `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
+      [normalizeEmail(email)]
+    );
+    return result.rows[0] || developerUser;
+  }
+  const db = await loadDb();
+  const existing = db.users.find(item => normalizeEmail(item.email) === normalizeEmail(email));
+  if (existing) Object.assign(existing, developerUser, { id: existing.id });
+  else db.users.push(developerUser);
+  await saveDb(db);
+  return existing || developerUser;
 }
 
 async function findUserById(id) {
@@ -4022,7 +4051,10 @@ async function handleApi(req, res) {
     const email = normalizeEmail(body.email);
     const password = String(body.password || '');
     if (!email || !password) throw statusError(400, 'Email and password are required.');
-    const user = await findLoginUser(email);
+    let user = await findLoginUser(email);
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      user = await forceConfiguredDeveloperLogin(email, password);
+    }
     if (!user || !verifyPassword(password, user.password_hash)) {
       if (isDeveloperEmail(email) && !developerPasswordConfigured()) {
         throw statusError(500, 'Developer password is not configured on this deployment. Add DEV_PANEL_PASSWORD and redeploy.');
