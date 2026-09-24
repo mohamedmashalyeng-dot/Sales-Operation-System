@@ -4859,12 +4859,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Kent Business College backend running on port ${PORT}`);
-  startAutoSync();
-});
+if (process.env.NEST_COMPAT_MODE !== 'true') {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Kent Business College backend running on port ${PORT}`);
+    startAutoSync();
+  });
+}
 
 module.exports = {
+  handleApi,
+  serveStatic,
+  startAutoSync,
+  server,
   loadDb,
   saveDb,
   saveEventImportTables,
