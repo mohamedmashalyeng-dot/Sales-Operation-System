@@ -1846,6 +1846,7 @@ function publicEmailSummary(email) {
     response_note: email.response_note || '',
     due_at: email.due_at || null,
     gmail_message_id: email.gmail_message_id || '',
+    gmail_thread_id: email.gmail_thread_id || '',
     gmail_labels: email.gmail_labels || [],
     gmail_label_names: email.gmail_label_names || [],
     dashboard_folder: email.dashboard_folder || '',
@@ -2535,6 +2536,49 @@ function sortEmailsNewest(db) {
   db.emails = (db.emails || []).sort((a, b) => new Date(b.received_at || b.created_at || 0) - new Date(a.received_at || a.created_at || 0));
 }
 
+function emailSubjectKey(subject = '') {
+  return String(subject || '')
+    .toLowerCase()
+    .replace(/^(\s*(re|fw|fwd):\s*)+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function markInboundEmailRepliedFromSent(db, sentEmail, changed, source = 'Gmail sent reply') {
+  if (!sentEmail || sentEmail.direction !== 'outbound') return false;
+  const sentAt = new Date(sentEmail.received_at || sentEmail.created_at || 0);
+  if (Number.isNaN(sentAt.getTime())) return false;
+  const recipient = normalizeEmail(sentEmail.email);
+  const subjectKey = emailSubjectKey(sentEmail.subject);
+  const threadId = String(sentEmail.gmail_thread_id || '').trim();
+  if (!recipient || (!subjectKey && !threadId)) return false;
+  const match = (db.emails || [])
+    .filter(email => {
+      if (!email || email.id === sentEmail.id || email.direction === 'outbound' || email.response_at || emailIsTrashed(email)) return false;
+      if (normalizeEmail(email.email) !== recipient) return false;
+      const sameThread = threadId && String(email.gmail_thread_id || '') === threadId;
+      const sameSubject = subjectKey && emailSubjectKey(email.subject) === subjectKey;
+      if (!sameThread && !sameSubject) return false;
+      const receivedAt = new Date(email.received_at || email.created_at || 0);
+      return !Number.isNaN(receivedAt.getTime()) && receivedAt <= sentAt;
+    })
+    .sort((a, b) => new Date(b.received_at || b.created_at || 0) - new Date(a.received_at || a.created_at || 0))[0];
+  if (!match) return false;
+  match.response_at = sentAt.toISOString();
+  match.response_note = match.response_note || `${source}: ${sentEmail.subject || 'Reply sent'}`;
+  changed?.emailIds?.add(match.id);
+  if (sentEmail.lead_id) changed?.leadIds?.add(sentEmail.lead_id);
+  return true;
+}
+
+function reconcileGmailSentReplies(db, changed) {
+  let resolved = 0;
+  for (const email of db.emails || []) {
+    if (email.direction === 'outbound' && markInboundEmailRepliedFromSent(db, email, changed, 'Existing Gmail sent reply')) resolved += 1;
+  }
+  return resolved;
+}
+
 function gmailSyncPageToken(db, source, incremental = false) {
   if (source === 'sent') return incremental ? (db.gmail?.incremental_sent_page_token || '') : (db.gmail?.sent_sync_2026_page_token || '');
   return incremental ? (db.gmail?.incremental_page_token || '') : (db.gmail?.sync_2026_page_token || '');
@@ -2612,6 +2656,7 @@ function restoreEmailFromDashboardTrash(email) {
 function gmailImportChanged(changed, counts = {}) {
   return Boolean(
     counts.imported ||
+    counts.replied ||
     counts.restored ||
     counts.trashed ||
     changed.leadIds?.size ||
@@ -2790,6 +2835,9 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
           changed.emailIds.add(existing.id);
             if (wasTrashed && !emailIsTrashed(existing)) restored += 1;
         }
+          if (source === 'sent' && markInboundEmailRepliedFromSent(db, existing, changed)) {
+            changed.emailIds.add(existing.id);
+          }
         continue;
       }
       let message;
@@ -2817,7 +2865,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
           const lead = leadForEmailAddress(db, recipient.email);
           const fallbackNames = nameParts(recipient.name, recipient.email);
           const emailNames = lead ? { first_name: lead.first_name, last_name: lead.last_name } : fallbackNames;
-          db.emails.unshift({
+          const sentEmail = {
             id: emailId,
             ...emailNames,
             email: recipient.email,
@@ -2830,9 +2878,12 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
             due_at: null,
             received_at: receivedAt.toISOString(),
             gmail_message_id: item.id,
+            gmail_thread_id: message.threadId || '',
             ...gmailLabelsForMessage(message, labelMap),
             dashboard_folder: 'sent'
-          });
+          };
+          db.emails.unshift(sentEmail);
+          markInboundEmailRepliedFromSent(db, sentEmail, changed);
           if (lead) changed.leadIds.add(lead.id);
           importedSent += 1;
         } else {
@@ -2862,6 +2913,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
         due_at: new Date(receivedAt.getTime() + EMAIL_RESPONSE_SLA_MS).toISOString(),
         received_at: receivedAt.toISOString(),
         gmail_message_id: item.id,
+        gmail_thread_id: message.threadId || '',
         ...gmailLabelsForMessage(message, labelMap),
         dashboard_folder: 'inbox'
       });
@@ -2882,6 +2934,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
 
   await importSource('inbox', 'INBOX');
   await importSource('sent', 'SENT');
+  const repliesResolved = reconcileGmailSentReplies(db, changed);
   sortEmailsNewest(db);
   if (latestOnly) {
     db.gmail.sync_2026_page_token = null;
@@ -2895,10 +2948,10 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     setGmailSyncPageToken(db, 'sent', pageTokens.sent, false);
   }
   db.gmail.last_sync_at = new Date().toISOString();
-  if (gmailImportChanged(changed, { imported, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0) }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
+  if (gmailImportChanged(changed, { imported, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
     await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
   }
-  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
+  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
 }
 
 function autoSyncUser(db) {

@@ -385,19 +385,20 @@ async function runGmailSyncAuto(){
  gmailSyncRunning=true;
  clearTimeout(loadingTimer);
  $('#global-loader')?.classList.remove('show');
- let totalImported=0,totalScanned=0,batch=0;
+ let totalImported=0,totalScanned=0,totalReplies=0,batch=0;
  try{
   while(gmailSyncRunning){
    batch+=1;
    const result=await api('/api/integrations/gmail/sync',{max_results:25});
    totalImported+=result.imported||0;
    totalScanned+=result.scanned||0;
+   totalReplies+=result.replies_resolved||0;
    await refresh();
-   toast(`Gmail sync batch ${batch}: ${result.imported||0} imported, ${totalImported} total.${result.has_more?' Continuing automatically...':''}`);
+   toast(`Gmail sync batch ${batch}: ${result.imported||0} imported, ${result.replies_resolved||0} replies matched.${result.has_more?' Continuing automatically...':''}`);
    if(!result.has_more)break;
    await sleep(result.retry_after_ms||70000);
   }
-  toast(`Gmail sync complete. ${totalImported} imported, ${totalScanned} scanned from 2026.`);
+  toast(`Gmail sync complete. ${totalImported} imported, ${totalReplies} replies matched, ${totalScanned} scanned from 2026.`);
  }catch(error){
   if(/quota|rate|limit/i.test(error.message)){
    toast('Google quota reached. Waiting and continuing automatically...');
