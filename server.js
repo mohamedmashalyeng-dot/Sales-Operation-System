@@ -21,8 +21,9 @@ const POSTGRES_STATE_TABLE = process.env.POSTGRES_STATE_TABLE || 'app_state';
 const POSTGRES_USERS_TABLE = process.env.POSTGRES_USERS_TABLE || 'app_users';
 const POSTGRES_LOGIN_EVENTS_TABLE = process.env.POSTGRES_LOGIN_EVENTS_TABLE || 'app_login_events';
 const POSTGRES_PASSWORD_RESETS_TABLE = process.env.POSTGRES_PASSWORD_RESETS_TABLE || 'app_password_resets';
+const POSTGRES_SESSIONS_TABLE = process.env.POSTGRES_SESSIONS_TABLE || 'app_sessions';
 const SESSION_TTL = 8 * 60 * 60 * 1000;
-const sessions = new Map();
+const memorySessions = new Map();
 let mongoClient = null;
 let mongoStateCollection = null;
 let postgresPool = null;
@@ -362,6 +363,7 @@ async function ensurePostgresUserSchema() {
   if (!postgresPool) return;
   if (postgresUserSchemaReady) return;
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+  const sessionsTable = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
   await postgresPool.query(`
     create table if not exists ${usersTable} (
       id text primary key,
@@ -377,6 +379,19 @@ async function ensurePostgresUserSchema() {
   await postgresPool.query(`alter table ${usersTable} add column if not exists temporary_password text`);
   await postgresPool.query(`alter table ${usersTable} add column if not exists invited_at timestamptz`);
   await postgresPool.query(`alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
+  await postgresPool.query(`
+    create table if not exists ${sessionsTable} (
+      id text primary key,
+      user_id text not null,
+      gmail_state text,
+      eventbrite_state text,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await postgresPool.query(`create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_user_id_idx`, 'app_sessions_user_id_idx')} on ${sessionsTable} (user_id)`);
+  await postgresPool.query(`create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_expires_at_idx`, 'app_sessions_expires_at_idx')} on ${sessionsTable} (expires_at)`);
   postgresUserSchemaReady = true;
 }
 
@@ -701,59 +716,237 @@ async function loadPostgresTables(options = {}) {
   return db;
 }
 
+async function deleteMissingIds(client, table, ids) {
+  const wanted = [...new Set((ids || []).filter(Boolean))];
+  if (wanted.length) {
+    await client.query(`delete from ${table} where not (id = any($1::text[]))`, [wanted]);
+  } else {
+    await client.query(`delete from ${table}`);
+  }
+}
+
 async function savePostgresTables(db) {
+  const programmeRows = importProgrammeRows(db);
+  const intakeRows = (db.intakes || []).map(item => ({ id: item.id, programme_id: item.programme_id || null, name: item.name, data: item }));
+  const leadRows = importLeadRows(db);
+  const taskRows = importTaskRows(db);
+  const emailRows = importEmailRows(db);
+  const applicationRows = (db.applications || []).map(item => ({
+    id: item.id,
+    lead_id: item.lead_id || null,
+    first_name: item.first_name || null,
+    last_name: item.last_name || null,
+    programme: item.programme || null,
+    intake: item.intake || null,
+    status: item.status || null,
+    manager: item.manager || null,
+    member: item.member || null,
+    created_at: item.created_at || null,
+    contract: item.contract || null,
+    requirements: item.requirements || [],
+    learner: item.learner || null,
+    data: item
+  }));
+  const eventRows = importEventRows(db);
+  const auditRows = importAuditRows(db);
+  const attributionRows = (db.attribution || []).map(item => ({
+    lead_id: item.id || item.lead_id || null,
+    email: normalizeEmail(item.email),
+    programme: item.programme || null,
+    data: item
+  }));
   const client = await postgresPool.connect();
   try {
     await client.query('begin');
-    await client.query(`delete from app_attribution`);
-    await client.query(`delete from app_audit`);
-    await client.query(`delete from app_events`);
-    await client.query(`delete from app_applications`);
-    await client.query(`delete from app_emails`);
-    await client.query(`delete from app_tasks`);
-    await client.query(`delete from app_leads`);
-    await client.query(`delete from app_intakes`);
-    await client.query(`delete from app_programmes`);
-    await client.query(`delete from app_workspace where id = $1`, ['main']);
     await client.query(
-      `insert into app_workspace (id, demo, stages, sources, gmail, eventbrite, meta, updated_at) values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, now())`,
+      `insert into app_workspace (id, demo, stages, sources, gmail, eventbrite, meta, updated_at)
+       values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, now())
+       on conflict (id) do update set
+         demo = excluded.demo,
+         stages = excluded.stages,
+         sources = excluded.sources,
+         gmail = excluded.gmail,
+         eventbrite = excluded.eventbrite,
+         meta = excluded.meta,
+         updated_at = now()`,
       ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(db.eventbrite || {}), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {} })]
     );
-    for (const item of db.programmes || []) {
-      await client.query(`insert into app_programmes (id, name, level, data) values ($1, $2, $3, $4::jsonb)`, [item.id, item.name, item.level || null, jsonValue(item)]);
-    }
-    for (const item of db.intakes || []) {
-      await client.query(`insert into app_intakes (id, programme_id, name, data) values ($1, $2, $3, $4::jsonb)`, [item.id, item.programme_id || null, item.name, jsonValue(item)]);
-    }
-    for (const item of db.leads || []) {
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(id text, name text, level text, data jsonb)
+       )
+       insert into app_programmes (id, name, level, data)
+       select id, name, level, data from rows
+       on conflict (id) do update set name = excluded.name, level = excluded.level, data = excluded.data`,
+      [jsonValue(programmeRows)]
+    );
+    await deleteMissingIds(client, 'app_programmes', programmeRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(id text, programme_id text, name text, data jsonb)
+       )
+       insert into app_intakes (id, programme_id, name, data)
+       select id, programme_id, name, data from rows
+       on conflict (id) do update set programme_id = excluded.programme_id, name = excluded.name, data = excluded.data`,
+      [jsonValue(intakeRows)]
+    );
+    await deleteMissingIds(client, 'app_intakes', intakeRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(
+           id text, person_id text, first_name text, last_name text, email text, employer text, phone text, city text,
+           programme_id text, programme text, level text, owner_id text, owner text, stage text, priority text,
+           source_first_touch text, source_lead_capture text, contact_permission text, created_at text, next_action_at text, data jsonb
+         )
+       )
+       insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
+       select id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at::timestamptz, next_action_at::timestamptz, data from rows
+       on conflict (id) do update set
+         person_id = excluded.person_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
+         employer = excluded.employer, phone = excluded.phone, city = excluded.city, programme_id = excluded.programme_id,
+         programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
+         stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
+         source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
+         created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
+      [jsonValue(leadRows)]
+    );
+    await deleteMissingIds(client, 'app_leads', leadRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(
+           id text, title text, lead_id text, kind text, status text, due_at text, completed_at text, priority text, owner_id text, data jsonb
+         )
+       )
+       insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data)
+       select id, title, lead_id, kind, status, due_at::timestamptz, completed_at::timestamptz, priority, owner_id, data from rows
+       on conflict (id) do update set
+         title = excluded.title, lead_id = excluded.lead_id, kind = excluded.kind, status = excluded.status,
+         due_at = excluded.due_at, completed_at = excluded.completed_at, priority = excluded.priority,
+         owner_id = excluded.owner_id, data = excluded.data`,
+      [jsonValue(taskRows)]
+    );
+    await deleteMissingIds(client, 'app_tasks', taskRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(
+           id text, lead_id text, first_name text, last_name text, email text, subject text, body text, owner text,
+           response_at text, response_note text, due_at text, received_at text, gmail_message_id text, data jsonb
+         )
+       ),
+       deduped as (
+         select * from (
+           select rows.*, row_number() over (
+             partition by coalesce(nullif(gmail_message_id, ''), 'id:' || id)
+             order by received_at::timestamptz desc nulls last, id
+           ) as rn
+           from rows
+         ) ranked
+         where rn = 1
+       ),
+       removed_duplicates as (
+         delete from app_emails existing
+         using deduped incoming
+         where incoming.gmail_message_id is not null
+           and incoming.gmail_message_id <> ''
+           and existing.gmail_message_id = incoming.gmail_message_id
+           and existing.id <> incoming.id
+         returning existing.id
+       )
+       insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
+       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, nullif(gmail_message_id, ''), data from deduped
+       on conflict (id) do update set
+         lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
+         subject = excluded.subject, body = excluded.body, owner = excluded.owner, response_at = excluded.response_at,
+         response_note = excluded.response_note, due_at = excluded.due_at, received_at = excluded.received_at,
+         gmail_message_id = excluded.gmail_message_id, data = excluded.data`,
+      [jsonValue(emailRows)]
+    );
+    await deleteMissingIds(client, 'app_emails', emailRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(
+           id text, lead_id text, first_name text, last_name text, programme text, intake text, status text,
+           manager text, member text, created_at text, contract jsonb, requirements jsonb, learner jsonb, data jsonb
+         )
+       )
+       insert into app_applications (id, lead_id, first_name, last_name, programme, intake, status, manager, member, created_at, contract, requirements, learner, data)
+       select id, lead_id, first_name, last_name, programme, intake, status, manager, member, created_at::timestamptz, contract, requirements, learner, data from rows
+       on conflict (id) do update set
+         lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name,
+         programme = excluded.programme, intake = excluded.intake, status = excluded.status, manager = excluded.manager,
+         member = excluded.member, created_at = excluded.created_at, contract = excluded.contract,
+         requirements = excluded.requirements, learner = excluded.learner, data = excluded.data`,
+      [jsonValue(applicationRows)]
+    );
+    await deleteMissingIds(client, 'app_applications', applicationRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(
+           id text, name text, start_at text, location text, campaign text, capacity int, registrations int, attendance int, attendees jsonb, data jsonb
+         )
+       )
+       insert into app_events (id, name, start_at, location, campaign, capacity, registrations, attendance, attendees, data)
+       select id, name, start_at::timestamptz, location, campaign, capacity, registrations, attendance, attendees, data from rows
+       on conflict (id) do update set
+         name = excluded.name, start_at = excluded.start_at, location = excluded.location, campaign = excluded.campaign,
+         capacity = excluded.capacity, registrations = excluded.registrations, attendance = excluded.attendance,
+         attendees = excluded.attendees, data = excluded.data`,
+      [jsonValue(eventRows)]
+    );
+    await deleteMissingIds(client, 'app_events', eventRows.map(item => item.id));
+    await client.query(
+      `with rows as (
+         select * from jsonb_to_recordset($1::jsonb) as x(
+           id text, occurred_at text, actor text, action text, entity text, entity_id text, data jsonb
+         )
+       )
+       insert into app_audit (id, occurred_at, actor, action, entity, entity_id, data)
+       select id, occurred_at::timestamptz, actor, action, entity, entity_id, data from rows
+       on conflict (id) do update set
+         occurred_at = excluded.occurred_at, actor = excluded.actor, action = excluded.action,
+         entity = excluded.entity, entity_id = excluded.entity_id, data = excluded.data`,
+      [jsonValue(auditRows)]
+    );
+    await deleteMissingIds(client, 'app_audit', auditRows.map(item => item.id));
+    if (attributionRows.length) {
       await client.query(
-        `insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb)`,
-        [item.id, item.person_id || null, item.first_name || null, item.last_name || null, normalizeEmail(item.email), item.employer || null, item.phone || null, item.city || null, item.programme_id || null, item.programme || null, item.level || null, item.owner_id || null, item.owner || null, item.stage || null, item.priority || null, item.source_first_touch || null, item.source_lead_capture || null, item.contact_permission || null, dateValue(item.created_at), dateValue(item.next_action_at), jsonValue(item)]
+        `with rows as (
+           select * from jsonb_to_recordset($1::jsonb) as x(lead_id text, email text, programme text, data jsonb)
+         ),
+         updated as (
+           update app_attribution target
+           set data = rows.data
+           from rows
+           where coalesce(target.lead_id, '') = coalesce(rows.lead_id, '')
+             and coalesce(target.email, '') = coalesce(rows.email, '')
+             and coalesce(target.programme, '') = coalesce(rows.programme, '')
+           returning target.id
+         )
+         insert into app_attribution (lead_id, email, programme, data)
+         select lead_id, email, programme, data from rows
+         where not exists (
+           select 1 from app_attribution existing
+           where coalesce(existing.lead_id, '') = coalesce(rows.lead_id, '')
+             and coalesce(existing.email, '') = coalesce(rows.email, '')
+             and coalesce(existing.programme, '') = coalesce(rows.programme, '')
+         )`,
+        [jsonValue(attributionRows)]
       );
-    }
-    for (const item of db.tasks || []) {
-      await client.query(`insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`, [item.id, item.title || null, item.lead_id || null, item.kind || null, item.status || null, dateValue(item.due_at), dateValue(item.completed_at), item.priority || null, item.owner_id || null, jsonValue(item)]);
-    }
-    for (const item of importEmailRows(db)) {
       await client.query(
-        `insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
-         on conflict (gmail_message_id) do nothing`,
-        [item.id, item.lead_id || null, item.first_name || null, item.last_name || null, normalizeEmail(item.email), item.subject || null, item.body || null, item.owner || null, dateValue(item.response_at), item.response_note || null, dateValue(item.due_at), dateValue(item.received_at), item.gmail_message_id || null, jsonValue(item.data || item)]
+        `with rows as (
+           select * from jsonb_to_recordset($1::jsonb) as x(lead_id text, email text, programme text)
+         )
+         delete from app_attribution target
+         where not exists (
+           select 1 from rows
+           where coalesce(target.lead_id, '') = coalesce(rows.lead_id, '')
+             and coalesce(target.email, '') = coalesce(rows.email, '')
+             and coalesce(target.programme, '') = coalesce(rows.programme, '')
+         )`,
+        [jsonValue(attributionRows)]
       );
-    }
-    for (const item of db.applications || []) {
-      await client.query(`insert into app_applications (id, lead_id, first_name, last_name, programme, intake, status, manager, member, created_at, contract, requirements, learner, data) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb)`, [item.id, item.lead_id || null, item.first_name || null, item.last_name || null, item.programme || null, item.intake || null, item.status || null, item.manager || null, item.member || null, dateValue(item.created_at), jsonValue(item.contract || null), jsonValue(item.requirements || []), jsonValue(item.learner || null), jsonValue(item)]);
-    }
-    for (const item of db.events || []) {
-      await client.query(`insert into app_events (id, name, start_at, location, campaign, capacity, registrations, attendance, attendees, data) values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)`, [item.id, item.name || null, dateValue(item.start_at), item.location || null, item.campaign || null, item.capacity || 0, item.registrations || 0, item.attendance || 0, jsonValue(item.attendees || []), jsonValue(item)]);
-    }
-    for (const item of db.audit || []) {
-      await client.query(`insert into app_audit (id, occurred_at, actor, action, entity, entity_id, data) values ($1,$2,$3,$4,$5,$6,$7::jsonb)`, [item.id, dateValue(item.occurred_at), item.actor || null, item.action || null, item.entity || null, item.entity_id || null, jsonValue(item)]);
-    }
-    for (const item of db.attribution || []) {
-      await client.query(`insert into app_attribution (lead_id, email, programme, data) values ($1,$2,$3,$4::jsonb)`, [item.id || item.lead_id || null, normalizeEmail(item.email), item.programme || null, jsonValue(item)]);
+    } else {
+      await client.query(`delete from app_attribution`);
     }
     await client.query('commit');
   } catch (error) {
@@ -1222,13 +1415,96 @@ async function findUserById(id) {
   return db.users.find(item => item.id === id) || null;
 }
 
+async function createSession(user) {
+  const sid = crypto.randomBytes(24).toString('hex');
+  const expiresAt = new Date(Date.now() + SESSION_TTL);
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    await postgresPool.query(
+      `insert into ${table} (id, user_id, expires_at, created_at, updated_at)
+       values ($1, $2, $3, now(), now())`,
+      [sid, user.id, expiresAt.toISOString()]
+    );
+  } else {
+    memorySessions.set(sid, { user_id: user.id, expires_at: expiresAt.getTime() });
+  }
+  return sid;
+}
+
+async function getSession(sid) {
+  if (!sid) return null;
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    const result = await postgresPool.query(
+      `select id, user_id, gmail_state, eventbrite_state, expires_at from ${table} where id = $1 limit 1`,
+      [sid]
+    );
+    const session = result.rows[0];
+    if (!session) return null;
+    if (new Date(session.expires_at).getTime() < Date.now()) {
+      await postgresPool.query(`delete from ${table} where id = $1`, [sid]);
+      return null;
+    }
+    return session;
+  }
+  const session = memorySessions.get(sid);
+  if (!session) return null;
+  if (session.expires_at < Date.now()) {
+    memorySessions.delete(sid);
+    return null;
+  }
+  return { id: sid, ...session };
+}
+
+async function touchSession(sid) {
+  const expiresAt = new Date(Date.now() + SESSION_TTL);
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    await postgresPool.query(`update ${table} set expires_at = $2, updated_at = now() where id = $1`, [sid, expiresAt.toISOString()]);
+  } else {
+    const session = memorySessions.get(sid);
+    if (session) session.expires_at = expiresAt.getTime();
+  }
+}
+
+async function patchSession(sid, fields = {}) {
+  if (!sid) throw statusError(401, 'Sign in to continue.');
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    await postgresPool.query(
+      `update ${table}
+       set gmail_state = coalesce($2, gmail_state),
+           eventbrite_state = coalesce($3, eventbrite_state),
+           updated_at = now()
+       where id = $1`,
+      [sid, fields.gmail_state ?? null, fields.eventbrite_state ?? null]
+    );
+  } else {
+    const session = memorySessions.get(sid);
+    if (!session) throw statusError(401, 'Sign in to continue.');
+    Object.assign(session, fields);
+  }
+}
+
+async function deleteSession(sid) {
+  if (!sid) return;
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    await postgresPool.query(`delete from ${table} where id = $1`, [sid]);
+    return;
+  }
+  memorySessions.delete(sid);
+}
+
 async function currentSessionUser(req) {
   const sid = parseCookies(req).sid;
-  const session = sessions.get(sid);
-  if (!session || session.expires_at < Date.now()) throw statusError(401, 'Sign in to continue.');
+  const session = await getSession(sid);
+  if (!session) throw statusError(401, 'Sign in to continue.');
   const user = await findUserById(session.user_id);
   if (!user) throw statusError(401, 'Sign in to continue.');
-  session.expires_at = Date.now() + SESSION_TTL;
+  await touchSession(sid);
   return user;
 }
 
@@ -1246,9 +1522,14 @@ async function recordPostgresLogin(user, req) {
   await postgresPool.query(`update ${usersTable} set last_login_at = now(), updated_at = now() where id = $1`, [user.id]);
 }
 
-function clearUserSessions(userId) {
-  for (const [sid, session] of sessions.entries()) {
-    if (session.user_id === userId) sessions.delete(sid);
+async function clearUserSessions(userId) {
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    await postgresPool.query(`delete from ${table} where user_id = $1`, [userId]);
+    return;
+  }
+  for (const [sid, session] of memorySessions.entries()) {
+    if (session.user_id === userId) memorySessions.delete(sid);
   }
 }
 
@@ -2368,7 +2649,7 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
       [userId, hashPassword(password), password]
     );
     if (!result.rows[0]) throw statusError(404, 'User not found.');
-    clearUserSessions(userId);
+    await clearUserSessions(userId);
     dbCache = null;
     return { ok: true, user: result.rows[0], temporary_password: password };
   }
@@ -2379,7 +2660,7 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
   target.temporary_password = password;
   target.password_changed_at = null;
   target.invited_at ||= new Date().toISOString();
-  clearUserSessions(target.id);
+  await clearUserSessions(target.id);
   addAudit(db, actor, 'Team member password reset', 'user', target.email);
   await saveDb(db);
   return { ok: true, user: publicUser(target), temporary_password: password };
@@ -2410,7 +2691,7 @@ async function updateWorkspaceUserRole(userId, body, actor) {
       `update ${table} set role = $2, updated_at = now() where id = $1 returning id, name, email, role, temporary_password, invited_at, password_changed_at`,
       [userId, role]
     );
-    clearUserSessions(userId);
+    await clearUserSessions(userId);
     dbCache = null;
     return { ok: true, user: result.rows[0] };
   }
@@ -2418,7 +2699,7 @@ async function updateWorkspaceUserRole(userId, body, actor) {
   const target = db.users.find(item => item.id === userId);
   assertUserCanBeManaged(target, actor, 'change the role for', role);
   target.role = role;
-  clearUserSessions(target.id);
+  await clearUserSessions(target.id);
   addAudit(db, actor, 'Team member role changed', 'user', target.email);
   await saveDb(db);
   return { ok: true, user: publicUser(target) };
@@ -2432,7 +2713,7 @@ async function deleteWorkspaceUser(userId, actor) {
     const target = current.rows[0];
     assertUserCanBeManaged(target, actor, 'delete');
     await postgresPool.query(`delete from ${table} where id = $1`, [userId]);
-    clearUserSessions(userId);
+    await clearUserSessions(userId);
     dbCache = null;
     return { ok: true, deleted_id: userId };
   }
@@ -2440,7 +2721,7 @@ async function deleteWorkspaceUser(userId, actor) {
   const target = db.users.find(item => item.id === userId);
   assertUserCanBeManaged(target, actor, 'delete');
   db.users = db.users.filter(item => item.id !== userId);
-  clearUserSessions(userId);
+  await clearUserSessions(userId);
   addAudit(db, actor, 'Team member deleted', 'user', target.email);
   await saveDb(db);
   return { ok: true, deleted_id: userId };
@@ -4210,16 +4491,6 @@ function parseCookies(req) {
   }));
 }
 
-function currentUser(req, db) {
-  const sid = parseCookies(req).sid;
-  const session = sessions.get(sid);
-  if (!session || session.expires_at < Date.now()) throw statusError(401, 'Sign in to continue.');
-  const user = db.users.find(item => item.id === session.user_id);
-  if (!user) throw statusError(401, 'Sign in to continue.');
-  session.expires_at = Date.now() + SESSION_TTL;
-  return user;
-}
-
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -4300,8 +4571,7 @@ async function handleApi(req, res) {
       }
       throw statusError(401, 'Email or password is incorrect.');
     }
-    const sid = crypto.randomBytes(24).toString('hex');
-    sessions.set(sid, { user_id: user.id, expires_at: Date.now() + SESSION_TTL });
+    const sid = await createSession(user);
     sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
     recordPostgresLogin(user, req).catch(error => console.error(`Login audit failed: ${error.message || error}`));
     return;
@@ -4419,13 +4689,13 @@ async function handleApi(req, res) {
     user.password_changed_at = new Date().toISOString();
     await saveDb(db);
     await postgresPool.query(`update ${resetsTable} set used_at = now() where user_id = $1 and used_at is null`, [user.id]);
-    clearUserSessions(user.id);
+    await clearUserSessions(user.id);
     return sendJson(res, { ok: true });
   }
-  const user = currentUser(req, db);
+  const user = await currentSessionUser(req);
   if (route === '/api/logout' && method === 'POST') {
     const sid = parseCookies(req).sid;
-    sessions.delete(sid);
+    await deleteSession(sid);
     return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
   }
   if (route === '/api/developer/config' && method === 'GET') {
@@ -4471,15 +4741,16 @@ async function handleApi(req, res) {
   if (route === '/api/integrations/gmail/connect' && method === 'GET') {
     if (!gmailConfigured()) throw statusError(400, 'Gmail credentials are not configured. Add GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to .env.');
     const sid = parseCookies(req).sid;
-    const session = sessions.get(sid);
+    const session = await getSession(sid);
     if (!session) throw statusError(401, 'Sign in to continue.');
-    session.gmail_state = crypto.randomBytes(16).toString('hex');
-    res.writeHead(302, { Location: gmailAuthUrl(req, session.gmail_state) });
+    const gmailState = crypto.randomBytes(16).toString('hex');
+    await patchSession(sid, { gmail_state: gmailState });
+    res.writeHead(302, { Location: gmailAuthUrl(req, gmailState) });
     return res.end();
   }
   if (route === '/api/integrations/gmail/callback' && method === 'GET') {
     const sid = parseCookies(req).sid;
-    const session = sessions.get(sid);
+    const session = await getSession(sid);
     if (!session || !session.gmail_state || session.gmail_state !== url.searchParams.get('state')) throw statusError(401, 'Gmail connection session expired. Sign in and try again.');
     const code = url.searchParams.get('code');
     if (!code) throw statusError(400, url.searchParams.get('error') || 'Gmail did not return an authorization code.');
@@ -4522,15 +4793,16 @@ async function handleApi(req, res) {
   if (route === '/api/integrations/eventbrite/connect' && method === 'GET') {
     if (!eventbriteConfigured()) throw statusError(400, 'Eventbrite credentials are not configured. Add EVENTBRITE_CLIENT_ID and EVENTBRITE_CLIENT_SECRET to .env.');
     const sid = parseCookies(req).sid;
-    const session = sessions.get(sid);
+    const session = await getSession(sid);
     if (!session) throw statusError(401, 'Sign in to continue.');
-    session.eventbrite_state = crypto.randomBytes(16).toString('hex');
-    res.writeHead(302, { Location: eventbriteAuthUrl(req, session.eventbrite_state) });
+    const eventbriteState = crypto.randomBytes(16).toString('hex');
+    await patchSession(sid, { eventbrite_state: eventbriteState });
+    res.writeHead(302, { Location: eventbriteAuthUrl(req, eventbriteState) });
     return res.end();
   }
   if (route === '/api/integrations/eventbrite/callback' && method === 'GET') {
     const sid = parseCookies(req).sid;
-    const session = sessions.get(sid);
+    const session = await getSession(sid);
     if (!session || !session.eventbrite_state || session.eventbrite_state !== url.searchParams.get('state')) throw statusError(401, 'Eventbrite connection session expired. Sign in and try again.');
     const code = url.searchParams.get('code');
     if (!code) throw statusError(400, url.searchParams.get('error') || 'Eventbrite did not return an authorization code.');

@@ -41,19 +41,24 @@ No destructive database changes were made.
 
 The existing PostgreSQL/Neon tables remain compatible. Existing additive schema setup inside the legacy backend is preserved.
 
+General PostgreSQL persistence no longer wipes and rewrites all application tables on every save. It now upserts the current records and deletes only records that are no longer present in the saved dataset.
+
 ## 5. Additive Migrations Created
 
-None in this phase.
+- `app_sessions` is created with `create table if not exists` for persistent login and OAuth connection sessions.
 
 ## 6. Authentication Changes
 
 - Existing `sid` cookie behavior is preserved.
 - Login response now returns before writing login audit metadata, reducing perceived login delay.
-- Persistent database-backed sessions are not implemented yet in this phase; this remains a required next migration step.
+- PostgreSQL deployments now store sessions in `app_sessions` instead of process memory.
+- The in-memory session map remains only as a local/no-database fallback.
 
 ## 7. Performance Improvements
 
 - `/api/bootstrap` now uses lightweight email summaries when loading the first email page from PostgreSQL.
+- Email list pagination uses cursor-based pages with a deployment limit capped at 50 per request.
+- Gmail sync remains incremental and batched.
 - NestJS listens immediately and starts background sync only after the HTTP server is listening.
 - Existing Gmail and Eventbrite synchronization remains background-only and does not block startup.
 
@@ -65,6 +70,7 @@ Existing environment variables are preserved, including:
 - `PORT`
 - `DATABASE_URL`
 - `POSTGRES_URL`
+- `POSTGRES_SESSIONS_TABLE`
 - `GMAIL_CLIENT_ID`
 - `GMAIL_CLIENT_SECRET`
 - `GMAIL_REDIRECT_URI`
@@ -111,8 +117,7 @@ Pending verification on deployed environment:
 
 - This is Phase 1 of the migration: NestJS foundation plus compatibility adapter.
 - Core business logic has not yet been fully moved into Nest services.
-- Sessions are still legacy in-memory sessions and should be migrated to a database-backed session table in the next phase.
-- Write paths still use existing legacy persistence behavior where not already optimized.
+- Some non-Gmail write paths still run through the legacy compatibility layer, but PostgreSQL table saves avoid full-table wipe/rewrite behavior.
 
 ## 12. Rollback Instructions
 
