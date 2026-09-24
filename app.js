@@ -493,7 +493,11 @@ function breadcrumbLabel(){
  return current.startsWith('leads/')?'Lead 360':labels[base]||'Lead 360';
 }
 function pageBreadcrumb(label=breadcrumbLabel()){return `<div class="page-breadcrumb">WORKSPACE <span>/</span> <b>${esc(label)}</b></div>`;}
-function heading(title,sub,action=''){return `<div class="heading"><div>${pageBreadcrumb()}<h1>${esc(title)}</h1><p class="muted">${esc(sub)}</p></div>${action}</div>`;}
+function headingActions(action=''){
+ if(!action)return '';
+ return String(action).includes('class="actions"')?action:`<div class="actions">${action}</div>`;
+}
+function heading(title,sub,action=''){return `<div class="heading"><div>${pageBreadcrumb()}<h1>${esc(title)}</h1><p class="muted">${esc(sub)}</p></div>${headingActions(action)}</div>`;}
 function navButton(n,current){
  const overdue=overdueEmailCount(),inboxCount=unansweredEmailCount();
  return `<button class="nav-button ${current===n[0]?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${n[0]==='inbox'&&inboxCount?`<span class="nav-count ${overdue?'danger':''}">${inboxCount}</span>`:''}</button>`;
