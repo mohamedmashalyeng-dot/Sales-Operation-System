@@ -1014,15 +1014,15 @@ async function login(){
  if(data)return;
  const forgot=authMode==='forgot',notice=authNotice,emailValue=authEmail||stored?.email||'';
  authNotice='';
- $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':field('password','Password','','password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><div class="login-loading" role="status" aria-live="polite"></div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
- $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]'),loading=form.querySelector('.login-loading');form.querySelector('.form-error').textContent='';if(loading)loading.textContent=forgot?'Sending reset link...':'Logging in and loading workspace...';setActionLoading(button,true,forgot?'Sending...':'Logging in');try{
+ $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':field('password','Password','','password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
+ $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]');form.querySelector('.form-error').textContent='';setActionLoading(button,true,forgot?'Sending':'Logging in');try{
   const values={email:form.elements.email.value.trim(),password:form.elements.password?.value||''};
   if(!values.email || (!forgot&&!values.password))throw new Error(forgot?'Please enter your email.':'Please enter your email and password.');
-  if(forgot){const result=await api('/api/password/forgot',{email:values.email});form.reset();if(result.reset_url){toast(result.message||'Opening local reset link.');location.href=result.reset_url;return;}toast(result.message||'If this email is registered, a reset link has been sent.');return;}
-  await api('/api/login',values);authEmail='';await refresh();return;
+  if(forgot){const result=await api('/api/password/forgot',{email:values.email},'POST',{silent:true});form.reset();if(result.reset_url){toast(result.message||'Opening local reset link.');location.href=result.reset_url;return;}toast(result.message||'If this email is registered, a reset link has been sent.');return;}
+  await api('/api/login',values,'POST',{silent:true});authEmail='';await refresh({silent:true});return;
  }catch(err){
   form.querySelector('.form-error').textContent=err.message;
- }finally{if(loading)loading.textContent='';setActionLoading(button,false);}});
+ }finally{setActionLoading(button,false);}});
 }
 function resetTokenFromRoute(){
  const current=route();
@@ -1038,7 +1038,7 @@ function resetPassword(){
   if(!token)throw new Error('Reset token is missing.');
   if(password.length<8)throw new Error('Password must be at least 8 characters.');
   if(password!==confirm)throw new Error('Passwords do not match.');
-  await api('/api/password/reset',{token,password});
+  await api('/api/password/reset',{token,password},'POST',{silent:true});
   authMode='login';location.hash='';login();toast('Password reset. Login with your new password.');
  }catch(err){form.querySelector('.form-error').textContent=err.message;}finally{setActionLoading(button,false);}});
 }
