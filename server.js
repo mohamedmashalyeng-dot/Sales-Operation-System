@@ -3693,12 +3693,11 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Kent Business College backend running at http://127.0.0.1:${PORT}/`);
+  console.log(`Kent Business College backend running on port ${PORT}`);
   startAutoSync();
 });
 
 module.exports = {
-  server,
   loadDb,
   saveDb,
   saveEventImportTables,
