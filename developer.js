@@ -18,6 +18,19 @@ function toast(message) {
   setTimeout(() => toastEl.classList.remove('show'), 2600);
 }
 
+function setBusy(control, busy, label = '') {
+  if (!control) return;
+  if (busy) {
+    control.dataset.originalText ||= control.textContent;
+    control.disabled = true;
+    if (label) control.textContent = label;
+    return;
+  }
+  control.disabled = false;
+  if (control.dataset.originalText) control.textContent = control.dataset.originalText;
+  delete control.dataset.originalText;
+}
+
 async function api(path, body, method = body === undefined ? 'GET' : 'POST') {
   const response = await fetch(path, {
     method,
@@ -61,9 +74,17 @@ function roleLabel(user) {
 function roleSelect(user) {
   const selected = roleKey(user);
   const options = user.is_configured_developer ? ROLE_OPTIONS : ASSIGNABLE_ROLE_OPTIONS;
-  return `<select data-act="role" data-id="${esc(user.id)}" aria-label="Role for ${esc(user.name)}">
+  return `<select data-act="role" data-id="${esc(user.id)}" data-previous="${esc(selected)}" aria-label="Role for ${esc(user.name)}" ${user.is_configured_developer ? 'disabled' : ''}>
     ${options.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('')}
   </select>`;
+}
+
+function userActions(user) {
+  if (user.is_configured_developer) return '<span class="dev-muted">Protected</span>';
+  return `
+    <button class="button soft" data-act="reset" data-id="${esc(user.id)}">Reset</button>
+    <button class="button soft" data-act="delete" data-id="${esc(user.id)}" data-name="${esc(user.name)}">Delete</button>
+  `;
 }
 
 function shell(config) {
@@ -130,10 +151,7 @@ function shell(config) {
                 <td>${roleSelect(user)}<br><span class="dev-muted">${esc(roleLabel(user))}</span></td>
                 <td><code>${esc(user.temporary_password || 'Changed by user')}</code></td>
                 <td>${user.temporary_password ? 'Temporary' : 'Private'}</td>
-                <td>
-                  <button class="button soft" data-act="reset" data-id="${esc(user.id)}">Reset</button>
-                  <button class="button soft" data-act="delete" data-id="${esc(user.id)}" data-name="${esc(user.name)}">Delete</button>
-                </td>
+                <td>${userActions(user)}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -189,25 +207,35 @@ document.addEventListener('click', async event => {
   const button = event.target.closest('[data-act]');
   if (!button) return;
   const action = button.dataset.act;
-  if (action === 'refresh') return load();
+  if (action === 'refresh') {
+    setBusy(button, true, 'Refreshing...');
+    await load();
+    return;
+  }
   if (action === 'delete') {
     if (!confirm(`Delete ${button.dataset.name || 'this user'}?`)) return;
     try {
+      setBusy(button, true, 'Deleting...');
       await api(`/api/users/${encodeURIComponent(button.dataset.id)}`, {}, 'DELETE');
       toast('User deleted.');
       await load();
     } catch (error) {
       toast(error.message);
+    } finally {
+      setBusy(button, false);
     }
   }
   if (action === 'reset') {
     const password = prompt('New temporary password. Leave empty to generate one.');
     try {
+      setBusy(button, true, 'Resetting...');
       const result = await api(`/api/users/${encodeURIComponent(button.dataset.id)}/reset-password`, { password: password || '' });
       toast(`Temporary password: ${result.temporary_password}`);
       await load();
     } catch (error) {
       toast(error.message);
+    } finally {
+      setBusy(button, false);
     }
   }
 });
@@ -215,13 +243,18 @@ document.addEventListener('click', async event => {
 document.addEventListener('change', async event => {
   const input = event.target.closest('[data-act="role"]');
   if (!input) return;
+  const previous = input.dataset.previous || input.value;
+  input.disabled = true;
   try {
     await api(`/api/users/${encodeURIComponent(input.dataset.id)}/role`, { role: input.value }, 'PATCH');
     toast('Role updated.');
     await load();
   } catch (error) {
+    input.value = previous;
     toast(error.message);
     await load();
+  } finally {
+    input.disabled = false;
   }
 });
 
@@ -229,13 +262,17 @@ document.addEventListener('submit', async event => {
   if (event.target.id !== 'invite-form') return;
   event.preventDefault();
   const values = Object.fromEntries(new FormData(event.target).entries());
+  const button = event.target.querySelector('[type="submit"]');
   try {
+    setBusy(button, true, 'Inviting...');
     const result = await api('/api/users', values);
     event.target.reset();
     toast(`Temporary password: ${result.temporary_password}`);
     await load();
   } catch (error) {
     toast(error.message);
+  } finally {
+    setBusy(button, false);
   }
 });
 

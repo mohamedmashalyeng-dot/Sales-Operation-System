@@ -1947,7 +1947,7 @@ function decodeEmailCursor(cursor) {
 async function loadBootstrapDb() {
   if (!postgresPool || !usesPostgresStorage()) return loadDb();
   await ensureStorage();
-  const emailLimit = Math.max(50, Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 50));
+  const emailLimit = Math.max(1, Math.min(Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 50), 50));
   const data = await loadPostgresTables({
     leadLimit: Math.max(25, Number(process.env.BOOTSTRAP_LEAD_LIMIT || 25)),
     taskLimit: Math.max(25, Number(process.env.BOOTSTRAP_TASK_LIMIT || 25)),
@@ -2006,14 +2006,14 @@ async function loadEmailPage(options = {}) {
     .slice()
     .sort((a, b) => new Date(b.received_at || 0) - new Date(a.received_at || 0));
   const cursorIndex = cursor ? rows.findIndex(item => item.id === cursor.id) : -1;
-  const offset = cursorIndex >= 0 ? cursorIndex + 1 : Math.max(0, Number(options.offset || 0));
-  const emails = rows.slice(offset, offset + limit).map(publicEmailSummary);
+  const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+  const emails = rows.slice(startIndex, startIndex + limit).map(publicEmailSummary);
   return {
     emails,
     loaded: emails.length,
-    next_cursor: offset + emails.length < rows.length ? encodeEmailCursor(emails[emails.length - 1]) : '',
+    next_cursor: startIndex + emails.length < rows.length ? encodeEmailCursor(emails[emails.length - 1]) : '',
     limit,
-    has_more: offset + emails.length < rows.length
+    has_more: startIndex + emails.length < rows.length
   };
 }
 
@@ -4046,7 +4046,6 @@ async function handleApi(req, res) {
     await currentSessionUser(req);
     return sendJson(res, await loadEmailPage({
       cursor: url.searchParams.get('cursor'),
-      offset: url.searchParams.get('offset'),
       limit: url.searchParams.get('limit')
     }));
   }
@@ -4546,40 +4545,6 @@ async function handleApi(req, res) {
     user.password_changed_at = new Date().toISOString();
     await saveDb(db);
     return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
-  }
-
-  match = route.match(/^\/api\/users\/([^/]+)\/reset-password$/);
-  if (match && method === 'POST') {
-    requireDeveloperAccess(req, user);
-    const target = db.users.find(item => item.id === match[1]);
-    if (!target) throw statusError(404, 'User not found.');
-    const password = String(body.password || '').trim() || temporaryPassword();
-    if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
-    target.password_hash = hashPassword(password);
-    target.temporary_password = password;
-    target.password_changed_at = null;
-    target.invited_at ||= new Date().toISOString();
-    clearUserSessions(target.id);
-    addAudit(db, user, 'Team member password reset', 'user', target.email);
-    await saveDb(db);
-    return sendJson(res, { ok: true, temporary_password: password });
-  }
-
-  if (route === '/api/users' && method === 'POST') {
-    requireDeveloperAccess(req, user);
-    const email = normalizeEmail(body.email);
-    const name = String(body.name || '').trim();
-    const password = String(body.password || '').trim() || temporaryPassword();
-    const role = normalizeWorkspaceRole(body.role || 'member');
-    if (!name || !email) throw statusError(400, 'Name and email are required.');
-    if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
-    if (!role) throw statusError(400, 'Choose a valid role.');
-    if (role === 'admin' && !isDeveloperEmail(email)) throw statusError(400, 'Only the configured developer account can use Developer.');
-    if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
-    db.users.push({ id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null });
-    addAudit(db, user, 'Team member invited', 'user', email);
-    await saveDb(db);
-    return sendJson(res, { ok: true, temporary_password: password }, 201);
   }
 
   throw statusError(404, 'API route not found.');
