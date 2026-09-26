@@ -60,6 +60,8 @@ const ZOOM_AUTO_SYNC_ENABLED = String(process.env.ZOOM_AUTO_SYNC || 'true').toLo
 const ZOOM_AUTO_SYNC_MEETINGS = String(process.env.ZOOM_AUTO_SYNC_MEETINGS || 'true').toLowerCase() !== 'false';
 const ZOOM_AUTO_SYNC_CALLS = String(process.env.ZOOM_AUTO_SYNC_CALLS || 'true').toLowerCase() !== 'false';
 const ZOOM_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.ZOOM_AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000));
+const ZOOM_AUTO_SYNC_MAX_MEETINGS = Math.max(1, Math.min(Number(process.env.ZOOM_AUTO_SYNC_MAX_MEETINGS || process.env.ZOOM_MAX_MEETINGS || 500), 5000));
+const ZOOM_AUTO_SYNC_MAX_CALLS = Math.max(1, Math.min(Number(process.env.ZOOM_AUTO_SYNC_MAX_CALLS || 250), 1000));
 const ZOOM_REQUEST_DELAY_MS = Math.max(0, Number(process.env.ZOOM_REQUEST_DELAY_MS || 350));
 const PROGRAMME_CATALOG = [
   { id: 'pr-cim-l4', name: 'CIM Certificate in Professional and Digital Marketing', level: 'Level 4' },
@@ -4301,6 +4303,7 @@ function scheduleEventAutoSync(delayMs) {
 
 async function runEventAutoSync() {
   if (!EVENT_AUTO_SYNC_ENABLED) return;
+  if (zoomAutoSyncRunning) return scheduleEventAutoSync(60 * 1000);
   if (eventAutoSyncRunning) return scheduleEventAutoSync(EVENT_AUTO_SYNC_INTERVAL_MS);
   eventAutoSyncRunning = true;
   eventAutoSyncState.running = true;
@@ -4367,6 +4370,7 @@ function scheduleZoomAutoSync(delayMs) {
 async function runZoomAutoSync() {
   if (!ZOOM_AUTO_SYNC_ENABLED) return;
   if (zoomAutoSyncRunning) return scheduleZoomAutoSync(ZOOM_AUTO_SYNC_INTERVAL_MS);
+  if (eventAutoSyncRunning) return scheduleZoomAutoSync(60 * 1000);
   zoomAutoSyncRunning = true;
   zoomAutoSyncState.running = true;
   console.log('Zoom auto sync starting.');
@@ -4380,7 +4384,7 @@ async function runZoomAutoSync() {
     } else {
       if (ZOOM_AUTO_SYNC_MEETINGS) {
         try {
-          results.meetings = await importZoomMeetings(db, user, Number(process.env.ZOOM_MAX_MEETINGS || 500), { save: false });
+          results.meetings = await importZoomMeetings(db, user, ZOOM_AUTO_SYNC_MAX_MEETINGS, { save: false });
           shouldSave = true;
         } catch (error) {
           results.meetings = { error: error.message || 'Zoom meetings sync failed.' };
@@ -4390,7 +4394,7 @@ async function runZoomAutoSync() {
       }
       if (ZOOM_AUTO_SYNC_CALLS) {
         try {
-          results.calls = await importZoomCalls(db, user, Number(process.env.ZOOM_MAX_CALLS || 1000), { save: false });
+          results.calls = await importZoomCalls(db, user, ZOOM_AUTO_SYNC_MAX_CALLS, { save: false, max_calls: ZOOM_AUTO_SYNC_MAX_CALLS });
           shouldSave = true;
         } catch (error) {
           results.calls = { error: error.message || 'Zoom calls sync failed.' };
@@ -4436,11 +4440,10 @@ function startAutoSync() {
     eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
   }
   if (ZOOM_AUTO_SYNC_ENABLED) {
-    const delay = 25000;
+    const delay = 90000;
     zoomAutoSyncState = { ...zoomAutoSyncState, enabled: true, meetings: ZOOM_AUTO_SYNC_MEETINGS, calls: ZOOM_AUTO_SYNC_CALLS };
-    zoomAutoSyncState.next_run_at = new Date(Date.now() + delay).toISOString();
     console.log(`Zoom auto sync scheduled in ${Math.round(delay / 1000)}s.`);
-    setTimeout(runZoomAutoSync, delay);
+    scheduleZoomAutoSync(delay);
   } else {
     zoomAutoSyncState = { ...zoomAutoSyncState, enabled: false, running: false, next_run_at: null };
   }
