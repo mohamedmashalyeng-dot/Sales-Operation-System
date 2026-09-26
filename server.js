@@ -296,7 +296,47 @@ async function getPostgresPool() {
     connectionString: DATABASE_URL,
     ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined
   });
+  postgresPool.on('error', error => {
+    console.error(`Postgres idle connection error: ${error.message || error}`);
+  });
+  postgresPool.on('connect', client => {
+    client.on('error', error => {
+      console.error(`Postgres client connection error: ${error.message || error}`);
+    });
+  });
   return postgresPool;
+}
+
+function postgresConnectionLost(error) {
+  return /Connection terminated unexpectedly|ECONNRESET|Connection ended unexpectedly|Client has encountered a connection error/i.test(String(error?.message || error || ''));
+}
+
+async function resetPostgresPool() {
+  const pool = postgresPool;
+  postgresPool = null;
+  postgresSchemaReady = false;
+  postgresUserSchemaReady = false;
+  if (pool) {
+    try {
+      await pool.end();
+    } catch {}
+  }
+}
+
+async function postgresQuery(sql, params = [], attempts = 2) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await getPostgresPool();
+    try {
+      return await postgresPool.query(sql, params);
+    } catch (error) {
+      lastError = error;
+      if (!postgresConnectionLost(error) || attempt >= attempts - 1) throw error;
+      console.error(`Postgres query connection lost; reconnecting: ${error.message || error}`);
+      await resetPostgresPool();
+    }
+  }
+  throw lastError;
 }
 
 async function connectPostgresStorage() {
@@ -1369,7 +1409,7 @@ async function findLoginUser(email) {
     const developerUser = configuredDeveloperUserRecord();
     if (developerUser) await upsertPostgresUsers([developerUser]);
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
-    const result = await postgresPool.query(
+    const result = await postgresQuery(
       `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
       [normalizeEmail(email)]
     );
@@ -1389,7 +1429,7 @@ async function forceConfiguredDeveloperLogin(email, password) {
   if (postgresPool) {
     await upsertPostgresUsers([developerUser]);
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
-    const result = await postgresPool.query(
+    const result = await postgresQuery(
       `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
       [normalizeEmail(email)]
     );
@@ -1407,7 +1447,7 @@ async function findUserById(id) {
   await ensureUserStorage();
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
-    const result = await postgresPool.query(
+    const result = await postgresQuery(
       `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where id = $1 limit 1`,
       [id]
     );
@@ -1423,7 +1463,7 @@ async function createSession(user) {
   await ensureUserStorage();
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-    await postgresPool.query(
+    await postgresQuery(
       `insert into ${table} (id, user_id, expires_at, created_at, updated_at)
        values ($1, $2, $3, now(), now())`,
       [sid, user.id, expiresAt.toISOString()]
@@ -1439,14 +1479,14 @@ async function getSession(sid) {
   await ensureUserStorage();
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-    const result = await postgresPool.query(
+    const result = await postgresQuery(
       `select id, user_id, gmail_state, eventbrite_state, expires_at from ${table} where id = $1 limit 1`,
       [sid]
     );
     const session = result.rows[0];
     if (!session) return null;
     if (new Date(session.expires_at).getTime() < Date.now()) {
-      await postgresPool.query(`delete from ${table} where id = $1`, [sid]);
+      await postgresQuery(`delete from ${table} where id = $1`, [sid]);
       return null;
     }
     return session;
@@ -1464,7 +1504,7 @@ async function touchSession(sid) {
   const expiresAt = new Date(Date.now() + SESSION_TTL);
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-    await postgresPool.query(`update ${table} set expires_at = $2, updated_at = now() where id = $1`, [sid, expiresAt.toISOString()]);
+    await postgresQuery(`update ${table} set expires_at = $2, updated_at = now() where id = $1`, [sid, expiresAt.toISOString()]);
   } else {
     const session = memorySessions.get(sid);
     if (session) session.expires_at = expiresAt.getTime();
@@ -1475,7 +1515,7 @@ async function patchSession(sid, fields = {}) {
   if (!sid) throw statusError(401, 'Sign in to continue.');
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-    await postgresPool.query(
+    await postgresQuery(
       `update ${table}
        set gmail_state = coalesce($2, gmail_state),
            eventbrite_state = coalesce($3, eventbrite_state),
@@ -1494,7 +1534,7 @@ async function deleteSession(sid) {
   if (!sid) return;
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-    await postgresPool.query(`delete from ${table} where id = $1`, [sid]);
+    await postgresQuery(`delete from ${table} where id = $1`, [sid]);
     return;
   }
   memorySessions.delete(sid);
@@ -1514,20 +1554,20 @@ async function recordPostgresLogin(user, req) {
   if (!postgresPool || !user) return;
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const loginEventsTable = sqlIdentifier(POSTGRES_LOGIN_EVENTS_TABLE, 'app_login_events');
-  await postgresPool.query(
+  await postgresQuery(
     `
       insert into ${loginEventsTable} (user_id, name, email, ip_address, user_agent)
       values ($1, $2, $3, $4, $5)
     `,
     [user.id, user.name, normalizeEmail(user.email), requestIp(req), String(req.headers['user-agent'] || '').slice(0, 500)]
   );
-  await postgresPool.query(`update ${usersTable} set last_login_at = now(), updated_at = now() where id = $1`, [user.id]);
+  await postgresQuery(`update ${usersTable} set last_login_at = now(), updated_at = now() where id = $1`, [user.id]);
 }
 
 async function clearUserSessions(userId) {
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-    await postgresPool.query(`delete from ${table} where user_id = $1`, [userId]);
+    await postgresQuery(`delete from ${table} where user_id = $1`, [userId]);
     return;
   }
   for (const [sid, session] of memorySessions.entries()) {
@@ -5953,12 +5993,22 @@ async function handleApi(req, res) {
     return sendJson(res, result);
   }
   if (route === '/api/zoom/calls' && method === 'GET') {
-    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 500), 5000));
-    const calls = (db.zoom?.calls || [])
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 250));
+    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+    const allCalls = (db.zoom?.calls || [])
       .slice()
-      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0))
-      .slice(0, limit);
-    return sendJson(res, { calls, last_sync_at: db.zoom?.last_call_sync_at || null });
+      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
+    const calls = allCalls.slice(offset, offset + limit);
+    return sendJson(res, {
+      calls,
+      total: allCalls.length,
+      offset,
+      limit,
+      loaded: offset + calls.length,
+      has_more: offset + calls.length < allCalls.length,
+      next_offset: offset + calls.length,
+      last_sync_at: db.zoom?.last_call_sync_at || null
+    });
   }
   if (route === '/api/integrations/zoom/calls/sync' && method === 'POST') {
     const result = await importZoomCalls(db, user, Number(body.max_calls || process.env.ZOOM_MAX_CALLS || 1000), {

@@ -558,10 +558,14 @@ function mergeZoomCalls(calls=[]){
  calls.forEach(call=>{if(call?.id)byId.set(call.id,call);});
  data.zoom.calls=[...byId.values()];
 }
-async function loadZoomCalls(){
- const result=await api('/api/zoom/calls?limit=1000',undefined,'GET',{silent:true});
+async function loadZoomCalls(reset=false){
+ data.zoom ||= {};
+ const page=data.zoom.call_paging||{},offset=reset?0:Number(page.next_offset||0);
+ const result=await api(`/api/zoom/calls?limit=50&offset=${offset}`,undefined,'GET',{silent:true});
+ if(reset)data.zoom.calls=[];
  mergeZoomCalls(result.calls||[]);
  data.zoom.last_call_sync_at=result.last_sync_at||data.zoom.last_call_sync_at;
+ data.zoom.call_paging={loaded:Number(result.loaded||data.zoom.calls.length||0),total:Number(result.total||data.zoom.calls.length||0),limit:Number(result.limit||50),has_more:Boolean(result.has_more),next_offset:Number(result.next_offset||0)};
  return result.calls||[];
 }
 function go(route){if(location.hash===`#/${route}`)render();else location.hash=`#/${route}`;}
@@ -1033,14 +1037,19 @@ function zoomCallStats(calls){
  return {total:calls.length,inbound:calls.filter(call=>String(call.direction||'').includes('in')).length,outbound:calls.filter(call=>String(call.direction||'').includes('out')).length,linked:calls.filter(call=>call.lead_id).length};
 }
 function zoomCallDuration(call){return call.duration?durationLabel(Number(call.duration||0)*1000):'â€”';}
+function zoomCallsMore(){
+ const page=data.zoom?.call_paging||{};
+ if(!page.has_more)return '';
+ return `<div class="crm-more"><button class="button soft" data-act="load-more-zoom-calls">More</button><span class="small muted">${Number(page.loaded||0).toLocaleString()} of ${Number(page.total||0).toLocaleString()} calls loaded. Next click loads 50 more.</span></div>`;
+}
 function zoomCallsTable(calls){
- return `<table class="event-table zoom-table"><thead><tr><th>Started</th><th>Direction</th><th>From</th><th>To</th><th>Duration</th><th>Result</th><th>Lead</th></tr></thead><tbody>${calls.map(call=>`<tr><td>${timestamp(call.started_at)}</td><td>${badge(call.direction||'unknown',String(call.direction||'').includes('in')?'green':'blue')}</td><td><strong>${esc(call.caller_name||call.caller_number||'â€”')}</strong><div class="small muted">${esc(call.caller_number||'')}</div></td><td><strong>${esc(call.callee_name||call.callee_number||'â€”')}</strong><div class="small muted">${esc(call.callee_number||'')}</div></td><td>${esc(zoomCallDuration(call))}</td><td>${esc(call.result||'â€”')}</td><td>${call.lead_id?`<button class="text-button" data-go="leads/${esc(call.lead_id)}">${esc(call.lead_name||call.lead_id)}</button>`:'<span class="small muted">Not linked</span>'}</td></tr>`).join('')}</tbody></table>${calls.length?'':empty('No Zoom calls yet','Run Sync calls after adding Zoom Phone call-history scopes.')}`;
+ return `<table class="event-table zoom-table"><thead><tr><th>Started</th><th>Direction</th><th>From</th><th>To</th><th>Duration</th><th>Result</th><th>Lead</th></tr></thead><tbody>${calls.map(call=>`<tr><td>${timestamp(call.started_at)}</td><td>${badge(call.direction||'unknown',String(call.direction||'').includes('in')?'green':'blue')}</td><td><strong>${esc(call.caller_name||call.caller_number||'â€”')}</strong><div class="small muted">${esc(call.caller_number||'')}</div></td><td><strong>${esc(call.callee_name||call.callee_number||'â€”')}</strong><div class="small muted">${esc(call.callee_number||'')}</div></td><td>${esc(zoomCallDuration(call))}</td><td>${esc(call.result||'â€”')}</td><td>${call.lead_id?`<button class="text-button" data-go="leads/${esc(call.lead_id)}">${esc(call.lead_name||call.lead_id)}</button>`:'<span class="small muted">Not linked</span>'}</td></tr>`).join('')}</tbody></table>${calls.length?'':empty('No Zoom calls yet','Run Sync calls after adding Zoom Phone call-history scopes.')}${zoomCallsMore()}`;
 }
 async function zoom(){
  ensureZoomFilters();
  let loadError='';
  try{
-  await Promise.all([loadZoomEvents(),loadZoomCalls()]);
+  await Promise.all([loadZoomEvents(),loadZoomCalls(true)]);
  }catch(error){
   loadError=error.message;
  }
@@ -1159,6 +1168,7 @@ async function action(act,id='',target=null){
  if(act==='event-open')return eventInfoDialog(id);
  if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'Unanswered'});await loadInboxEmails(true);return render();}
  if(act==='load-more-emails'){const result=await loadInboxEmails(false);await render();toast(`${(result.emails||[]).length} more emails loaded.`);return;}
+ if(act==='load-more-zoom-calls'){const calls=await loadZoomCalls(false);await render();toast(`${calls.length} more Zoom call${calls.length===1?'':'s'} loaded.`);return;}
  if(act==='date-picker'){openDatePicker(id);return;}
  if(act==='open-email')return openEmailDialog(id);
  if(act==='open-email-lead'){const dialog=$('#dialog');if(dialog.open)dialog.close();go('leads/'+id);return;}
