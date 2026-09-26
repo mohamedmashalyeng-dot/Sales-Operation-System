@@ -163,7 +163,7 @@ const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="$
 let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
-const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300;
+const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300,PLANNER_LIST_LIMIT=120,PLANNER_DONE_LIMIT=30;
 const GMAIL_IMPORT_ENABLED=true;
 const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
 const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['attribution','chart','Attribution']];
@@ -384,19 +384,27 @@ function setActionLoading(target,on,label=''){
  if(on){
   target.dataset.loadingHtml=target.innerHTML;
   target.dataset.loadingWidth=target.style.minWidth||'';
+  target.dataset.loadingAria=target.getAttribute('aria-label')||'';
+  target.dataset.loadingHadAria=target.hasAttribute('aria-label')?'1':'0';
   target.style.minWidth=`${target.getBoundingClientRect().width}px`;
   if('disabled'in target)target.disabled=true;
   target.classList.add('is-loading');
   target.setAttribute('aria-busy','true');
-  target.innerHTML=`<span class="button-spinner" aria-hidden="true"></span><span>${esc(label)||target.dataset.loadingText||target.textContent||'Loading'}</span>`;
+  const loadingLabel=label||target.dataset.loadingText||target.textContent||'Loading';
+  target.setAttribute('aria-label',loadingLabel);
+  target.innerHTML='<span class="button-spinner" aria-hidden="true"></span>';
  }else if(target.dataset.loadingHtml){
   target.innerHTML=target.dataset.loadingHtml;
   target.style.minWidth=target.dataset.loadingWidth;
   if('disabled'in target)target.disabled=false;
   target.classList.remove('is-loading');
   target.removeAttribute('aria-busy');
+  if(target.dataset.loadingHadAria==='1')target.setAttribute('aria-label',target.dataset.loadingAria);
+  else target.removeAttribute('aria-label');
   delete target.dataset.loadingHtml;
   delete target.dataset.loadingWidth;
+  delete target.dataset.loadingAria;
+  delete target.dataset.loadingHadAria;
  }
 }
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
@@ -508,6 +516,7 @@ function taskDueBucket(t){
 function plannerTasks(){
  const tasks=(data.tasks||[]).slice().sort((a,b)=>{
   if(a.status!==b.status)return a.status==='Open'?-1:1;
+  if(a.status==='Done')return new Date(b.completed_at||b.due_at||0)-new Date(a.completed_at||a.due_at||0);
   return new Date(a.due_at||0)-new Date(b.due_at||0);
  });
  if(filters.planner==='All')return tasks;
@@ -655,8 +664,7 @@ async function monitoring(){
  <div class="stats-grid monitoring-stats">${monStat('New',ops.stageCount('New lead'),'New lead stage','users')}${monStat('Qualified',ops.stageCount('Qualified'),'Ready for next step','check')}${monStat('Lost',ops.stageCount('Lost'),'Closed lost','close','risk')}${monStat('Enrolled',ops.enrolled,'Confirmed learners','shield')}</div>
  <section class="monitoring-alerts">${alerts.map(a=>`<button class="panel monitoring-alert" data-go="${esc(a.go)}"><span>${esc(a.label)}</span><strong>${fmtNumber(a.value)}</strong><em>${esc(a.detail)}</em></button>`).join('')}</section>
  ${monitoringIntegrationCards(health)}
- <div class="monitoring-grid"><section class="panel"><div class="panel-header"><div><h2>Programmes under pressure</h2><p>Active leads by programme</p></div>${icon('chart')}</div><div class="panel-body">${metricList(ops.programmePressure)}</div></section><section class="panel"><div class="panel-header"><div><h2>Pipeline funnel</h2><p>Lead to enrolment conversion</p></div>${icon('shield')}</div><div class="panel-body">${metricList(charts.funnel)}</div></section></div>
- <div class="monitoring-grid"><section class="panel"><div class="panel-header"><div><h2>Lead trend</h2><p>Created leads by week</p></div>${icon('chart')}</div><div class="panel-body">${metricList(charts.weeks)}</div></section><section class="panel"><div class="panel-header"><div><h2>Task aging</h2><p>Open and completed workload buckets</p></div>${icon('clock')}</div><div class="panel-body">${metricList(charts.ageBuckets)}</div></section></div>
+ <div class="monitoring-grid monitoring-chart-grid"><section class="panel"><div class="panel-header"><div><h2>Programmes under pressure</h2><p>Active leads by programme</p></div>${icon('chart')}</div><div class="panel-body">${metricList(ops.programmePressure)}</div></section><section class="panel"><div class="panel-header"><div><h2>Pipeline funnel</h2><p>Lead to enrolment conversion</p></div>${icon('shield')}</div><div class="panel-body">${metricList(charts.funnel)}</div></section><div class="monitoring-row-gap" aria-hidden="true"></div><section class="panel"><div class="panel-header"><div><h2>Lead trend</h2><p>Created leads by week</p></div>${icon('chart')}</div><div class="panel-body">${metricList(charts.weeks)}</div></section><section class="panel"><div class="panel-header"><div><h2>Task aging</h2><p>Open and completed workload buckets</p></div>${icon('clock')}</div><div class="panel-body">${metricList(charts.ageBuckets)}</div></section></div>
  <section class="panel mt"><div class="panel-header"><div><h2>Team performance</h2><p>Owner workload, overdue tasks and outcomes</p></div>${icon('users')}</div>${monitorTable(['Owner','Leads','Overdue','Avg response','Enrolled','Workload'],teamRows,'No team records')}</section>
  <div class="monitoring-grid mt"><section class="panel"><div class="panel-header"><div><h2>Pipeline risk</h2><p>Stale leads and stalled records</p></div>${icon('bell')}</div>${monitorTable(['Lead','Stage','Age',''],staleRows,'No stale leads')}</section><section class="panel"><div class="panel-header"><div><h2>Data quality</h2><p>Duplicates, missing fields and unlinked attendees</p></div>${icon('file')}</div>${monitorTable(['Check','Count','Impact'],qualityRows)}</section></div>
  <div class="monitoring-grid mt"><section class="panel"><div class="panel-header"><div><h2>Source performance</h2><p>Leads / enrolled by source</p></div>${icon('link')}</div><div class="panel-body">${metricList(charts.sources)}</div></section><section class="panel"><div class="panel-header"><div><h2>Admin and system</h2><p>Runtime, storage, jobs and audit activity</p></div>${icon('settings')}</div>${monitorTable(['Signal','Value','Detail'],systemRows)}</section></div>
@@ -760,6 +768,7 @@ async function leadDetail(id){
 function planner(){
  const all=data.tasks||[],open=all.filter(t=>t.status==='Open'),overdue=open.filter(t=>taskDueBucket(t)==='Overdue'),today=open.filter(t=>taskDueBucket(t)==='Today'),upcoming=open.filter(t=>taskDueBucket(t)==='Upcoming'),done=all.filter(t=>t.status==='Done').sort((a,b)=>new Date(b.completed_at||b.due_at||0)-new Date(a.completed_at||a.due_at||0));
  const filtered=plannerTasks(),emails=(data.emails||[]).filter(emailNeedsResponse).sort((a,b)=>new Date(emailDueAt(a)||0)-new Date(emailDueAt(b)||0)).slice(0,6),events=(data.events||[]).filter(e=>eventDateValue(e)>=new Date()).sort((a,b)=>eventDateValue(a)-eventDateValue(b)).slice(0,5);
+ const listLimit=filters.planner==='Done'?PLANNER_DONE_LIMIT:PLANNER_LIST_LIMIT;
  return heading('Planner.','Tasks, email follow-ups and event actions in one place.',data.permissions.sales?`<button class="button primary" data-act="add-task">${icon('plus')}New task</button>`:'')+
  `<div class="stats-grid planner-stats">${stat('Overdue',overdue.length,'Needs attention now','clock')}${stat('Due today',today.length,'Calls and follow-ups','calendar')}${stat('Upcoming',upcoming.length,'Scheduled next steps','arrow')}${stat('Completed',done.length,'Closed actions','check')}</div>
  <div class="planner-layout">
@@ -770,7 +779,7 @@ function planner(){
    <section class="panel planner-email-panel"><div class="panel-header"><div><h2>Email follow-ups</h2><p>Incoming messages still waiting.</p></div><button class="text-button" data-go="inbox">Inbox ${icon('arrow')}</button></div><div class="panel-body planner-mini-list">${emails.map(plannerEmailCard).join('')||empty('No email follow-ups')}</div></section>
    <section class="panel mt planner-events-panel"><div class="panel-header"><div><h2>Upcoming events</h2><p>Sessions that may create follow-up work.</p></div><button class="text-button" data-go="events">Events ${icon('arrow')}</button></div><div class="panel-body planner-mini-list">${events.map(plannerEventCard).join('')||empty('No upcoming events')}</div></section>
   </aside>
-  <div class="planner-task-list-panel"><div class="chips planner-chips planner-list-filter">${['Open','Overdue','Today','Upcoming','Done','All'].map(s=>`<button class="chip ${filters.planner===s?'active':''}" data-act="planner-filter" data-id="${s}">${s}</button>`).join('')}</div><section class="panel"><div class="panel-header"><div><h2>${esc(filters.planner)} task list</h2><p>${filtered.length} ${filtered.length===1?'task':'tasks'} in this view</p></div>${icon('calendar')}</div><div class="panel-body planner-list">${filtered.slice(0,160).map(plannerTaskCard).join('')||empty('Nothing here right now','Create a task or change the filter.')}</div>${filtered.length>160?`<div class="crm-more">Showing first 160 tasks. Use the filter chips to narrow the list.</div>`:''}</section></div>
+  <div class="planner-task-list-panel"><div class="chips planner-chips planner-list-filter">${['Open','Overdue','Today','Upcoming','Done','All'].map(s=>`<button class="chip ${filters.planner===s?'active':''}" data-act="planner-filter" data-id="${s}">${s}</button>`).join('')}</div><section class="panel"><div class="panel-header"><div><h2>${esc(filters.planner)} task list</h2><p>${filtered.length} ${filtered.length===1?'task':'tasks'} in this view</p></div>${icon('calendar')}</div><div class="panel-body planner-list">${filtered.slice(0,listLimit).map(plannerTaskCard).join('')||empty('Nothing here right now','Create a task or change the filter.')}</div>${filtered.length>listLimit?`<div class="crm-more">Showing latest ${listLimit} tasks. Use the filter chips to narrow the list.</div>`:''}</section></div>
  </div>`;
 }
 async function applications(){const result=await api('/api/applications',undefined,'GET',{silent:true});data.applications=result.applications||[];return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.')+(data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+`<div class="application-grid">${data.applications.map(a=>`<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${badge(a.learner?'Enrolled':a.status)}</div>${a.learner?`<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>`:`<div class="requirements">${a.requirements.map(r=>requirement(a,r)).join('')}</div><div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${data.permissions.review?`${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}`:'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>'}</div>`}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`).join('')}</div>${data.applications.length?'':empty('No applications yet','Open a lead to start an application.')}`;}

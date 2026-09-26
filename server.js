@@ -672,7 +672,7 @@ async function loadPostgresTables(options = {}) {
       ? postgresPool.query(`select data from app_leads order by created_at desc nulls last, id limit $1`, [leadLimit])
       : postgresPool.query(`select data from app_leads order by created_at nulls last, id`),
     taskLimit > 0
-      ? postgresPool.query(`select data from app_tasks order by due_at desc nulls last, id limit $1`, [taskLimit])
+      ? postgresPool.query(`select data from app_tasks order by case when status = 'Open' then 0 else 1 end, due_at nulls last, completed_at desc nulls last, id limit $1`, [taskLimit])
       : postgresPool.query(`select data from app_tasks order by due_at nulls last, id`),
     emailLimit > 0
       ? postgresPool.query(`select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id limit $1`, [emailLimit])
