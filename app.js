@@ -766,7 +766,7 @@ async function monitoring(){
   `<tr><td>Storage</td><td>${esc(system.storage||'unknown')}</td><td>Database mode</td></tr>`,
   `<tr><td>Last save</td><td>${system.last_save_at?timestamp(system.last_save_at):'Not saved yet'}</td><td>Backend write checkpoint</td></tr>`,
   `<tr><td>API errors</td><td>${system.api_error_count||0}</td><td>${(system.api_errors||[])[0]?.message?esc((system.api_errors||[])[0].message):'No recent errors'}</td></tr>`,
-  `<tr><td>Background jobs</td><td>${system.background_jobs?.gmail?.running||system.background_jobs?.events?.running?'Running':'Idle'}</td><td>Gmail and event sync workers</td></tr>`,
+  `<tr><td>Background jobs</td><td>${system.background_jobs?.gmail?.running||system.background_jobs?.events?.running||system.background_jobs?.zoom?.running?'Running':'Idle'}</td><td>Gmail, event and Zoom sync workers</td></tr>`,
   `<tr><td>Audit activity</td><td>${system.audit_24h||0}</td><td>Last 24 hours</td></tr>`
  ];
  return heading('Monitoring dashboard.','Operations, integrations, team performance, risk and system health.',`<button class="button soft" data-act="reload">${icon('arrow')}Refresh</button>`)+

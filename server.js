@@ -56,6 +56,10 @@ const EVENT_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.E
 const EVENT_AUTO_SYNC_MAX_EVENTS = Math.max(1, Math.min(Number(process.env.EVENT_AUTO_SYNC_MAX_EVENTS || 10), 50));
 const EVENTBRITE_DELETE_SCAN_PAGES = Math.max(1, Math.min(Number(process.env.EVENTBRITE_DELETE_SCAN_PAGES || 10), 50));
 const EVENTS_SHEET_URL = process.env.EVENTS_SHEET_URL || '';
+const ZOOM_AUTO_SYNC_ENABLED = String(process.env.ZOOM_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const ZOOM_AUTO_SYNC_MEETINGS = String(process.env.ZOOM_AUTO_SYNC_MEETINGS || 'true').toLowerCase() !== 'false';
+const ZOOM_AUTO_SYNC_CALLS = String(process.env.ZOOM_AUTO_SYNC_CALLS || 'true').toLowerCase() !== 'false';
+const ZOOM_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.ZOOM_AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000));
 const ZOOM_REQUEST_DELAY_MS = Math.max(0, Number(process.env.ZOOM_REQUEST_DELAY_MS || 350));
 const PROGRAMME_CATALOG = [
   { id: 'pr-cim-l4', name: 'CIM Certificate in Professional and Digital Marketing', level: 'Level 4' },
@@ -79,6 +83,9 @@ let gmailAutoSyncState = { enabled: GMAIL_AUTO_SYNC_ENABLED, mode: GMAIL_AUTO_SY
 let eventAutoSyncTimer = null;
 let eventAutoSyncRunning = false;
 let eventAutoSyncState = { enabled: EVENT_AUTO_SYNC_ENABLED, running: false, last_result: null, last_error: null, next_run_at: null };
+let zoomAutoSyncTimer = null;
+let zoomAutoSyncRunning = false;
+let zoomAutoSyncState = { enabled: ZOOM_AUTO_SYNC_ENABLED, meetings: ZOOM_AUTO_SYNC_MEETINGS, calls: ZOOM_AUTO_SYNC_CALLS, running: false, last_result: null, last_error: null, next_run_at: null };
 const serverStartedAt = new Date();
 const monitoringState = { last_save_at: null, api_errors: [] };
 
@@ -676,6 +683,26 @@ function requestIp(req) {
 
 const jsonValue = value => JSON.stringify(value ?? null);
 const dateValue = value => value ? new Date(value).toISOString() : null;
+function workspaceMetaState(db = {}) {
+  return {
+    ...(db.meta || {}),
+    apollo: db.apollo || db.meta?.apollo || { imported_person_ids: [] },
+    zoom: db.zoom || db.meta?.zoom || { imported_meeting_ids: [] }
+  };
+}
+
+async function workspaceMetaForSave(client, db = {}, options = {}) {
+  let meta = workspaceMetaState(db);
+  if (options.preserveMeta || options.preserveApollo || options.preserveZoom) {
+    const current = await client.query(`select meta from app_workspace where id = $1`, ['main']);
+    const currentMeta = current.rows[0]?.meta || {};
+    if (options.preserveMeta) meta = { ...currentMeta, ...meta };
+    if (options.preserveApollo) meta.apollo = currentMeta.apollo || meta.apollo || { imported_person_ids: [] };
+    if (options.preserveZoom) meta.zoom = currentMeta.zoom || meta.zoom || { imported_meeting_ids: [] };
+  }
+  return meta;
+}
+
 function gmailQueryDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '2026/01/01';
@@ -800,6 +827,7 @@ async function savePostgresTables(db) {
   const client = await postgresPool.connect();
   try {
     await client.query('begin');
+    const metaState = workspaceMetaState(db);
     await client.query(
       `insert into app_workspace (id, demo, stages, sources, gmail, eventbrite, meta, updated_at)
        values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, now())
@@ -811,7 +839,7 @@ async function savePostgresTables(db) {
          eventbrite = excluded.eventbrite,
          meta = excluded.meta,
          updated_at = now()`,
-      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(db.eventbrite || {}), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {}, zoom: db.zoom || {} })]
+      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(db.eventbrite || {}), jsonValue(metaState)]
     );
     await client.query(
       `with rows as (
@@ -1126,6 +1154,7 @@ async function saveEventImportTables(db, options = {}) {
       const current = await client.query(`select gmail from app_workspace where id = $1`, ['main']);
       gmailState = current.rows[0]?.gmail || gmailState;
     }
+    const metaState = await workspaceMetaForSave(client, db, options);
     await client.query(
       `insert into app_workspace (id, demo, stages, sources, gmail, eventbrite, meta, updated_at)
        values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, now())
@@ -1137,7 +1166,7 @@ async function saveEventImportTables(db, options = {}) {
          eventbrite = excluded.eventbrite,
          meta = excluded.meta,
          updated_at = now()`,
-      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(gmailState), jsonValue(db.eventbrite || {}), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {}, zoom: db.zoom || {} })]
+      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(gmailState), jsonValue(db.eventbrite || {}), jsonValue(metaState)]
     );
     await client.query(
       `with rows as (
@@ -1242,6 +1271,7 @@ async function saveGmailImportTables(db, options = {}) {
       const current = await client.query(`select eventbrite from app_workspace where id = $1`, ['main']);
       eventbriteState = current.rows[0]?.eventbrite || eventbriteState;
     }
+    const metaState = await workspaceMetaForSave(client, db, { preserveMeta: true, preserveApollo: true, preserveZoom: true });
     await client.query(
       `insert into app_workspace (id, demo, stages, sources, gmail, eventbrite, meta, updated_at)
        values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, now())
@@ -1253,7 +1283,7 @@ async function saveGmailImportTables(db, options = {}) {
          eventbrite = excluded.eventbrite,
          meta = excluded.meta,
          updated_at = now()`,
-      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(eventbriteState), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {}, zoom: db.zoom || {} })]
+      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(eventbriteState), jsonValue(metaState)]
     );
     await client.query(
       `with rows as (
@@ -4282,7 +4312,7 @@ async function runEventAutoSync() {
     if (eventbriteConfigured() || eventbritePrivateTokenConfigured()) {
       try {
         results.eventbrite = await importEventbriteEvents(db, user, EVENT_AUTO_SYNC_MAX_EVENTS, { save: false });
-        await saveEventImportTables(db, { preserveGmail: true, deleteEventIds: results.eventbrite.deleted_event_ids || [] });
+        await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, deleteEventIds: results.eventbrite.deleted_event_ids || [] });
       } catch (error) {
         results.eventbrite = { error: error.message || 'Eventbrite sync failed.' };
       }
@@ -4292,20 +4322,22 @@ async function runEventAutoSync() {
     if (EVENTS_SHEET_URL) {
       try {
         results.sheet = await importSpreadsheetEvents(db, user, { filename: 'auto-events-sheet', google_url: EVENTS_SHEET_URL });
-        await saveEventImportTables(db, { preserveGmail: true });
+        await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true });
       } catch (error) {
         results.sheet = { error: error.message || 'Sheet sync failed.' };
       }
     } else {
       results.sheet = { skipped: true, reason: 'EVENTS_SHEET_URL is not configured.' };
     }
-    if (zoomConfigured()) {
+    if (zoomConfigured() && !ZOOM_AUTO_SYNC_ENABLED) {
       try {
         results.zoom = await importZoomMeetings(db, user, Number(process.env.ZOOM_MAX_MEETINGS || 500), { save: false });
         await saveEventImportTables(db, { preserveGmail: true });
       } catch (error) {
         results.zoom = { error: error.message || 'Zoom sync failed.' };
       }
+    } else if (ZOOM_AUTO_SYNC_ENABLED) {
+      results.zoom = { skipped: true, reason: 'Zoom auto sync runs in its own worker.' };
     } else {
       results.zoom = { skipped: true, reason: 'Zoom is not configured.' };
     }
@@ -4323,10 +4355,70 @@ async function runEventAutoSync() {
   }
 }
 
+function scheduleZoomAutoSync(delayMs) {
+  if (!ZOOM_AUTO_SYNC_ENABLED) return;
+  if (zoomAutoSyncTimer) clearTimeout(zoomAutoSyncTimer);
+  const delay = Math.max(1000, Number(delayMs) || ZOOM_AUTO_SYNC_INTERVAL_MS);
+  zoomAutoSyncState.next_run_at = new Date(Date.now() + delay).toISOString();
+  zoomAutoSyncTimer = setTimeout(runZoomAutoSync, delay);
+  if (zoomAutoSyncTimer.unref) zoomAutoSyncTimer.unref();
+}
+
+async function runZoomAutoSync() {
+  if (!ZOOM_AUTO_SYNC_ENABLED) return;
+  if (zoomAutoSyncRunning) return scheduleZoomAutoSync(ZOOM_AUTO_SYNC_INTERVAL_MS);
+  zoomAutoSyncRunning = true;
+  zoomAutoSyncState.running = true;
+  console.log('Zoom auto sync starting.');
+  try {
+    const db = await loadDb();
+    const user = autoSyncUser(db);
+    const results = {};
+    let shouldSave = false;
+    if (!zoomConfigured()) {
+      results.zoom = { skipped: true, reason: 'Zoom is not configured.' };
+    } else {
+      if (ZOOM_AUTO_SYNC_MEETINGS) {
+        try {
+          results.meetings = await importZoomMeetings(db, user, Number(process.env.ZOOM_MAX_MEETINGS || 500), { save: false });
+          shouldSave = true;
+        } catch (error) {
+          results.meetings = { error: error.message || 'Zoom meetings sync failed.' };
+        }
+      } else {
+        results.meetings = { skipped: true, reason: 'ZOOM_AUTO_SYNC_MEETINGS is disabled.' };
+      }
+      if (ZOOM_AUTO_SYNC_CALLS) {
+        try {
+          results.calls = await importZoomCalls(db, user, Number(process.env.ZOOM_MAX_CALLS || 1000), { save: false });
+          shouldSave = true;
+        } catch (error) {
+          results.calls = { error: error.message || 'Zoom calls sync failed.' };
+        }
+      } else {
+        results.calls = { skipped: true, reason: 'ZOOM_AUTO_SYNC_CALLS is disabled.' };
+      }
+      if (shouldSave) await saveEventImportTables(db, { preserveGmail: true });
+    }
+    zoomAutoSyncState.last_result = results;
+    const errors = Object.values(results).filter(item => item?.error).map(item => item.error);
+    zoomAutoSyncState.last_error = errors.length ? errors.join('; ') : null;
+    console.log(`Zoom auto sync finished: ${JSON.stringify(results)}`);
+  } catch (error) {
+    zoomAutoSyncState.last_error = error.message || 'Zoom auto sync failed.';
+    console.error(`Zoom auto sync failed: ${zoomAutoSyncState.last_error}`);
+  } finally {
+    zoomAutoSyncRunning = false;
+    zoomAutoSyncState.running = false;
+    scheduleZoomAutoSync(ZOOM_AUTO_SYNC_INTERVAL_MS);
+  }
+}
+
 function startAutoSync() {
-  if (!GMAIL_AUTO_SYNC_ENABLED && !EVENT_AUTO_SYNC_ENABLED) {
+  if (!GMAIL_AUTO_SYNC_ENABLED && !EVENT_AUTO_SYNC_ENABLED && !ZOOM_AUTO_SYNC_ENABLED) {
     gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME, running: false, next_run_at: null };
     eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
+    zoomAutoSyncState = { ...zoomAutoSyncState, enabled: false, running: false, next_run_at: null };
     return;
   }
   if (GMAIL_AUTO_SYNC_ENABLED) {
@@ -4342,6 +4434,15 @@ function startAutoSync() {
     setTimeout(runEventAutoSync, delay);
   } else {
     eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
+  }
+  if (ZOOM_AUTO_SYNC_ENABLED) {
+    const delay = 25000;
+    zoomAutoSyncState = { ...zoomAutoSyncState, enabled: true, meetings: ZOOM_AUTO_SYNC_MEETINGS, calls: ZOOM_AUTO_SYNC_CALLS };
+    zoomAutoSyncState.next_run_at = new Date(Date.now() + delay).toISOString();
+    console.log(`Zoom auto sync scheduled in ${Math.round(delay / 1000)}s.`);
+    setTimeout(runZoomAutoSync, delay);
+  } else {
+    zoomAutoSyncState = { ...zoomAutoSyncState, enabled: false, running: false, next_run_at: null };
   }
 }
 
@@ -5848,7 +5949,8 @@ async function handleApi(req, res) {
       api_error_count: monitoringState.api_errors.length,
       background_jobs: {
         gmail: gmailAutoSyncState,
-        events: eventAutoSyncState
+        events: eventAutoSyncState,
+        zoom: zoomAutoSyncState
       },
       audit_24h: (db.audit || []).filter(item => new Date(item.occurred_at || 0) >= since).length
     });
@@ -5959,13 +6061,13 @@ async function handleApi(req, res) {
   }
   if (route === '/api/integrations/eventbrite/sync' && method === 'POST') {
     const result = await importEventbriteEvents(db, user, Number(body.max_events || 10), { save: false });
-    await saveEventImportTables(db, { preserveGmail: true, deleteEventIds: result.deleted_event_ids || [] });
+    await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, deleteEventIds: result.deleted_event_ids || [] });
     return sendJson(res, result);
   }
   if (route === '/api/events/import' && method === 'POST') {
     if (!permissions(user.role).sales) throw statusError(403, 'You do not have permission to import events.');
     const result = await importSpreadsheetEvents(db, user, body);
-    await saveEventImportTables(db, { preserveGmail: true });
+    await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true });
     return sendJson(res, result, 201);
   }
   if (route === '/api/integrations/zoom/status' && method === 'GET') {
@@ -5980,7 +6082,9 @@ async function handleApi(req, res) {
       history_from: process.env.ZOOM_HISTORY_FROM || null,
       all_users: zoomSyncAllUsers(),
       accounts: accounts.length,
-      last_sync_at: db.zoom?.last_sync_at || null
+      last_sync_at: db.zoom?.last_sync_at || null,
+      last_call_sync_at: db.zoom?.last_call_sync_at || null,
+      auto_sync: zoomAutoSyncState
     });
   }
   if (route === '/api/integrations/zoom/sync' && method === 'POST') {
