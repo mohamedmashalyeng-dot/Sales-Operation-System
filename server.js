@@ -56,6 +56,7 @@ const EVENT_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.E
 const EVENT_AUTO_SYNC_MAX_EVENTS = Math.max(1, Math.min(Number(process.env.EVENT_AUTO_SYNC_MAX_EVENTS || 10), 50));
 const EVENTBRITE_DELETE_SCAN_PAGES = Math.max(1, Math.min(Number(process.env.EVENTBRITE_DELETE_SCAN_PAGES || 10), 50));
 const EVENTS_SHEET_URL = process.env.EVENTS_SHEET_URL || '';
+const ZOOM_REQUEST_DELAY_MS = Math.max(0, Number(process.env.ZOOM_REQUEST_DELAY_MS || 350));
 const PROGRAMME_CATALOG = [
   { id: 'pr-cim-l4', name: 'CIM Certificate in Professional and Digital Marketing', level: 'Level 4' },
   { id: 'pr-cim-l6', name: 'CIM Diploma in Professional and Digital Marketing', level: 'Level 6' },
@@ -711,6 +712,7 @@ async function loadPostgresTables(options = {}) {
     gmail: row.gmail || { connected: false, imported_message_ids: [] },
     eventbrite: row.eventbrite || { connected: false, imported_event_ids: [], imported_attendee_ids: [] },
     apollo: row.meta?.apollo || { imported_person_ids: [] },
+    zoom: row.meta?.zoom || { imported_meeting_ids: [] },
     meta: row.meta || { imported_lead_ids: [], imported_form_ids: [] }
   };
   return db;
@@ -769,7 +771,7 @@ async function savePostgresTables(db) {
          eventbrite = excluded.eventbrite,
          meta = excluded.meta,
          updated_at = now()`,
-      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(db.eventbrite || {}), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {} })]
+      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(db.eventbrite || {}), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {}, zoom: db.zoom || {} })]
     );
     await client.query(
       `with rows as (
@@ -1095,7 +1097,7 @@ async function saveEventImportTables(db, options = {}) {
          eventbrite = excluded.eventbrite,
          meta = excluded.meta,
          updated_at = now()`,
-      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(gmailState), jsonValue(db.eventbrite || {}), jsonValue(db.meta || {})]
+      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(gmailState), jsonValue(db.eventbrite || {}), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {}, zoom: db.zoom || {} })]
     );
     await client.query(
       `with rows as (
@@ -1211,7 +1213,7 @@ async function saveGmailImportTables(db, options = {}) {
          eventbrite = excluded.eventbrite,
          meta = excluded.meta,
          updated_at = now()`,
-      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(eventbriteState), jsonValue(db.meta || {})]
+      ['main', Boolean(db.demo), jsonValue(db.stages || []), jsonValue(db.sources || []), jsonValue(db.gmail || {}), jsonValue(eventbriteState), jsonValue({ ...(db.meta || {}), apollo: db.apollo || {}, zoom: db.zoom || {} })]
     );
     await client.query(
       `with rows as (
@@ -2067,6 +2069,7 @@ function ensureLeadRecord(db, user, incoming, options = {}) {
       lead_id: lead.id,
       kind: options.taskKind || 'Follow-up',
       status: 'Open',
+      created_at: new Date().toISOString(),
       due_at: new Date(Date.now() + 86400000).toISOString(),
       priority: lead.priority,
       owner_id: lead.owner_id
@@ -2235,6 +2238,9 @@ function recalculate(db) {
   db.eventbrite ||= { connected: false, imported_event_ids: [], imported_attendee_ids: [] };
   db.meta ||= { imported_lead_ids: [], imported_form_ids: [] };
   db.apollo ||= { imported_person_ids: [] };
+  db.zoom ||= db.meta.zoom || { imported_meeting_ids: [] };
+  db.meta.apollo = db.apollo;
+  db.meta.zoom = db.zoom;
   if (!db.sources.includes('Meta')) db.sources.push('Meta');
   if (!db.sources.includes('Email')) db.sources.push('Email');
   if (!db.sources.includes('Apollo')) db.sources.push('Apollo');
@@ -2298,9 +2304,14 @@ function recalculate(db) {
   const apolloReady = apolloConfigured();
   const apolloStatus = apolloReady ? 'Connected' : 'Needs credentials';
   const apolloDetail = apolloReady ? 'Apollo people search is configured with an API key.' : 'Add APOLLO_API_KEY to .env to enable Apollo prospect sync.';
+  const zoomReady = zoomConfigured();
+  const zoomStatus = zoomReady ? 'Connected' : 'Needs credentials';
+  const zoomAccountCount = zoomAccounts().length;
+  const zoomDetail = zoomReady ? `Zoom meetings sync is configured for ${zoomSyncAllUsers() ? 'all users' : process.env.ZOOM_USER_ID || 'me'} across ${zoomAccountCount} account${zoomAccountCount === 1 ? '' : 's'}.` : 'Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET to .env to sync Zoom meetings.';
   db.integrations = [
     { name: 'Gmail', status: gmailStatus, detail: gmailDetail },
     { name: 'Eventbrite', status: eventbriteStatus, detail: eventbriteDetail },
+    { name: 'Zoom', status: zoomStatus, detail: zoomDetail },
     { name: 'Meta', status: metaStatus, detail: metaDetail },
     { name: 'Apollo', status: apolloStatus, detail: apolloDetail }
   ];
@@ -2404,6 +2415,249 @@ function decodeEmailCursor(cursor) {
   } catch {
     throw statusError(400, 'Invalid email cursor.');
   }
+}
+
+function encodeLeadCursor(lead) {
+  if (!lead?.id) return '';
+  return Buffer.from(JSON.stringify({
+    created_at: lead.created_at || null,
+    id: lead.id
+  })).toString('base64url');
+}
+
+function decodeLeadCursor(cursor) {
+  if (!cursor) return null;
+  try {
+    const value = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    if (!value?.id) return null;
+    return {
+      id: String(value.id),
+      created_at: value.created_at ? new Date(value.created_at) : null
+    };
+  } catch {
+    throw statusError(400, 'Invalid lead cursor.');
+  }
+}
+
+function filterLocalLeads(leads = [], filters = {}) {
+  const search = String(filters.search || '').trim().toLowerCase();
+  return leads.filter(lead => {
+    if (filters.stage && String(lead.stage || '') !== filters.stage) return false;
+    if (filters.owner_id && String(lead.owner_id || '') !== filters.owner_id) return false;
+    if (filters.programme_id && String(lead.programme_id || '') !== filters.programme_id) return false;
+    if (search) {
+      const haystack = [
+        lead.first_name,
+        lead.last_name,
+        lead.full_name,
+        lead.email,
+        lead.phone,
+        lead.employer,
+        lead.programme,
+        lead.stage,
+        lead.owner
+      ].join(' ').toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+}
+
+async function loadLeadPage(options = {}) {
+  const limit = Math.max(1, Math.min(Number(options.limit || 50), 100));
+  const cursor = decodeLeadCursor(options.cursor);
+  const filters = {
+    search: String(options.search || '').trim(),
+    stage: String(options.stage || '').trim(),
+    owner_id: String(options.owner_id || options.ownerId || '').trim(),
+    programme_id: String(options.programme_id || options.programmeId || '').trim()
+  };
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) {
+    const db = await loadDb();
+    const rows = filterLocalLeads(db.leads || [], filters)
+      .sort((a, b) => {
+        const timeDiff = new Date(b.created_at || 0) - new Date(a.created_at || 0);
+        return timeDiff || String(a.id).localeCompare(String(b.id));
+      });
+    const cursorIndex = cursor ? rows.findIndex(item => item.id === cursor.id) : -1;
+    const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+    const items = rows.slice(startIndex, startIndex + limit);
+    const next = rows[startIndex + limit];
+    return {
+      items,
+      leads: items,
+      total: rows.length,
+      loaded: startIndex + items.length,
+      next_cursor: next ? encodeLeadCursor(items[items.length - 1]) : '',
+      limit,
+      has_more: Boolean(next)
+    };
+  }
+  const where = [];
+  const params = [];
+  const addParam = value => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+  if (filters.stage) where.push(`coalesce(stage, data->>'stage', '') = ${addParam(filters.stage)}`);
+  if (filters.owner_id) where.push(`coalesce(owner_id, data->>'owner_id', '') = ${addParam(filters.owner_id)}`);
+  if (filters.programme_id) where.push(`coalesce(programme_id, data->>'programme_id', '') = ${addParam(filters.programme_id)}`);
+  if (filters.search) {
+    const term = `%${filters.search.toLowerCase()}%`;
+    where.push(`lower(concat_ws(' ', first_name, last_name, email, phone, employer, programme, stage, owner, data->>'full_name')) like ${addParam(term)}`);
+  }
+  const baseWhere = where.length ? `where ${where.join(' and ')}` : '';
+  const totalParams = params.slice();
+  const total = Number((await postgresPool.query(`select count(*)::int as total from app_leads ${baseWhere}`, totalParams)).rows[0]?.total || 0);
+  if (cursor) {
+    const cursorDateParam = addParam(cursor.created_at ? cursor.created_at.toISOString() : null);
+    const cursorIdParam = addParam(cursor.id);
+    where.push(`(
+      (${cursorDateParam}::timestamptz is not null and (created_at < ${cursorDateParam}::timestamptz or (created_at = ${cursorDateParam}::timestamptz and id > ${cursorIdParam}) or created_at is null))
+      or (${cursorDateParam}::timestamptz is null and created_at is null and id > ${cursorIdParam})
+    )`);
+  }
+  const result = await postgresPool.query(
+    `select data from app_leads
+     ${where.length ? `where ${where.join(' and ')}` : ''}
+     order by created_at desc nulls last, id
+     limit ${addParam(limit + 1)}`,
+    params
+  );
+  const rows = result.rows.map(item => item.data);
+  const items = rows.slice(0, limit);
+  return {
+    items,
+    leads: items,
+    total,
+    loaded: items.length,
+    next_cursor: rows.length > limit ? encodeLeadCursor(items[items.length - 1]) : '',
+    limit,
+    has_more: rows.length > limit
+  };
+}
+
+function dashboardSummaryFromDb(db) {
+  const leads = db.leads || [];
+  const tasks = db.tasks || [];
+  const emails = (db.emails || []).filter(email => !emailIsTrashed(email));
+  const applications = db.applications || [];
+  const events = db.events || [];
+  const now = Date.now();
+  const openTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open');
+  return {
+    generated_at: new Date().toISOString(),
+    leads: {
+      total: leads.length,
+      new: leads.filter(lead => /new/.test(String(lead.stage || '').toLowerCase())).length,
+      qualified: leads.filter(lead => /qualified/.test(String(lead.stage || '').toLowerCase())).length
+    },
+    tasks: {
+      open: openTasks.length,
+      overdue: openTasks.filter(task => {
+        const due = new Date(task.due_at || 0).getTime();
+        return due && due < now;
+      }).length,
+      done: tasks.filter(task => String(task.status || '').toLowerCase() === 'done').length
+    },
+    emails: {
+      total: emails.length,
+      unread: emails.filter(emailIsUnread).length,
+      unanswered: emails.filter(email => emailIsInboundExternal(db, email) && !email.response_at).length,
+      overdue: emails.filter(email => !email.response_at && new Date(email.due_at || 0).getTime() < now).length
+    },
+    applications: {
+      total: applications.length,
+      new: applications.filter(application => /new|draft|pending|submitted/i.test(String(application.status || ''))).length
+    },
+    events: {
+      total: events.length,
+      upcoming: events.filter(event => new Date(event.start_at || 0).getTime() >= now).length,
+      zoom: events.filter(event => event.zoom_meeting_id || event.zoom_meeting_uuid || String(event.location || '').toLowerCase() === 'zoom').length
+    }
+  };
+}
+
+async function loadDashboardSummaryDb() {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) return dashboardSummaryFromDb(await loadDb());
+  const notTrashedSql = `
+    not (
+      coalesce(data->'gmail_labels', '[]'::jsonb) ? 'TRASH'
+      or coalesce(data->>'dashboard_folder', '') = 'trash'
+      or data ? 'trashed_at'
+    )
+  `;
+  const [leads, tasks, emails, applications, events] = await Promise.all([
+    postgresPool.query(`
+      select
+        count(*)::int as total,
+        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%new%')::int as new,
+        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%qualified%')::int as qualified
+      from app_leads
+    `),
+    postgresPool.query(`
+      select
+        count(*) filter (where lower(coalesce(status, data->>'status', '')) = 'open')::int as open,
+        count(*) filter (
+          where lower(coalesce(status, data->>'status', '')) = 'open'
+            and due_at is not null
+            and due_at < now()
+        )::int as overdue,
+        count(*) filter (where lower(coalesce(status, data->>'status', '')) = 'done')::int as done
+      from app_tasks
+    `),
+    postgresPool.query(`
+      select
+        count(*) filter (where ${notTrashedSql})::int as total,
+        count(*) filter (
+          where ${notTrashedSql}
+            and (
+              coalesce(data->'gmail_labels', '[]'::jsonb) ? 'UNREAD'
+              or coalesce(data->'gmail_label_names', '[]'::jsonb) ? 'Unread'
+              or coalesce(data->>'is_read', '') = 'false'
+            )
+        )::int as unread,
+        count(*) filter (
+          where ${notTrashedSql}
+            and response_at is null
+            and lower(coalesce(data->>'direction', 'inbound')) <> 'outbound'
+        )::int as unanswered,
+        count(*) filter (
+          where ${notTrashedSql}
+            and response_at is null
+            and due_at is not null
+            and due_at < now()
+        )::int as overdue
+      from app_emails
+    `),
+    postgresPool.query(`
+      select
+        count(*)::int as total,
+        count(*) filter (where lower(coalesce(status, data->>'status', '')) ~ '(new|draft|pending|submitted)')::int as new
+      from app_applications
+    `),
+    postgresPool.query(`
+      select
+        count(*)::int as total,
+        count(*) filter (where start_at >= now())::int as upcoming,
+        count(*) filter (
+          where lower(coalesce(location, data->>'location', '')) = 'zoom'
+             or coalesce(data->>'zoom_meeting_id', '') <> ''
+             or coalesce(data->>'zoom_meeting_uuid', '') <> ''
+        )::int as zoom
+      from app_events
+    `)
+  ]);
+  return {
+    generated_at: new Date().toISOString(),
+    leads: leads.rows[0],
+    tasks: tasks.rows[0],
+    emails: emails.rows[0],
+    applications: applications.rows[0],
+    events: events.rows[0]
+  };
 }
 
 async function loadBootstrapDb() {
@@ -2882,6 +3136,22 @@ function developerConfig(req, db) {
         ]
       },
       {
+        name: 'Zoom',
+        status: zoomConfigured() ? 'Connected' : 'Needs credentials',
+        account: process.env.ZOOM_USER_ID || 'me',
+        callback: '',
+        keys: [
+          envKeyStatus('ZOOM_ACCOUNT_ID', 'Server-to-Server account ID', true),
+          envKeyStatus('ZOOM_CLIENT_ID', 'Client ID', false),
+          envKeyStatus('ZOOM_CLIENT_SECRET', 'Client secret', true),
+          envKeyStatus('ZOOM_USER_ID', 'Meeting host user ID', false),
+          envKeyStatus('ZOOM_MEETING_TYPE', 'Meeting list type', false),
+          envKeyStatus('ZOOM_SYNC_ALL_USERS', 'Sync all account users', false),
+          envKeyStatus('ZOOM_MAX_USERS', 'Maximum users per sync', false),
+          envKeyStatus('ZOOM_MAX_MEETINGS', 'Maximum meetings per sync', false)
+        ]
+      },
+      {
         name: 'Apollo',
         status: apolloConfigured() ? 'Connected' : 'Needs credentials',
         account: process.env.APOLLO_KEYWORDS || process.env.APOLLO_PERSON_TITLES || '',
@@ -2936,6 +3206,38 @@ async function loadApplicationListDb() {
     return result.rows.map(item => publicApplication(item.data));
   }
   return loadApplicationList(await loadDb());
+}
+
+function isZoomEventRecord(event = {}) {
+  return Boolean(
+    event.zoom_meeting_id ||
+    event.zoom_meeting_uuid ||
+    String(event.campaign || '').toLowerCase().startsWith('zoom') ||
+    String(event.location || '').toLowerCase() === 'zoom'
+  );
+}
+
+async function loadZoomEventListDb(limit = 2000) {
+  await ensureStorage();
+  const safeLimit = Math.max(1, Math.min(Number(limit || 2000), 5000));
+  if (postgresPool) {
+    const result = await postgresPool.query(
+      `select data
+       from app_events
+       where coalesce(data->>'zoom_meeting_id', '') <> ''
+          or coalesce(data->>'zoom_meeting_uuid', '') <> ''
+          or lower(coalesce(location, data->>'location', '')) = 'zoom'
+          or lower(coalesce(campaign, data->>'campaign', '')) like 'zoom%'
+       order by start_at desc nulls last, id
+       limit $1`,
+      [safeLimit]
+    );
+    return result.rows.map(item => item.data);
+  }
+  return (await loadDb()).events
+    .filter(isZoomEventRecord)
+    .sort((a, b) => new Date(b.start_at || 0) - new Date(a.start_at || 0))
+    .slice(0, safeLimit);
 }
 
 async function loadAuditListDb(limit = 100) {
@@ -3062,6 +3364,44 @@ function apolloConfigured() {
   );
 }
 
+function zoomConfigured() {
+  return zoomAccounts().length > 0;
+}
+
+function validZoomCredential(accountId, clientId, clientSecret) {
+  return Boolean(
+    accountId &&
+    clientId &&
+    clientSecret &&
+    !accountId.includes('your-zoom') &&
+    !clientId.includes('your-zoom') &&
+    !clientSecret.includes('your-zoom') &&
+    !accountId.includes('replace-with') &&
+    !clientId.includes('replace-with') &&
+    !clientSecret.includes('replace-with')
+  );
+}
+
+function zoomAccounts() {
+  const accounts = [];
+  function add(suffix = '', fallbackLabel = 'Zoom account') {
+    const accountId = process.env[`ZOOM_ACCOUNT_ID${suffix}`];
+    const clientId = process.env[`ZOOM_CLIENT_ID${suffix}`];
+    const clientSecret = process.env[`ZOOM_CLIENT_SECRET${suffix}`];
+    if (!validZoomCredential(accountId || '', clientId || '', clientSecret || '')) return;
+    accounts.push({
+      accountId,
+      clientId,
+      clientSecret,
+      userId: process.env[`ZOOM_USER_ID${suffix}`] || process.env.ZOOM_USER_ID || 'me',
+      label: process.env[`ZOOM_ACCOUNT_LABEL${suffix}`] || fallbackLabel
+    });
+  }
+  add('', process.env.ZOOM_ACCOUNT_LABEL || 'Zoom account 1');
+  for (let index = 2; index <= 10; index += 1) add(`_${index}`, `Zoom account ${index}`);
+  return accounts;
+}
+
 function csvEnv(name) {
   return String(process.env[name] || '').split(',').map(item => item.trim()).filter(Boolean);
 }
@@ -3119,7 +3459,7 @@ async function fetchJson(url, options = {}) {
     response = await fetch(url, { ...options, signal: options.signal || controller.signal });
   } catch (error) {
     if (error.name === 'AbortError') throw statusError(504, 'Provider request timed out.');
-    throw error;
+    throw statusError(502, error.message || 'Provider request failed.');
   } finally {
     clearTimeout(timeout);
   }
@@ -3130,8 +3470,33 @@ async function fetchJson(url, options = {}) {
   } catch {
     value = { raw: text };
   }
-  if (!response.ok) throw statusError(response.status >= 500 ? 502 : response.status, value.error_description || value.error?.message || value.error || 'Provider request failed.');
+  if (!response.ok) {
+    const providerMessage = value.error_description || value.error?.message || value.message || value.reason || value.error || value.raw || 'Provider request failed.';
+    const providerCode = value.code || value.error_code || value.errorCode || '';
+    throw statusError(response.status >= 500 ? 502 : response.status, providerCode ? `${providerMessage} (${providerCode})` : providerMessage);
+  }
   return value;
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchZoomJson(url, options = {}, context = 'Zoom') {
+  let lastError = null;
+  const attempts = Math.max(1, Math.min(Number(options.attempts || 3), 5));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (ZOOM_REQUEST_DELAY_MS) await wait(ZOOM_REQUEST_DELAY_MS);
+    try {
+      return await fetchJson(url, { ...options, timeoutMs: options.timeoutMs || 30000 });
+    } catch (error) {
+      lastError = error;
+      const status = Number(error.status || 0);
+      if (![429, 502, 503, 504].includes(status)) throw statusError(status || 502, `${context}: ${error.message || 'Provider request failed.'}`);
+      await wait(1200 * (attempt + 1));
+    }
+  }
+  throw statusError(lastError?.status || 502, `${context}: ${lastError?.message || 'Provider request failed.'}`);
 }
 
 async function exchangeGmailCode(req, code) {
@@ -3299,6 +3664,20 @@ function applyGmailLabels(email, message, labelMap) {
   email.gmail_label_names = labels.gmail_label_names;
   if (labels.gmail_labels.includes('TRASH')) return markEmailAsDashboardTrash(email) || changed;
   if (labels.gmail_labels.includes('INBOX')) return restoreEmailFromDashboardTrash(email) || changed;
+  return changed;
+}
+
+function updateStoredGmailLabels(email, labelIds = [], labelMap, mode = 'add') {
+  if (!email || !labelIds.length) return false;
+  const current = new Set(uniqueStrings(email.gmail_labels || []));
+  for (const labelId of uniqueStrings(labelIds)) {
+    if (mode === 'remove') current.delete(labelId);
+    else current.add(labelId);
+  }
+  const labels = gmailLabelsForMessage({ labelIds: [...current] }, labelMap);
+  const changed = !sameStringList(email.gmail_labels, labels.gmail_labels) || !sameStringList(email.gmail_label_names, labels.gmail_label_names);
+  email.gmail_labels = labels.gmail_labels;
+  email.gmail_label_names = labels.gmail_label_names;
   return changed;
 }
 
@@ -3474,6 +3853,7 @@ async function syncGmailTrashLabels(db, auth, changed, options = {}) {
 
 async function syncGmailHistoryChanges(db, auth, changed) {
   let profile;
+  const labelMap = await gmailLabelNameMap(auth, db);
   if (!db.gmail?.history_id) {
     profile = await fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/profile', { headers: auth });
     db.gmail.history_id = profile.historyId || null;
@@ -3485,6 +3865,7 @@ async function syncGmailHistoryChanges(db, auth, changed) {
   while (true) {
     const params = new URLSearchParams({ startHistoryId: String(db.gmail.history_id) });
     params.append('historyTypes', 'labelAdded');
+    params.append('historyTypes', 'labelRemoved');
     params.append('historyTypes', 'messageDeleted');
     if (pageToken) params.set('pageToken', pageToken);
     let result;
@@ -3505,11 +3886,25 @@ async function syncGmailHistoryChanges(db, auth, changed) {
       for (const change of item.labelsAdded || []) {
         const email = byGmailId.get(change.message?.id);
         const labels = change.labelIds || [];
+        if (updateStoredGmailLabels(email, labels, labelMap, 'add')) {
+          changed.emailIds.add(email.id);
+        }
         if (labels.includes('TRASH') && markEmailAsDashboardTrash(email)) {
           changed.emailIds.add(email.id);
           historyTrash += 1;
         }
         if (labels.includes('INBOX') && restoreEmailFromDashboardTrash(email)) {
+          changed.emailIds.add(email.id);
+          historyRestored += 1;
+        }
+      }
+      for (const change of item.labelsRemoved || []) {
+        const email = byGmailId.get(change.message?.id);
+        const labels = change.labelIds || [];
+        if (updateStoredGmailLabels(email, labels, labelMap, 'remove')) {
+          changed.emailIds.add(email.id);
+        }
+        if (labels.includes('TRASH') && restoreEmailFromDashboardTrash(email)) {
           changed.emailIds.add(email.id);
           historyRestored += 1;
         }
@@ -3594,7 +3989,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
         const existing = db.emails.find(email => email.gmail_message_id === item.id);
           const wasTrashed = emailIsTrashed(existing);
         let labelChanged = false;
-        if (existing && gmailEmailNeedsLabelRefresh(existing)) {
+        if (existing && (latestOnly || gmailEmailNeedsLabelRefresh(existing))) {
           try {
             const message = await fetchJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=metadata&fields=id,labelIds`, { headers: auth });
             labelChanged = applyGmailLabels(existing, message, labelMap);
@@ -3864,6 +4259,16 @@ async function runEventAutoSync() {
     } else {
       results.sheet = { skipped: true, reason: 'EVENTS_SHEET_URL is not configured.' };
     }
+    if (zoomConfigured()) {
+      try {
+        results.zoom = await importZoomMeetings(db, user, Number(process.env.ZOOM_MAX_MEETINGS || 500), { save: false });
+        await saveEventImportTables(db, { preserveGmail: true });
+      } catch (error) {
+        results.zoom = { error: error.message || 'Zoom sync failed.' };
+      }
+    } else {
+      results.zoom = { skipped: true, reason: 'Zoom is not configured.' };
+    }
     eventAutoSyncState.last_result = results;
     const errors = Object.values(results).filter(item => item?.error).map(item => item.error);
     eventAutoSyncState.last_error = errors.length ? errors.join('; ') : null;
@@ -4027,7 +4432,9 @@ function mergeSpreadsheetEventRecord(target, eventRecord) {
     ...eventRecord,
     id: target.id,
     attendees,
-    capacity
+    capacity,
+    created_at: target.created_at || eventRecord.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
   });
   return target;
 }
@@ -4100,17 +4507,21 @@ async function importSpreadsheetEvents(db, user, input = {}) {
     const email = normalizeEmail(rowValue(row, ['email', 'email address', 'attendee email', 'learner email', 'student email']));
     const eventName = String(rowValue(row, ['event name', 'event', 'event title', 'title', 'session']) || path.basename(filename, path.extname(filename)) || 'Imported event').trim();
     const startAt = spreadsheetDateValue(rowValue(row, ['start_at', 'start at', 'date', 'event date', 'start date', 'when']), rowValue(row, ['time', 'start time', 'event time']));
+    const meetingLink = String(rowValue(row, ['google meet', 'google meet link', 'meet link', 'zoom link', 'meeting link', 'meeting url', 'join link']) || '').trim();
     const eventRecord = {
       name: eventName,
       location: String(rowValue(row, ['location', 'venue', 'place', 'city']) || 'Imported').trim(),
       start_at: startAt,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
       campaign: String(rowValue(row, ['campaign', 'source', 'channel']) || 'Excel import').trim(),
       capacity: Number(rowValue(row, ['capacity', 'spaces', 'seats']) || 0) || 0,
       sheet_event_id: String(rowValue(row, ['event id']) || '').trim(),
       master_event_key: String(rowValue(row, ['master event key']) || '').trim(),
       description: String(rowValue(row, ['description']) || '').trim(),
       status: String(rowValue(row, ['status', 'event status']) || '').trim(),
-      timezone: String(rowValue(row, ['timezone']) || '').trim()
+      timezone: String(rowValue(row, ['timezone']) || '').trim(),
+      ...(meetingLink ? { meeting_link: meetingLink, zoom_link: meetingLink } : {})
     };
     const existing = findSpreadsheetEvent(db, eventRecord);
     const startsAfterIncrementalStart = !eventIncrementalStart || new Date(eventRecord.start_at) >= eventIncrementalStart;
@@ -4124,6 +4535,10 @@ async function importSpreadsheetEvents(db, user, input = {}) {
       });
     }
     const event = eventMap.get(key);
+    if (meetingLink) {
+      event.meeting_link = meetingLink;
+      event.zoom_link = meetingLink;
+    }
     const full = String(rowValue(row, ['attendee name', 'full name', 'learner name', 'student name', 'name']) || '').trim();
     const parts = nameParts(full, email || 'attendee@event.local');
     const first_name = String(rowValue(row, ['first name', 'firstname', 'forename', 'given name']) || parts.first_name || 'Event').trim();
@@ -4165,7 +4580,7 @@ async function importSpreadsheetEvents(db, user, input = {}) {
       phone: String(rowValue(row, ['phone', 'mobile', 'telephone']) || lead?.phone || '').trim(),
       job_title: String(rowValue(row, ['job title', 'title', 'role']) || '').trim(),
       status: String(rowValue(row, ['status', 'attendance status']) || '').trim(),
-      zoom_link: String(rowValue(row, ['zoom link', 'meeting link']) || '').trim(),
+      zoom_link: meetingLink,
       source_account: String(rowValue(row, ['source account', 'owner', 'account']) || '').trim(),
       reminder_1_day: String(rowValue(row, ['1 day before event']) || '').trim(),
       reminder_2_hours: String(rowValue(row, ['2 hours before event']) || '').trim(),
@@ -4301,17 +4716,20 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
         attended_at: attendee.checked_in ? (attendee.changed || new Date().toISOString()) : null
       };
     });
+    const mergedAttendees = mergeEventAttendees(existing?.attendees || [], attendees);
     const record = {
       id: existing?.id || nextId('EV', [db.events]),
       eventbrite_event_id: event.id,
       name: event.name?.text || 'Eventbrite event',
       location: eventVenue(event),
       start_at: event.start?.utc || event.start?.local || new Date().toISOString(),
+      created_at: existing?.created_at || event.created || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
       campaign: 'Eventbrite',
-      capacity: Number(event.capacity || event.ticket_availability?.quantity_total || attendees.length || 0),
-      registrations: attendees.length,
-      attendance: attendees.filter(item => item.attended_at).length,
-      attendees,
+      capacity: Math.max(Number(existing?.capacity || 0), Number(event.capacity || event.ticket_availability?.quantity_total || mergedAttendees.length || 0)),
+      registrations: Math.max(Number(existing?.registrations || 0), mergedAttendees.length),
+      attendance: Math.max(Number(existing?.attendance || 0), mergedAttendees.filter(item => item.attended_at).length),
+      attendees: mergedAttendees,
       sync_warning
     };
     if (existing) Object.assign(existing, record);
@@ -4321,18 +4739,675 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
     }
     if (!(db.eventbrite.imported_event_ids || []).includes(event.id)) db.eventbrite.imported_event_ids = [...(db.eventbrite.imported_event_ids || []), event.id];
   }
-  if (eventbriteIdScanComplete && currentEventbriteIds.size) {
-    const removed = (db.events || []).filter(item => item.eventbrite_event_id && !currentEventbriteIds.has(item.eventbrite_event_id));
-    if (removed.length) {
-      for (const item of removed) deletedEventIds.add(item.id);
-      db.events = db.events.filter(item => !item.eventbrite_event_id || currentEventbriteIds.has(item.eventbrite_event_id));
-      db.eventbrite.imported_event_ids = (db.eventbrite.imported_event_ids || []).filter(id => currentEventbriteIds.has(id));
-    }
-  }
   db.eventbrite.last_sync_at = new Date().toISOString();
   addAudit(db, user, 'Eventbrite synced', 'integration', 'Eventbrite', `${importedEvents} events, ${importedAttendees} attendees${deletedEventIds.size ? `, ${deletedEventIds.size} removed` : ''}${attendeeErrors ? `, ${attendeeErrors} attendee import warnings` : ''}`);
   if (options.save !== false) await saveDb(db);
   return { imported_events: importedEvents, imported_attendees: importedAttendees, deleted_events: deletedEventIds.size, deleted_event_ids: [...deletedEventIds], deletion_scan_complete: eventbriteIdScanComplete, scanned: events.length, attendee_errors: attendeeErrors, last_sync_at: db.eventbrite.last_sync_at };
+}
+
+async function zoomAccessToken(account) {
+  if (!account) throw statusError(400, 'Zoom credentials are not configured. Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET to .env.');
+  const basic = Buffer.from(`${account.clientId}:${account.clientSecret}`).toString('base64');
+  const token = await fetchZoomJson('https://zoom.us/oauth/token', {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+      grant_type: 'account_credentials',
+      account_id: account.accountId
+    })
+  }, `Zoom token for ${account.label}`);
+  if (!token.access_token) throw statusError(502, 'Zoom did not return an access token.');
+  return token.access_token;
+}
+
+function zoomUserId() {
+  return encodeURIComponent(process.env.ZOOM_USER_ID || 'me');
+}
+
+function zoomSyncAllUsers() {
+  return String(process.env.ZOOM_SYNC_ALL_USERS || 'false').toLowerCase() === 'true';
+}
+
+function zoomMeetingType() {
+  const value = String(process.env.ZOOM_MEETING_TYPE || 'upcoming').trim();
+  return value || 'upcoming';
+}
+
+function zoomMeetingTypes() {
+  const value = zoomMeetingType().toLowerCase();
+  if (value === 'all') return ['upcoming', 'scheduled', 'upcoming_meetings', 'previous_meetings', 'past'];
+  return [value];
+}
+
+function zoomIncludeHistory() {
+  return String(process.env.ZOOM_INCLUDE_HISTORY || 'true').toLowerCase() !== 'false';
+}
+
+function zoomReportHistoryMonths(options = {}) {
+  const requested = Number(options.report_history_months || options.history_months || process.env.ZOOM_REPORT_HISTORY_MONTHS || 6);
+  return Math.max(1, Math.min(requested || 6, 6));
+}
+
+function zoomReportOverlapDays() {
+  return Math.max(0, Math.min(Number(process.env.ZOOM_REPORT_SYNC_OVERLAP_DAYS || 7), 30));
+}
+
+function dateOnly(value) {
+  return value.toISOString().slice(0, 10);
+}
+
+function zoomHistoryStart(options = {}) {
+  const raw = String(options.history_from || process.env.ZOOM_HISTORY_FROM || '').trim();
+  if (!raw) return null;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return null;
+  date.setUTCHours(0, 0, 0, 0);
+  return date;
+}
+
+function zoomSixMonthFloor(reference = new Date()) {
+  const floor = new Date(reference);
+  floor.setUTCHours(0, 0, 0, 0);
+  floor.setUTCMonth(floor.getUTCMonth() - 6);
+  return floor;
+}
+
+function zoomReportCalendarFloor(reference = new Date(), months = 6) {
+  return new Date(Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() - (months - 1), 1));
+}
+
+function monthEnd(date) {
+  const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0));
+  end.setUTCHours(0, 0, 0, 0);
+  return end;
+}
+
+function zoomMaxDate(...dates) {
+  return dates.filter(Boolean).reduce((max, date) => !max || date > max ? date : max, null);
+}
+
+function zoomReportHistoryRanges(options = {}) {
+  const ranges = [];
+  const now = new Date();
+  now.setUTCHours(0, 0, 0, 0);
+  const months = zoomReportHistoryMonths(options);
+  const requestedStart = zoomReportCalendarFloor(now, months);
+  const syncState = options.sync_state || {};
+  let incrementalStart = null;
+  if (syncState.initial_backfill_completed && syncState.last_successful_sync_at) {
+    incrementalStart = new Date(syncState.last_successful_sync_at);
+    if (!Number.isNaN(incrementalStart.getTime())) {
+      incrementalStart.setUTCDate(incrementalStart.getUTCDate() - zoomReportOverlapDays());
+      incrementalStart.setUTCHours(0, 0, 0, 0);
+    } else {
+      incrementalStart = null;
+    }
+  }
+  const start = zoomMaxDate(zoomReportCalendarFloor(now, 6), zoomHistoryStart(options), incrementalStart || requestedStart);
+  if (!start || start > now) return [{ from: dateOnly(now), to: dateOnly(now) }];
+  let from = new Date(start);
+  from.setUTCHours(0, 0, 0, 0);
+  while (from <= now && ranges.length < 8) {
+    const to = monthEnd(from);
+    if (to > now) to.setTime(now.getTime());
+    ranges.push({ from: dateOnly(from), to: dateOnly(to) });
+    from = new Date(to);
+    from.setUTCDate(from.getUTCDate() + 1);
+  }
+  return ranges;
+}
+
+function zoomReportUnsupportedWarning(message = '') {
+  return /only available for paid|zmp account|does not contain scopes|no permission|report.*scope/i.test(String(message || ''));
+}
+
+function zoomOptionalEndpointDisableWarning(message = '') {
+  return /does not contain scopes|invalid access token|no permission|not authorized|scope|timed out|timeout/i.test(String(message || ''));
+}
+
+function zoomParticipantImportEnabled() {
+  return !/^(0|false|no|off)$/i.test(String(process.env.ZOOM_IMPORT_PARTICIPANTS || 'true'));
+}
+
+function zoomPastParticipantImportEnabled() {
+  return /^(1|true|yes|on)$/i.test(String(process.env.ZOOM_IMPORT_PAST_PARTICIPANTS || 'false'));
+}
+
+function zoomParticipantLimit() {
+  return Math.max(1, Math.min(Number(process.env.ZOOM_MAX_PARTICIPANTS_PER_MEETING || 300), 1000));
+}
+
+function zoomRegistrantLookupLimit() {
+  return Math.max(0, Math.min(Number(process.env.ZOOM_MAX_REGISTRANT_MEETING_LOOKUPS || 20), 200));
+}
+
+function zoomCallHistoryMonths(options = {}) {
+  const requested = Number(options.call_history_months || process.env.ZOOM_CALL_HISTORY_MONTHS || 3);
+  return Math.max(1, Math.min(requested || 3, 12));
+}
+
+function zoomCallMaxRecords(options = {}) {
+  return Math.max(1, Math.min(Number(options.max_calls || process.env.ZOOM_MAX_CALLS || 1000), 5000));
+}
+
+function zoomCallHistoryRanges(options = {}) {
+  const ranges = [];
+  const now = new Date();
+  now.setUTCHours(0, 0, 0, 0);
+  let from = zoomReportCalendarFloor(now, zoomCallHistoryMonths(options));
+  from.setUTCHours(0, 0, 0, 0);
+  while (from <= now && ranges.length < 12) {
+    const to = monthEnd(from);
+    if (to > now) to.setTime(now.getTime());
+    ranges.push({ from: dateOnly(from), to: dateOnly(to) });
+    from = new Date(to);
+    from.setUTCDate(from.getUTCDate() + 1);
+  }
+  return ranges;
+}
+
+function phoneDigits(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function samePhone(a, b) {
+  const left = phoneDigits(a), right = phoneDigits(b);
+  if (!left || !right) return false;
+  return left === right || left.endsWith(right.slice(-10)) || right.endsWith(left.slice(-10));
+}
+
+function leadForZoomCall(db, record = {}) {
+  const numbers = [record.caller_number, record.callee_number].filter(Boolean);
+  return (db.leads || []).find(lead => numbers.some(number => samePhone(lead.phone, number))) || null;
+}
+
+function zoomMeetingPathId(meeting = {}) {
+  const value = String(meeting.uuid || meeting.id || '').trim();
+  return encodeURIComponent(value);
+}
+
+function zoomRegistrantPhone(registrant = {}) {
+  const direct = registrant.phone || registrant.phone_number || registrant.mobile || registrant.mobile_phone || registrant.cell_phone;
+  if (direct) return String(direct).trim();
+  for (const answer of registrant.custom_questions || []) {
+    const title = String(answer.title || answer.question || '').toLowerCase();
+    if (/phone|mobile|telephone|tel/.test(title) && answer.value) return String(answer.value).trim();
+  }
+  return '';
+}
+
+function splitZoomName(value = '') {
+  const parts = String(value || '').trim().split(/\s+/).filter(Boolean);
+  return { first_name: parts[0] || '', last_name: parts.slice(1).join(' ') };
+}
+
+function zoomLeadByEmailMap(db) {
+  return new Map((db.leads || []).map(lead => [normalizeEmail(lead.email), lead]).filter(([email]) => email));
+}
+
+function zoomAttendeeFromRecord(record = {}, meeting = {}, source = 'zoom', leadByEmail = new Map()) {
+  const email = normalizeEmail(record.email || record.user_email || record.registrant_email);
+  const name = record.name || record.user_name || [record.first_name, record.last_name].filter(Boolean).join(' ') || email || 'Zoom attendee';
+  const splitName = splitZoomName(name);
+  const lead = email ? leadByEmail.get(email) : null;
+  const phone = String(zoomRegistrantPhone(record) || record.phone || record.phone_number || lead?.phone || '').trim();
+  return {
+    id: `ZA-${numericHash([meeting.zoom_account_id || '', meeting.uuid || meeting.id || '', source, email || record.id || name].join('|'))}`,
+    first_name: record.first_name || splitName.first_name || lead?.first_name || '',
+    last_name: record.last_name || splitName.last_name || lead?.last_name || '',
+    email,
+    phone,
+    status: source === 'participant' ? 'attended' : String(record.status || 'confirmed').replace(/^approved$/i, 'confirmed'),
+    attended_at: source === 'participant' ? (record.join_time || record.leave_time || meeting.start_time || '') : '',
+    source_account: 'Zoom',
+    zoom_source: source,
+    zoom_participant_id: record.id || record.user_id || '',
+    lead_id: lead?.id || ''
+  };
+}
+
+async function fetchZoomMeetingRegistrants(auth, meeting, account, host, maxParticipants) {
+  if (!meeting.id) return { attendees: [], warning: '' };
+  const attendees = [];
+  let nextPageToken = '';
+  while (attendees.length < maxParticipants) {
+    const params = new URLSearchParams({
+      page_size: String(Math.max(1, Math.min(100, maxParticipants - attendees.length)))
+    });
+    if (nextPageToken) params.set('next_page_token', nextPageToken);
+    try {
+      const list = await fetchZoomJson(`https://api.zoom.us/v2/meetings/${encodeURIComponent(meeting.id)}/registrants?${params}`, { headers: auth, timeoutMs: 3000, attempts: 1 }, `Zoom registrants for ${account.label} / ${host.label || host.id}`);
+      attendees.push(...(list.registrants || []));
+      nextPageToken = list.next_page_token || '';
+      if (!nextPageToken || !(list.registrants || []).length) break;
+    } catch (error) {
+      return { attendees, warning: error.message || 'Zoom registrants unavailable.' };
+    }
+  }
+  return { attendees, warning: '' };
+}
+
+async function fetchZoomPastParticipants(auth, meeting, account, host, maxParticipants) {
+  if (!meeting.uuid && !meeting.id) return { attendees: [], warning: '' };
+  const attendees = [];
+  let nextPageToken = '';
+  while (attendees.length < maxParticipants) {
+    const params = new URLSearchParams({
+      page_size: String(Math.max(1, Math.min(100, maxParticipants - attendees.length)))
+    });
+    if (nextPageToken) params.set('next_page_token', nextPageToken);
+    try {
+      const list = await fetchZoomJson(`https://api.zoom.us/v2/past_meetings/${zoomMeetingPathId(meeting)}/participants?${params}`, { headers: auth, timeoutMs: 6000, attempts: 1 }, `Zoom participants for ${account.label} / ${host.label || host.id}`);
+      attendees.push(...(list.participants || []));
+      nextPageToken = list.next_page_token || '';
+      if (!nextPageToken || !(list.participants || []).length) break;
+    } catch (error) {
+      return { attendees, warning: error.message || 'Zoom participants unavailable.' };
+    }
+  }
+  return { attendees, warning: '' };
+}
+
+async function fetchZoomMeetingAttendees(auth, meeting, account, host, leadByEmail, maxParticipants = zoomParticipantLimit(), availability = {}) {
+  if (!zoomParticipantImportEnabled()) return { attendees: [], warnings: [] };
+  availability.registrantsUnavailable ||= new Set();
+  availability.participantsUnavailable ||= new Set();
+  availability.registrantLookups ||= 0;
+  const hostKey = `${account.accountId}:${host.id || zoomUserId()}`;
+  const warnings = [];
+  const canLookupRegistrants = availability.registrantLookups < zoomRegistrantLookupLimit();
+  const registrants = !canLookupRegistrants || availability.registrantsUnavailable.has(hostKey)
+    ? { attendees: [], warning: '' }
+    : await fetchZoomMeetingRegistrants(auth, meeting, account, host, maxParticipants);
+  if (canLookupRegistrants && !availability.registrantsUnavailable.has(hostKey)) availability.registrantLookups += 1;
+  if (registrants.warning) {
+    warnings.push(registrants.warning);
+    if (zoomOptionalEndpointDisableWarning(registrants.warning)) availability.registrantsUnavailable.add(hostKey);
+  }
+  const remaining = zoomPastParticipantImportEnabled() ? Math.max(0, maxParticipants - registrants.attendees.length) : 0;
+  const participants = remaining && !availability.participantsUnavailable.has(hostKey)
+    ? await fetchZoomPastParticipants(auth, meeting, account, host, remaining)
+    : { attendees: [], warning: '' };
+  if (participants.warning) {
+    warnings.push(participants.warning);
+    if (zoomOptionalEndpointDisableWarning(participants.warning)) availability.participantsUnavailable.add(hostKey);
+  }
+  return {
+    attendees: mergeEventAttendees(
+      registrants.attendees.map(item => zoomAttendeeFromRecord(item, meeting, 'registrant', leadByEmail)),
+      participants.attendees.map(item => zoomAttendeeFromRecord(item, meeting, 'participant', leadByEmail))
+    ),
+    warnings
+  };
+}
+
+async function enrichZoomMeetingWithAttendees(auth, account, host, meeting, leadByEmail, warnings, availability) {
+  const attendeeResult = await fetchZoomMeetingAttendees(auth, meeting, account, host, leadByEmail, zoomParticipantLimit(), availability);
+  attendeeResult.warnings.forEach(warning => {
+    if (warning && !warnings.includes(warning)) warnings.push(warning);
+  });
+  return {
+    ...meeting,
+    zoom_attendees: attendeeResult.attendees,
+    zoom_attendee_count: attendeeResult.attendees.length,
+    zoom_phone_count: attendeeResult.attendees.filter(attendee => attendee.phone).length
+  };
+}
+
+async function fetchZoomMeetingHosts(auth, maxUsers = 100, account = {}) {
+  if (!zoomSyncAllUsers()) return [{ id: account.userId || process.env.ZOOM_USER_ID || 'me', label: account.userId || process.env.ZOOM_USER_ID || 'me' }];
+  const hosts = [];
+  let nextPageToken = '';
+  while (hosts.length < maxUsers) {
+    const params = new URLSearchParams({
+      status: 'active',
+      page_size: String(Math.max(1, Math.min(100, maxUsers - hosts.length)))
+    });
+    if (nextPageToken) params.set('next_page_token', nextPageToken);
+    const list = await fetchZoomJson(`https://api.zoom.us/v2/users?${params}`, { headers: auth, timeoutMs: 20000 }, `Zoom users for ${account.label || 'account'}`);
+    for (const item of list.users || []) {
+      hosts.push({
+        id: item.id || item.email,
+        label: item.email || item.display_name || item.id || 'Zoom user'
+      });
+    }
+    nextPageToken = list.next_page_token || '';
+    if (!nextPageToken || !(list.users || []).length) break;
+  }
+  return hosts.length ? hosts : [{ id: account.userId || process.env.ZOOM_USER_ID || 'me', label: account.userId || process.env.ZOOM_USER_ID || 'me' }];
+}
+
+function zoomCallField(call = {}, ...keys) {
+  for (const key of keys) {
+    const parts = key.split('.');
+    let value = call;
+    for (const part of parts) value = value?.[part];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
+function zoomCallParticipants(call = {}) {
+  return call.call_participants || call.participants || call.users || [];
+}
+
+function zoomCallParty(call = {}, role = 'caller') {
+  const regex = role === 'caller' ? /caller|from|source/i : /callee|to|target|destination/i;
+  return zoomCallParticipants(call).find(item => regex.test(`${item.role || ''} ${item.type || ''} ${item.direction || ''}`)) || {};
+}
+
+function normalizeZoomCallRecord(db, account, call = {}) {
+  const caller = zoomCallParty(call, 'caller');
+  const callee = zoomCallParty(call, 'callee');
+  const callerNumber = String(zoomCallField(call, 'caller_number', 'from.phone_number', 'caller.phone_number') || caller.phone_number || caller.number || '').trim();
+  const calleeNumber = String(zoomCallField(call, 'callee_number', 'to.phone_number', 'callee.phone_number') || callee.phone_number || callee.number || '').trim();
+  const startedAt = zoomCallField(call, 'start_time', 'date_time', 'startTime', 'call_start_time', 'answer_start_time') || new Date().toISOString();
+  const callKey = String(call.call_history_uuid || call.call_history_id || call.call_id || call.id || [startedAt, callerNumber, calleeNumber, call.duration].join('|'));
+  const record = {
+    id: `ZC-${numericHash(`${account.accountId}|${callKey}`)}`,
+    zoom_call_id: String(call.call_id || callKey),
+    zoom_call_history_uuid: String(call.call_history_uuid || call.call_history_id || call.id || ''),
+    zoom_account_id: account.accountId,
+    zoom_account_label: account.label,
+    started_at: startedAt,
+    direction: String(call.direction || call.call_direction || '').toLowerCase() || 'unknown',
+    result: String(call.result || call.call_result || call.disposition || call.status || ''),
+    duration: Number(call.duration || call.talk_time || call.total_duration || 0),
+    caller_name: String(zoomCallField(call, 'caller_name', 'from.name', 'caller.name') || caller.name || ''),
+    caller_number: callerNumber,
+    callee_name: String(zoomCallField(call, 'callee_name', 'to.name', 'callee.name') || callee.name || ''),
+    callee_number: calleeNumber,
+    owner_name: String(call.owner?.name || call.user_name || call.extension_name || ''),
+    site_name: String(call.site?.name || ''),
+    path: String(call.path || call.connect_type || call.call_type || ''),
+    raw: call
+  };
+  const lead = leadForZoomCall(db, record);
+  if (lead) {
+    record.lead_id = lead.id;
+    record.lead_name = fullName(lead);
+  }
+  return record;
+}
+
+async function fetchZoomAccountCallHistory(auth, account, maxCalls = 1000, options = {}) {
+  const calls = [];
+  const warnings = [];
+  for (const range of zoomCallHistoryRanges(options)) {
+    if (calls.length >= maxCalls) break;
+    let nextPageToken = '';
+    while (calls.length < maxCalls) {
+      const params = new URLSearchParams({
+        from: range.from,
+        to: range.to,
+        page_size: String(Math.max(1, Math.min(100, maxCalls - calls.length))),
+        time_type: 'start_time'
+      });
+      if (nextPageToken) params.set('next_page_token', nextPageToken);
+      try {
+        const result = await fetchZoomJson(`https://api.zoom.us/v2/phone/call_history?${params}`, { headers: auth, timeoutMs: 20000, attempts: 1 }, `Zoom phone calls for ${account.label}`);
+        const pageCalls = result.call_history || result.call_logs || result.calls || [];
+        calls.push(...pageCalls);
+        nextPageToken = result.next_page_token || '';
+        if (!nextPageToken || !pageCalls.length) break;
+      } catch (error) {
+        warnings.push(error.message || 'Zoom Phone call history failed.');
+        break;
+      }
+    }
+  }
+  return { calls, warnings };
+}
+
+async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), options = {}) {
+  db.zoom ||= { imported_meeting_ids: [] };
+  db.zoom.calls ||= [];
+  const accounts = zoomAccounts();
+  if (!accounts.length) throw statusError(400, 'Zoom credentials are not configured. Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET to .env.');
+  const existing = new Map((db.zoom.calls || []).map(call => [call.id, call]));
+  let scanned = 0, importedCalls = 0, updatedCalls = 0;
+  const warnings = [];
+  for (const account of accounts) {
+    if (scanned >= maxCalls) break;
+    const accessToken = await zoomAccessToken(account);
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    const result = await fetchZoomAccountCallHistory(auth, account, maxCalls - scanned, options);
+    warnings.push(...result.warnings);
+    for (const item of result.calls) {
+      const record = normalizeZoomCallRecord(db, account, item);
+      scanned += 1;
+      if (existing.has(record.id)) {
+        existing.set(record.id, { ...existing.get(record.id), ...record, updated_at: new Date().toISOString() });
+        updatedCalls += 1;
+      } else {
+        existing.set(record.id, { ...record, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+        importedCalls += 1;
+      }
+      if (scanned >= maxCalls) break;
+    }
+  }
+  db.zoom.calls = [...existing.values()].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0)).slice(0, Math.max(zoomCallMaxRecords(options), existing.size));
+  db.zoom.last_call_sync_at = new Date().toISOString();
+  addAudit(db, user, 'Zoom calls synced', 'integration', 'Zoom Phone', `${importedCalls} created, ${updatedCalls} updated, ${scanned} scanned across ${accounts.length} accounts`);
+  if (options.save !== false) await saveDb(db);
+  return {
+    imported_calls: importedCalls,
+    updated_calls: updatedCalls,
+    scanned,
+    accounts: accounts.length,
+    call_history_months: zoomCallHistoryMonths(options),
+    warnings: [...new Set(warnings.filter(Boolean))],
+    last_sync_at: db.zoom.last_call_sync_at
+  };
+}
+
+async function fetchZoomReportMeetings(auth, account, host, maxMeetings = 100, options = {}) {
+  if (!zoomIncludeHistory()) return { meetings: [], warning: '' };
+  const meetings = [];
+  const ranges = zoomReportHistoryRanges(options);
+  for (const range of ranges) {
+    if (meetings.length >= maxMeetings) break;
+    let nextPageToken = '';
+    while (meetings.length < maxMeetings) {
+      const params = new URLSearchParams({
+        from: range.from,
+        to: range.to,
+        page_size: String(Math.max(1, Math.min(100, maxMeetings - meetings.length)))
+      });
+      if (nextPageToken) params.set('next_page_token', nextPageToken);
+      try {
+        const list = await fetchZoomJson(`https://api.zoom.us/v2/report/users/${encodeURIComponent(host.id || zoomUserId())}/meetings?${params}`, { headers: auth, timeoutMs: 12000, attempts: 1 }, `Zoom history for ${account.label} / ${host.label || host.id}`);
+        meetings.push(...(list.meetings || []));
+        nextPageToken = list.next_page_token || '';
+        if (!nextPageToken || !(list.meetings || []).length) break;
+      } catch (error) {
+        if ([400, 401, 403, 404].includes(Number(error.status || 0))) return { meetings, warning: error.message || 'Zoom history scope is unavailable.' };
+        throw error;
+      }
+    }
+  }
+  return { meetings, warning: '', ranges };
+}
+
+async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
+  db.zoom ||= { imported_meeting_ids: [] };
+  db.zoom.sync_state ||= {};
+  const meetings = [];
+  const seenMeetings = new Set();
+  const leadByEmail = zoomLeadByEmailMap(db);
+  const attendeeAvailability = { registrantsUnavailable: new Set(), participantsUnavailable: new Set() };
+  const accounts = zoomAccounts();
+  if (!accounts.length) throw statusError(400, 'Zoom credentials are not configured. Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET to .env.');
+  let hostCount = 0;
+  let importedAttendees = 0;
+  let importedPhones = 0;
+  const historyWarnings = [];
+  const meetingTypes = zoomMeetingTypes();
+  for (const account of accounts) {
+    if (meetings.length >= maxMeetings) break;
+    const accessToken = await zoomAccessToken(account);
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    const hosts = await fetchZoomMeetingHosts(auth, Number(process.env.ZOOM_MAX_USERS || 100), account);
+    hostCount += hosts.length;
+    for (const host of hosts) {
+      if (meetings.length >= maxMeetings) break;
+      const syncKey = `${account.accountId}:${host.id || zoomUserId()}`;
+      const previousSyncState = db.zoom.sync_state[syncKey] || {};
+      db.zoom.sync_state[syncKey] = {
+        ...previousSyncState,
+        zoom_account_id: account.accountId,
+        zoom_account_label: account.label,
+        zoom_user_id: host.id || zoomUserId(),
+        zoom_user_label: host.label || host.id || zoomUserId(),
+        last_attempt_at: new Date().toISOString(),
+        status: 'running'
+      };
+      for (const meetingType of meetingTypes) {
+        if (meetings.length >= maxMeetings) break;
+        let nextPageToken = '';
+        while (meetings.length < maxMeetings) {
+          const params = new URLSearchParams({
+            type: meetingType,
+            page_size: String(Math.max(1, Math.min(100, maxMeetings - meetings.length)))
+          });
+          if (nextPageToken) params.set('next_page_token', nextPageToken);
+          let list;
+          try {
+            list = await fetchZoomJson(`https://api.zoom.us/v2/users/${encodeURIComponent(host.id || zoomUserId())}/meetings?${params}`, { headers: auth, timeoutMs: 20000 }, `Zoom meetings for ${account.label} / ${host.label || host.id} / ${meetingType}`);
+          } catch (error) {
+            historyWarnings.push(error.message || `Zoom meetings failed for ${host.label || host.id} / ${meetingType}`);
+            break;
+          }
+          for (const meeting of list.meetings || []) {
+            const key = `${account.accountId}-${host.id || zoomUserId()}-${meeting.uuid || meeting.id || meeting.topic || 'meeting'}-${meeting.start_time || meeting.created_at || ''}`;
+            if (seenMeetings.has(key)) continue;
+            seenMeetings.add(key);
+            const enrichedMeeting = await enrichZoomMeetingWithAttendees(auth, account, host, { ...meeting, host_id: host.id, host_label: host.label, zoom_account_id: account.accountId, zoom_account_label: account.label, zoom_list_type: meetingType }, leadByEmail, historyWarnings, attendeeAvailability);
+            importedAttendees += enrichedMeeting.zoom_attendee_count || 0;
+            importedPhones += enrichedMeeting.zoom_phone_count || 0;
+            meetings.push(enrichedMeeting);
+            if (meetings.length >= maxMeetings) break;
+          }
+          nextPageToken = list.next_page_token || '';
+          if (!nextPageToken || !(list.meetings || []).length) break;
+        }
+      }
+      if (zoomIncludeHistory() && meetings.length < maxMeetings) {
+        const reportDisabled = previousSyncState.report_history_unavailable && zoomReportUnsupportedWarning(previousSyncState.last_error);
+        const history = reportDisabled
+          ? { meetings: [], warning: '', ranges: [], skipped: true }
+          : await fetchZoomReportMeetings(auth, account, host, maxMeetings - meetings.length, { ...options, sync_state: previousSyncState });
+        if (history.warning) {
+          if (!zoomReportUnsupportedWarning(history.warning)) historyWarnings.push(history.warning);
+          db.zoom.sync_state[syncKey] = {
+            ...db.zoom.sync_state[syncKey],
+            status: 'warning',
+            last_error: history.warning,
+            report_history_unavailable: zoomReportUnsupportedWarning(history.warning),
+            last_report_ranges: history.ranges || []
+          };
+        } else {
+          db.zoom.sync_state[syncKey] = {
+            ...db.zoom.sync_state[syncKey],
+            status: 'ok',
+            initial_backfill_completed: history.skipped ? Boolean(previousSyncState.initial_backfill_completed) : true,
+            last_successful_sync_at: new Date().toISOString(),
+            last_error: history.skipped ? (previousSyncState.last_error || '') : '',
+            report_history_unavailable: history.skipped ? Boolean(previousSyncState.report_history_unavailable) : false,
+            last_report_ranges: history.ranges || []
+          };
+        }
+        for (const meeting of history.meetings || []) {
+          const key = `${account.accountId}-${host.id || zoomUserId()}-${meeting.uuid || meeting.id || meeting.topic || 'meeting'}-${meeting.start_time || meeting.created_at || ''}`;
+          if (seenMeetings.has(key)) continue;
+          seenMeetings.add(key);
+          const enrichedMeeting = await enrichZoomMeetingWithAttendees(auth, account, host, { ...meeting, duration: meeting.duration || meeting.total_minutes, status: meeting.status || 'past', host_id: host.id, host_label: host.label, zoom_account_id: account.accountId, zoom_account_label: account.label, zoom_list_type: 'report_history' }, leadByEmail, historyWarnings, attendeeAvailability);
+          importedAttendees += enrichedMeeting.zoom_attendee_count || 0;
+          importedPhones += enrichedMeeting.zoom_phone_count || 0;
+          meetings.push(enrichedMeeting);
+          if (meetings.length >= maxMeetings) break;
+        }
+      }
+    }
+  }
+  let importedEvents = 0, updatedEvents = 0;
+  for (const meeting of meetings.slice(0, maxMeetings)) {
+    const meetingId = String(meeting.id || '').trim();
+    const meetingUuid = String(meeting.uuid || '').trim();
+    const startAt = meeting.start_time || meeting.created_at || new Date().toISOString();
+    const recordForMatch = {
+      name: meeting.topic || 'Zoom meeting',
+      start_at: startAt,
+      location: 'Zoom',
+      zoom_meeting_id: meetingId,
+      zoom_meeting_uuid: meetingUuid
+    };
+    let existing = (db.events || []).find(item => meetingId && String(item.zoom_meeting_id || '') === meetingId && (!item.zoom_account_id || !meeting.zoom_account_id || String(item.zoom_account_id) === String(meeting.zoom_account_id))) ||
+      (db.events || []).find(item => meetingUuid && String(item.zoom_meeting_uuid || '') === meetingUuid && (!item.zoom_account_id || !meeting.zoom_account_id || String(item.zoom_account_id) === String(meeting.zoom_account_id))) ||
+      findSpreadsheetEvent(db, recordForMatch);
+    const record = {
+      id: existing?.id || nextId('EV', [db.events]),
+      zoom_meeting_id: meetingId,
+      zoom_meeting_uuid: meetingUuid,
+      zoom_host_id: meeting.host_id || '',
+      zoom_host_label: meeting.host_label || '',
+      zoom_account_id: meeting.zoom_account_id || existing?.zoom_account_id || '',
+      zoom_account_label: meeting.zoom_account_label || existing?.zoom_account_label || '',
+      zoom_list_type: meeting.zoom_list_type || existing?.zoom_list_type || '',
+      name: meeting.topic || 'Zoom meeting',
+      location: 'Zoom',
+      start_at: startAt,
+      created_at: existing?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      end_at: meeting.duration ? new Date(new Date(startAt).getTime() + Number(meeting.duration || 0) * 60000).toISOString() : existing?.end_at || null,
+      campaign: [meeting.zoom_account_label || 'Zoom', meeting.host_label].filter(Boolean).join(' - '),
+      capacity: Math.max(Number(existing?.capacity || 0), Number(meeting.zoom_attendees?.length || 0)),
+      registrations: Math.max(Number(existing?.registrations || 0), Number(existing?.attendees?.length || 0), Number(meeting.zoom_attendees?.length || 0)),
+      attendance: Math.max(Number(existing?.attendance || 0), Number((meeting.zoom_attendees || []).filter(attendee => attendee.attended_at || String(attendee.status || '').toLowerCase() === 'attended').length || 0)),
+      attendees: mergeEventAttendees(existing?.attendees || [], meeting.zoom_attendees || []),
+      description: meeting.agenda || existing?.description || '',
+      status: meeting.status || existing?.status || '',
+      timezone: meeting.timezone || existing?.timezone || '',
+      meeting_link: meeting.join_url || existing?.meeting_link || existing?.zoom_link || '',
+      zoom_link: meeting.join_url || existing?.zoom_link || existing?.meeting_link || ''
+    };
+    if (existing) {
+      Object.assign(existing, record);
+      updatedEvents += 1;
+    } else {
+      db.events.push(record);
+      importedEvents += 1;
+    }
+    if (meetingId && !(db.zoom.imported_meeting_ids || []).includes(meetingId)) {
+      db.zoom.imported_meeting_ids = [...(db.zoom.imported_meeting_ids || []), meetingId];
+    }
+  }
+  db.zoom.last_sync_at = new Date().toISOString();
+  db.zoom.user_id = zoomSyncAllUsers() ? `all users across ${accounts.length} accounts` : (process.env.ZOOM_USER_ID || 'me');
+  db.zoom.accounts = accounts.length;
+  const reportHistorySkipped = Object.values(db.zoom.sync_state || {}).filter(item => item?.report_history_unavailable).length;
+  addAudit(db, user, 'Zoom meetings synced', 'integration', 'Zoom', `${importedEvents} created, ${updatedEvents} updated, ${meetings.length} scanned from ${hostCount} users across ${accounts.length} accounts, ${importedAttendees} attendees, ${importedPhones} phones (${meetingTypes.join(', ')}${zoomIncludeHistory() ? ', report_history' : ''})`);
+  if (options.save !== false) await saveDb(db);
+  return {
+    imported_events: importedEvents,
+    updated_events: updatedEvents,
+    scanned: meetings.length,
+    imported_attendees: importedAttendees,
+    imported_phones: importedPhones,
+    users: hostCount,
+    accounts: accounts.length,
+    history: zoomIncludeHistory(),
+    report_history_months: zoomReportHistoryMonths(options),
+    history_months: zoomReportHistoryMonths(options),
+    history_from: options.history_from || process.env.ZOOM_HISTORY_FROM || '',
+    history_warnings: [...new Set(historyWarnings)],
+    report_history_skipped: reportHistorySkipped,
+    all_users: zoomSyncAllUsers(),
+    last_sync_at: db.zoom.last_sync_at
+  };
 }
 
 function metaFieldMap(lead) {
@@ -4583,6 +5658,21 @@ async function handleApi(req, res) {
     payload.marketing = null;
     return sendJson(res, payload);
   }
+  if (route === '/api/dashboard/summary' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadDashboardSummaryDb());
+  }
+  if (route === '/api/leads' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadLeadPage({
+      cursor: url.searchParams.get('cursor'),
+      limit: url.searchParams.get('limit'),
+      search: url.searchParams.get('search'),
+      stage: url.searchParams.get('stage'),
+      owner_id: url.searchParams.get('owner_id'),
+      programme_id: url.searchParams.get('programme_id')
+    }));
+  }
   if (route === '/api/developer/config' && method === 'GET') {
     const user = await currentSessionUser(req);
     requireDeveloperAccess(req, user);
@@ -4632,6 +5722,10 @@ async function handleApi(req, res) {
   if (route === '/api/applications' && method === 'GET') {
     await currentSessionUser(req);
     return sendJson(res, { applications: await loadApplicationListDb() });
+  }
+  if (route === '/api/zoom/events' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, { events: await loadZoomEventListDb(url.searchParams.get('limit')) });
   }
   if (route === '/api/audit' && method === 'GET') {
     await currentSessionUser(req);
@@ -4834,6 +5928,47 @@ async function handleApi(req, res) {
     await saveEventImportTables(db, { preserveGmail: true });
     return sendJson(res, result, 201);
   }
+  if (route === '/api/integrations/zoom/status' && method === 'GET') {
+    const accounts = zoomAccounts();
+    return sendJson(res, {
+      configured: zoomConfigured(),
+      connected: zoomConfigured(),
+      user_id: zoomSyncAllUsers() ? `all users across ${accounts.length} accounts` : (process.env.ZOOM_USER_ID || 'me'),
+      meeting_type: zoomMeetingType(),
+      report_history_months: zoomReportHistoryMonths(),
+      history_months: zoomReportHistoryMonths(),
+      history_from: process.env.ZOOM_HISTORY_FROM || null,
+      all_users: zoomSyncAllUsers(),
+      accounts: accounts.length,
+      last_sync_at: db.zoom?.last_sync_at || null
+    });
+  }
+  if (route === '/api/integrations/zoom/sync' && method === 'POST') {
+    const result = await importZoomMeetings(db, user, Number(body.max_meetings || body.max_events || process.env.ZOOM_MAX_MEETINGS || 500), {
+      save: false,
+      report_history_months: body.report_history_months || body.history_months,
+      history_from: body.history_from
+    });
+    await saveEventImportTables(db, { preserveGmail: true });
+    return sendJson(res, result);
+  }
+  if (route === '/api/zoom/calls' && method === 'GET') {
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 500), 5000));
+    const calls = (db.zoom?.calls || [])
+      .slice()
+      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0))
+      .slice(0, limit);
+    return sendJson(res, { calls, last_sync_at: db.zoom?.last_call_sync_at || null });
+  }
+  if (route === '/api/integrations/zoom/calls/sync' && method === 'POST') {
+    const result = await importZoomCalls(db, user, Number(body.max_calls || process.env.ZOOM_MAX_CALLS || 1000), {
+      save: false,
+      max_calls: body.max_calls,
+      call_history_months: body.call_history_months
+    });
+    await saveEventImportTables(db, { preserveGmail: true });
+    return sendJson(res, result);
+  }
   if (route === '/api/integrations/meta/status' && method === 'GET') {
     return sendJson(res, {
       configured: metaConfigured(),
@@ -4943,7 +6078,7 @@ async function handleApi(req, res) {
 
   if (route === '/api/tasks' && method === 'POST') {
     const lead = leadFor(db, body.lead_id);
-    db.tasks.push({ id: nextId('T', [db.tasks]), title: body.title, lead_id: lead.id, kind: body.kind, status: 'Open', due_at: body.due_at, priority: body.priority, owner_id: body.owner_id });
+    db.tasks.push({ id: nextId('T', [db.tasks]), title: body.title, lead_id: lead.id, kind: body.kind, status: 'Open', created_at: new Date().toISOString(), due_at: body.due_at, priority: body.priority, owner_id: body.owner_id });
     addAudit(db, user, 'Task created', 'lead', lead.id, body.title);
     await saveDb(db);
     return sendJson(res, { ok: true }, 201);
@@ -4973,6 +6108,7 @@ async function handleApi(req, res) {
         lead_id: lead.id,
         kind: 'Follow-up',
         status: 'Open',
+        created_at: new Date().toISOString(),
         due_at: new Date(Date.now() + 86400000).toISOString(),
         priority: lead.priority,
         owner_id: lead.owner_id
@@ -4986,7 +6122,7 @@ async function handleApi(req, res) {
   if (route === '/api/calls' && method === 'POST') {
     const lead = leadFor(db, body.lead_id);
     addAudit(db, user, `Call ${body.outcome}`, 'lead', lead.id, body.note);
-    if (body.follow_up) db.tasks.push({ id: nextId('T', [db.tasks]), title: body.next_action, lead_id: lead.id, kind: 'Follow-up', status: 'Open', due_at: body.due_at, priority: lead.priority, owner_id: lead.owner_id });
+    if (body.follow_up) db.tasks.push({ id: nextId('T', [db.tasks]), title: body.next_action, lead_id: lead.id, kind: 'Follow-up', status: 'Open', created_at: new Date().toISOString(), due_at: body.due_at, priority: lead.priority, owner_id: lead.owner_id });
     await saveDb(db);
     return sendJson(res, { ok: true });
   }
@@ -5149,6 +6285,8 @@ module.exports = {
   saveGmailImportTables,
   importSpreadsheetEvents,
   importEventbriteEvents,
+  importZoomMeetings,
+  importZoomCalls,
   importGmailMessages,
   ensureProgrammeCatalog,
   programmeForText,

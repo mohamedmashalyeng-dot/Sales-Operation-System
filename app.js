@@ -2,6 +2,7 @@
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={home:'M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75 M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2',mail:'M3 5h18v14H3z M3 5l9 7 9-7',grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',arrow:'M5 12h14 M14 7l5 5-5 5',back:'M19 12H5 M10 7l-5 5 5 5',plus:'M12 5v14 M5 12h14',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',check:'M5 12l4 4L19 6',bell:'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',close:'M6 6l12 12 M6 18 18 6',phone:'M22 16v3a2 2 0 0 1-2 2C10 21 3 14 3 4a2 2 0 0 1 2-2h3l2 5-3 2c1 3 3 5 6 6l2-3z',file:'M14 2H4v20h16V8z M14 2v6h6 M8 13h8 M8 17h5',chart:'M4 3v18h17 M8 15v-4 M13 15V7 M18 15V4',shield:'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6z M8 12l3 3 5-6',clock:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M12 6v6l4 2',settings:'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M9 2h6l1 4 4 1 2 5-3 3v5l-5 2-3-3-5 1-3-5 2-4-1-5 5-1z',logout:'M9 21H3V3h6 M8 12h14 M17 7l5 5-5 5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',download:'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',spark:'M12 3l2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6z',chevron:'m9 6 6 6-6 6'};
+paths.video='M15 10l6-4v12l-6-4v4H3V6h12z';
 const icon=(name,cls='')=>`<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.grid}"/></svg>`;
 const logo=()=>'<div class="logo"><img src="/kent-logo-full-dark.png" alt="Kent Business College"></div>';
 const initials=p=>esc(((p.first_name||p.name||'').split(' ')[0][0]||'')+((p.last_name||p.name?.split(' ')[1]||'')[0]||''));
@@ -165,10 +166,59 @@ let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSe
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300,PLANNER_LIST_LIMIT=120,PLANNER_DONE_LIMIT=30;
 const GMAIL_IMPORT_ENABLED=true;
-const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
-const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['attribution','chart','Attribution']];
+const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
+const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom'],['attribution','chart','Attribution']];
 const localUserKey='pathway_local_user';
 const localDataKey='pathway_local_data';
+const seenPages=['leads','planner','inbox','applications','events','zoom'];
+function seenStorageKey(){return `pathway_seen_v2:${normalizeEmail(data?.user?.email||getStoredUser()?.email||'workspace')}`;}
+function readSeenState(){try{return JSON.parse(localStorage.getItem(seenStorageKey())||'{}')||{};}catch{return {};}}
+function writeSeenState(state){localStorage.setItem(seenStorageKey(),JSON.stringify(state));}
+function ensureSeenBaseline(){
+ if(!data?.user)return;
+ const key=seenStorageKey();
+ if(localStorage.getItem(key))return;
+ const now=new Date().toISOString(),state={};
+ seenPages.forEach(page=>state[page]=now);
+ localStorage.setItem(key,JSON.stringify(state));
+}
+function itemTimeValue(value){const d=new Date(value);return Number.isNaN(d.getTime())?0:d.getTime();}
+function itemCreatedAt(item,...fallbacks){for(const field of ['created_at','imported_at','received_at',...fallbacks]){const time=itemTimeValue(item?.[field]);if(time)return time;}return 0;}
+function pageNewItems(page){
+ if(!data?.user)return [];
+ const seenAt=itemTimeValue(readSeenState()[page]);
+ if(!seenAt)return [];
+ let items=[];
+ if(page==='leads')items=(data.leads||[]).map(item=>({item,time:itemCreatedAt(item),label:fullName(item),detail:item.programme||item.stage||''}));
+ if(page==='planner')items=(data.tasks||[]).map(item=>({item,time:itemCreatedAt(item,'completed_at'),label:item.title||'Task',detail:item.status||item.kind||''}));
+ if(page==='inbox')items=(data.emails||[]).filter(email=>!emailIsTrashed(email)).map(item=>({item,time:itemCreatedAt(item),label:item.subject||fullName(item),detail:fullName(item)}));
+ if(page==='applications')items=(data.applications||[]).map(item=>({item,time:itemCreatedAt(item),label:fullName(item),detail:item.programme||item.status||''}));
+ if(page==='events')items=(data.events||[]).filter(event=>!isZoomEvent(event)).map(item=>({item,time:itemCreatedAt(item,'updated_at'),label:item.name||'Event',detail:timestamp(item.start_at)}));
+ if(page==='zoom')items=(data.events||[]).filter(isZoomEvent).map(item=>({item,time:itemCreatedAt(item,'updated_at'),label:item.name||'Zoom meeting',detail:item.zoom_account_label||item.zoom_host_label||''}));
+ return items.filter(entry=>entry.time>seenAt).sort((a,b)=>b.time-a.time);
+}
+function pageNewCount(page){return pageNewItems(page).length;}
+function pageNewNotice(page){
+ const items=pageNewItems(page);
+ if(!items.length)return '';
+ const preview=items.slice(0,4).map(entry=>`<span>${esc(entry.label)}${entry.detail?` <em>${esc(entry.detail)}</em>`:''}</span>`).join('');
+ const extra=items.length>4?`<b>+${items.length-4} more</b>`:'';
+ return `<div class="notice new-items-notice"><strong>${items.length} new since your last visit.</strong><div>${preview}${extra}<button class="text-button" data-act="mark-page-seen" data-page="${esc(page)}">Mark seen</button></div></div>`;
+}
+function markPageSeen(page){
+ if(!seenPages.includes(page))return;
+ const newestSeenItem=Math.max(0,...pageNewItems(page).map(entry=>entry.time||0));
+ const seenAt=new Date(Math.max(Date.now(),newestSeenItem)+1000).toISOString();
+ const state=readSeenState();
+ state[page]=seenAt;
+ writeSeenState(state);
+}
+let visibleSeenPage=null;
+function acknowledgeVisibleSeenPage(nextPage=''){
+ if(visibleSeenPage&&visibleSeenPage!==nextPage)markPageSeen(visibleSeenPage);
+ visibleSeenPage=seenPages.includes(nextPage)?nextPage:null;
+}
+window.addEventListener('beforeunload',()=>acknowledgeVisibleSeenPage(''));
 function getStoredUser(){
  try{
   const user=JSON.parse(localStorage.getItem(localUserKey)||'null');
@@ -210,7 +260,7 @@ function buildLocalData(user){
   emails:[],
   applications:[],
   events:[],
-  integrations:[{name:'Gmail',status:'Not connected',detail:'Connect Gmail from Settings.'},{name:'Eventbrite',status:'Not connected',detail:'Connect Eventbrite from Settings.'},{name:'Meta',status:'Needs credentials',detail:'Add META_ACCESS_TOKEN and META_PAGE_ID to enable Lead Ads sync.'}],
+  integrations:[{name:'Gmail',status:'Not connected',detail:'Connect Gmail from Settings.'},{name:'Eventbrite',status:'Not connected',detail:'Connect Eventbrite from Settings.'},{name:'Zoom',status:'Needs credentials',detail:'Add Zoom Server-to-Server OAuth credentials to enable meeting sync.'},{name:'Meta',status:'Needs credentials',detail:'Add META_ACCESS_TOKEN and META_PAGE_ID to enable Lead Ads sync.'}],
   intakes:[{id:'I-1',programme_id:'p1',name:'January 2027'},{id:'I-2',programme_id:'p2',name:'February 2027'}],
   audit:[],
   attribution:[],
@@ -253,9 +303,14 @@ function rebuildClientIndexes(d){
 function leadFor(d,id){const lead=d.leads.find(l=>l.id===id);if(!lead)throw new Error('Lead not found.');return lead;}
 function applicationFor(d,id){const app=d.applications.find(a=>a.id===id);if(!app)throw new Error('Application not found.');return app;}
 function addAudit(d,action,entity,entity_id,detail=''){d.audit.unshift({id:`AU-${Date.now()}-${d.audit.length}`,occurred_at:new Date().toISOString(),actor:d.user.name,action:detail?`${action}: ${detail}`:action,entity,entity_id});}
+function ensureClientIntegration(d,name,status,detail){
+ d.integrations ||= [];
+ if(!d.integrations.some(item=>item.name===name))d.integrations.push({name,status,detail});
+}
 function recalculate(d){
  d.permissions={sales:['sales','manager','admissions','qa','director','admin'].includes(d.user.role),review:['manager','admissions','qa','director','admin'].includes(d.user.role),admin:['admin','director'].includes(d.user.role)};
  d.sources ||= [];
+ ensureClientIntegration(d,'Zoom',d.zoom?.last_sync_at||d.zoom?.imported_meeting_ids?.length?'Connected':'Needs credentials','Add Zoom Server-to-Server OAuth credentials to enable meeting sync.');
  const programmeById=new Map((d.programmes||[]).map(p=>[p.id,p]));
  const ownerById=new Map((d.owners||[]).map(o=>[o.id,o]));
  const leadById=new Map((d.leads||[]).map(l=>[l.id,l]));
@@ -307,7 +362,7 @@ async function localApi(path,body={},method='POST'){
  if(clean==='/api/leads'){
   const programme=d.programmes.find(p=>p.id===body.programme_id),owner=d.owners.find(o=>o.id===body.owner_id)||d.user,id=numericEmailId(body.email);
   d.leads.push({id,first_name:body.first_name,last_name:body.last_name,full_name:`${body.first_name} ${body.last_name}`,programme:programme.name,programme_id:programme.id,email:body.email,employer:body.employer,phone:body.phone||'',city:body.city||'',owner:owner.name,owner_id:owner.id,stage:'New lead',priority:body.priority,source_first_touch:body.source,source_lead_capture:body.source,contact_permission:body.contact_permission,level:programme.level,person_id:id,created_at:now,next_action_at:null});
-  d.tasks.push({id:nextId('T',[d.tasks]),title:`First contact with ${body.first_name} ${body.last_name}`,lead_id:id,kind:'Call',status:'Open',due_at:new Date(Date.now()+86400000).toISOString(),priority:body.priority,owner_id:owner.id});
+  d.tasks.push({id:nextId('T',[d.tasks]),title:`First contact with ${body.first_name} ${body.last_name}`,lead_id:id,kind:'Call',status:'Open',created_at:now,due_at:new Date(Date.now()+86400000).toISOString(),priority:body.priority,owner_id:owner.id});
   addAudit(d,'Lead created','lead',id);saveLocalData(d);return {id};
  }
  if(match&&method==='PATCH'){const lead=leadFor(d,match[1]);Object.assign(lead,{stage:body.stage,owner_id:body.owner_id,priority:body.priority});addAudit(d,'Opportunity updated','lead',lead.id,body.reason);saveLocalData(d);return {ok:true};}
@@ -315,12 +370,12 @@ async function localApi(path,body={},method='POST'){
  if(match){const original=leadFor(d,match[1]),programme=d.programmes.find(p=>p.id===body.programme_id);original.programme_history ||= [];if(!original.programme_history.some(item=>item.programme_id===programme.id))original.programme_history.push({programme_id:programme.id,programme:programme.name,level:programme.level,added_at:now});Object.assign(original,{programme_id:programme.id,programme:programme.name,level:programme.level,stage:'New lead',next_action_at:null});addAudit(d,'Programme opportunity linked','lead',original.id,programme.name);saveLocalData(d);return {id:original.id,created:false};}
  match=clean.match(/^\/api\/leads\/([^/]+)\/notes$/);
  if(match){leadFor(d,match[1]);addAudit(d,'Note added','lead',match[1],body.note);saveLocalData(d);return {ok:true};}
- if(clean==='/api/tasks'){const lead=leadFor(d,body.lead_id);d.tasks.push({id:nextId('T',[d.tasks]),title:body.title,lead_id:lead.id,kind:body.kind,status:'Open',due_at:body.due_at,priority:body.priority,owner_id:body.owner_id});addAudit(d,'Task created','lead',lead.id,body.title);saveLocalData(d);return {ok:true};}
+ if(clean==='/api/tasks'){const lead=leadFor(d,body.lead_id);d.tasks.push({id:nextId('T',[d.tasks]),title:body.title,lead_id:lead.id,kind:body.kind,status:'Open',created_at:now,due_at:body.due_at,priority:body.priority,owner_id:body.owner_id});addAudit(d,'Task created','lead',lead.id,body.title);saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/tasks\/([^/]+)\/complete$/);
  if(match){const task=d.tasks.find(t=>t.id===match[1]);if(!task)throw new Error('Task not found.');task.status='Done';task.completed_at=now;addAudit(d,'Task completed','lead',task.lead_id,task.title);saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/attendees\/([^/]+)\/checkin$/);
- if(match){const attendee=d.events.flatMap(e=>e.attendees||[]).find(a=>a.id===match[1]);if(!attendee)throw new Error('Attendee not found.');attendee.attended_at=attendee.attended_at||now;if(attendee.lead_id){const lead=d.leads.find(l=>l.id===attendee.lead_id);if(lead)d.tasks.push({id:nextId('T',[d.tasks]),title:'Follow up after event attendance',lead_id:lead.id,kind:'Follow-up',status:'Open',due_at:new Date(Date.now()+86400000).toISOString(),priority:lead.priority,owner_id:lead.owner_id});}saveLocalData(d);return {ok:true};}
- if(clean==='/api/calls'){const lead=leadFor(d,body.lead_id);addAudit(d,`Call ${body.outcome}`,'lead',lead.id,body.note);if(body.follow_up)d.tasks.push({id:nextId('T',[d.tasks]),title:body.next_action,lead_id:lead.id,kind:'Follow-up',status:'Open',due_at:body.due_at,priority:lead.priority,owner_id:lead.owner_id});saveLocalData(d);return {ok:true};}
+ if(match){const attendee=d.events.flatMap(e=>e.attendees||[]).find(a=>a.id===match[1]);if(!attendee)throw new Error('Attendee not found.');attendee.attended_at=attendee.attended_at||now;if(attendee.lead_id){const lead=d.leads.find(l=>l.id===attendee.lead_id);if(lead)d.tasks.push({id:nextId('T',[d.tasks]),title:'Follow up after event attendance',lead_id:lead.id,kind:'Follow-up',status:'Open',created_at:now,due_at:new Date(Date.now()+86400000).toISOString(),priority:lead.priority,owner_id:lead.owner_id});}saveLocalData(d);return {ok:true};}
+ if(clean==='/api/calls'){const lead=leadFor(d,body.lead_id);addAudit(d,`Call ${body.outcome}`,'lead',lead.id,body.note);if(body.follow_up)d.tasks.push({id:nextId('T',[d.tasks]),title:body.next_action,lead_id:lead.id,kind:'Follow-up',status:'Open',created_at:now,due_at:body.due_at,priority:lead.priority,owner_id:lead.owner_id});saveLocalData(d);return {ok:true};}
  if(clean==='/api/emails'){const lead=leadFor(d,body.lead_id),received=new Date(body.received_at);d.emails.unshift({id:nextId('E',[d.emails]),first_name:lead.first_name,last_name:lead.last_name,email:lead.email,lead_id:lead.id,subject:body.subject,body:body.body,owner:lead.owner,direction:'inbound',response_at:null,due_at:new Date(received.getTime()+EMAIL_RESPONSE_SLA_MS).toISOString(),received_at:received.toISOString()});addAudit(d,'Inbound email recorded','lead',lead.id,body.subject);saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/emails\/([^/]+)\/resolve$/);
  if(match){const email=d.emails.find(e=>e.id===match[1]);if(!email)throw new Error('Email not found.');const responseAt=new Date(body.response_at);email.response_at=Number.isNaN(responseAt.getTime())||responseAt.getFullYear()<=2000?now:responseAt.toISOString();email.response_note=body.note;addAudit(d,'Email response recorded','lead',email.lead_id,body.note);saveLocalData(d);return {ok:true};}
@@ -430,7 +485,7 @@ async function runGmailSyncAuto(){
 }
 async function refresh(options={}){
  try{
-  data=await api('/api/bootstrap',undefined,'POST',{silent:Boolean(options.silent)});if(data?.user)saveStoredUser(data.user);rebuildClientIndexes(data);await render();
+  data=await api('/api/bootstrap',undefined,'POST',{silent:Boolean(options.silent)});if(data?.user)saveStoredUser(data.user);ensureSeenBaseline();rebuildClientIndexes(data);await render();
  }
  catch(error){
   throw error;
@@ -479,6 +534,36 @@ function scheduleEventFilterRefresh(){
  clearTimeout(eventFilterTimer);
  eventFilterTimer=setTimeout(()=>render(),180);
 }
+function updateZoomResults(){
+ clearTimeout(eventFilterTimer);
+ eventFilterTimer=setTimeout(()=>{
+  const results=$('#zoom-results');
+  if(!results)return;
+  results.innerHTML=zoomTable(zoomFilteredEvents());
+ },180);
+}
+function mergeEventRecords(events=[]){
+ const byId=new Map((data.events||[]).map(event=>[event.id,event]));
+ events.forEach(event=>{if(event?.id)byId.set(event.id,event);});
+ data.events=[...byId.values()];
+}
+async function loadZoomEvents(){
+ const result=await api('/api/zoom/events?limit=5000',undefined,'GET',{silent:true});
+ mergeEventRecords(result.events||[]);
+ return result.events||[];
+}
+function mergeZoomCalls(calls=[]){
+ data.zoom ||= {};
+ const byId=new Map((data.zoom.calls||[]).map(call=>[call.id,call]));
+ calls.forEach(call=>{if(call?.id)byId.set(call.id,call);});
+ data.zoom.calls=[...byId.values()];
+}
+async function loadZoomCalls(){
+ const result=await api('/api/zoom/calls?limit=1000',undefined,'GET',{silent:true});
+ mergeZoomCalls(result.calls||[]);
+ data.zoom.last_call_sync_at=result.last_sync_at||data.zoom.last_call_sync_at;
+ return result.calls||[];
+}
 function go(route){if(location.hash===`#/${route}`)render();else location.hash=`#/${route}`;}
 function route(){return location.hash.replace(/^#\/?/,'')||'today';}
 function breadcrumbLabel(){
@@ -495,14 +580,14 @@ function showAppLoading(){
  $('#app').innerHTML='<div class="loading-screen" aria-label="Loading workspace"><span class="loading-mark"></span></div>';
 }
 function navButton(n,current){
- const overdue=overdueEmailCount(),inboxCount=unansweredEmailCount();
- return `<button class="nav-button ${current===n[0]?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${n[0]==='inbox'&&inboxCount?`<span class="nav-count ${overdue?'danger':''}">${inboxCount}</span>`:''}</button>`;
+ const count=current===n[0]?0:pageNewCount(n[0]);
+ return `<button class="nav-button ${current===n[0]?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;
 }
 function shell(content,current){
  const navCurrent=current.split('/')[0],user=data.user,bell=`${icon('bell')}${overdueEmailCount()?`<span class="alert-count">${overdueEmailCount()}</span>`:''}`;
  return `<aside class="sidebar">${logo()}<div class="eyebrow">Workspace</div>${navs.map(n=>navButton(n,navCurrent)).join('')}<div class="eyebrow">Manage</div>${navButton(['settings','settings','Settings'],navCurrent)}${['admin','qa','director'].includes(user.role)?navButton(['audit','shield','Audit trail'],navCurrent):''}<div class="sidebar-footer"><div class="workspace-tag"><b>${data.demo?'Demo workspace':'Team workspace'}</b>${data.demo?'Fictional records · Explore freely':'Apprenticeship operations'}</div><div class="sidebar-user">${avatar(user)}<div><b>${esc(user.name)}</b><div class="muted small">${esc(user.role)}</div></div><button class="text-button" data-act="logout" aria-label="Sign out">${icon('logout')}</button></div></div></aside>
  <div class="main-shell"><header class="topbar">${logo()}<div class="breadcrumb">WORKSPACE <span>/</span> <b>${esc(labels[navCurrent]||'Lead 360')}</b></div><div class="top-actions"><span class="small muted"><span class="status-dot"></span>${data.demo?'Demo workspace':'Connected to workspace'}</span><button class="icon-button" data-act="notifications" aria-label="View overdue actions">${icon('bell')}</button>${avatar(user)}</div></header>${navigator.onLine?'':'<div class="offline-banner">Offline — reconnect to view and save changes.</div>'}<main class="workspace">${content}</main></div>
- <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['monitoring','chart','Monitor'],['leads','users','Leads'],['planner','calendar','Planner'],['more','grid','More']].map(n=>`<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','monitoring','leads','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</nav>`;
+ <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['monitoring','chart','Monitor'],['leads','users','Leads'],['planner','calendar','Planner'],['more','grid','More']].map(n=>{const count=navCurrent===n[0]?0:pageNewCount(n[0]);return `<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','monitoring','leads','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;}).join('')}</nav>`;
 }
 function taskRow(t){return `<div class="task-row"><button class="check-button ${t.status==='Done'?'done':''}" data-act="complete" data-id="${t.id}" ${!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${t.status==='Done'?icon('check'):''}</button><div class="task-copy ${t.status==='Done'?'done':''}"><strong>${esc(t.title)}</strong><p><button class="text-button" data-go="leads/${t.lead_id}">${esc(fullName(t))}</button> · ${esc(t.kind)}</p></div>${badge(dueLabel(t),dueLabel(t)==='Overdue'?'red':'')}</div>`;}
 function plannerLead(t){return data.leads.find(l=>l.id===t.lead_id)||t;}
@@ -525,6 +610,27 @@ function plannerTasks(){
 function plannerTaskCard(t,n=0){
  const lead=plannerLead(t),bucket=taskDueBucket(t),done=t.status==='Done';
  return `<article class="planner-task ${done?'done':''}"><button class="check-button ${done?'done':''}" data-act="complete" data-id="${esc(t.id)}" ${done||!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${done?icon('check'):''}</button><div class="planner-task-main"><div class="planner-task-top"><strong>${esc(t.title)}</strong>${badge(bucket,bucket==='Overdue'?'red':bucket==='Done'?'green':bucket==='Today'?'amber':'blue')}</div><p><button class="text-button" data-go="leads/${esc(t.lead_id)}">${esc(fullName(lead))}</button> · ${esc(lead.programme||'No programme')}</p><div class="planner-task-meta"><span>${icon(t.kind==='Call'?'phone':t.kind==='Email'?'mail':t.kind==='Review'?'file':'clock')}${esc(t.kind||'Follow-up')}</span><span>${icon('calendar')}${timestamp(t.due_at)}</span><span>${esc(t.priority||lead.priority||'P2')} priority</span></div></div><button class="icon-button" data-go="leads/${esc(t.lead_id)}" aria-label="Open ${esc(fullName(lead))}">${icon('chevron')}</button></article>`;
+}
+async function completeTaskOptimistic(id){
+ const task=data?.tasks?.find(t=>t.id===id);
+ if(!task||task.status==='Done')return;
+ const previous={status:task.status,completed_at:task.completed_at||''};
+ const completedAt=new Date().toISOString();
+ task.status='Done';
+ task.completed_at=completedAt;
+ data=recalculate(data);
+ await render();
+ try{
+  await api(`/api/tasks/${encodeURIComponent(id)}/complete`,{},'POST',{silent:true});
+  toast('Task completed.');
+ }catch(error){
+  task.status=previous.status;
+  if(previous.completed_at)task.completed_at=previous.completed_at;
+  else delete task.completed_at;
+  data=recalculate(data);
+  await render();
+  throw error;
+ }
 }
 function plannerColumn(title,detail,tasks,kind){
  const visible=tasks.slice(0,80);
@@ -620,16 +726,16 @@ function monitoringAlerts(ops,risks,quality,health){
  ];
 }
 function monitoringHealth(){
- const endpoints=[['Gmail','gmail-sync'],['Eventbrite','eventbrite-sync'],['Meta','meta-sync'],['Apollo','apollo-sync']];
+ const endpoints=[['Gmail','gmail-sync'],['Eventbrite','eventbrite-sync'],['Zoom','zoom-sync'],['Meta','meta-sync'],['Apollo','apollo-sync']];
  return endpoints.map(([name,action])=>{
   const status={};
   const fallback=(data.integrations||[]).find(i=>i.name===name)||{};
   const connected=Boolean(status.connected)||fallback.status==='Connected',configured=Boolean(status.configured)||['Connected','Ready to connect'].includes(fallback.status);
-  const auto=status.auto_sync||{},container=name==='Gmail'?data.gmail:name==='Eventbrite'?data.eventbrite:name==='Apollo'?data.apollo:data.meta;
-  const imported=name==='Gmail'?(container?.imported_message_ids?.length||0):name==='Eventbrite'?((container?.imported_event_ids?.length||0)+(container?.imported_attendee_ids?.length||0)):name==='Apollo'?(container?.imported_person_ids?.length||0):(container?.imported_lead_ids?.length||0);
+  const auto=status.auto_sync||{},container=name==='Gmail'?data.gmail:name==='Eventbrite'?data.eventbrite:name==='Zoom'?data.zoom:name==='Apollo'?data.apollo:data.meta;
+  const imported=name==='Gmail'?(container?.imported_message_ids?.length||0):name==='Eventbrite'?((container?.imported_event_ids?.length||0)+(container?.imported_attendee_ids?.length||0)):name==='Zoom'?(container?.imported_meeting_ids?.length||0):name==='Apollo'?(container?.imported_person_ids?.length||0):(container?.imported_lead_ids?.length||0);
   const skipped=auto.last_result?.skipped?1:0,last_error=auto.last_error||auto.last_result?.error||'',last_sync_at=status.last_sync_at||container?.last_sync_at||null;
-  const helpAction=name==='Gmail'?'gmail-help':name==='Eventbrite'?'eventbrite-help':name==='Apollo'?'apollo-help':'meta-help';
- return {name,action:configured?action:helpAction,action_label:configured?'Retry sync':'Setup details',connected,configured,status:connected?'Connected':configured?'Ready':'Needs credentials',last_sync_at,imported,failed:last_error?1:0,skipped,last_error,account:status.email||status.name||status.page_id||''};
+  const helpAction=name==='Gmail'?'gmail-help':name==='Eventbrite'?'eventbrite-help':name==='Zoom'?'zoom-help':name==='Apollo'?'apollo-help':'meta-help';
+ return {name,action:configured?action:helpAction,action_label:configured?'Retry sync':'Setup details',connected,configured,status:connected?'Connected':configured?'Ready':'Needs credentials',last_sync_at,imported,failed:last_error?1:0,skipped,last_error,account:status.email||status.name||status.user_id||status.page_id||container?.user_id||''};
  });
 }
 function monitoringSystem(){
@@ -676,7 +782,7 @@ function leadSourceOptions(){
 }
 function leads(){
  return heading('People, with potential.',`${data.leads.length} leads · Every opportunity, one connected record.`,data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
- `<div class="toolbar lead-toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search leads" placeholder="Search name, employer or email…" value="${esc(filters.search)}"></div><select id="programme-filter" aria-label="Filter by programme"><option value="All">All programmes</option>${data.programmes.map(p=>`<option value="${p.id}" ${filters.programme===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select><select id="source-filter" aria-label="Filter by source">${leadSourceOptions().map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source==='All'?'All sources':source)}</option>`).join('')}</select><select id="stage-filter" aria-label="Filter by stage"><option>All stages</option>${data.stages.map(s=>`<option ${filters.stage===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div><div id="lead-results">${leadResults()}</div>`;
+ `${pageNewNotice('leads')}<div class="toolbar lead-toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search leads" placeholder="Search name, employer or email…" value="${esc(filters.search)}"></div><select id="programme-filter" aria-label="Filter by programme"><option value="All">All programmes</option>${data.programmes.map(p=>`<option value="${p.id}" ${filters.programme===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select><select id="source-filter" aria-label="Filter by source">${leadSourceOptions().map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source==='All'?'All sources':source)}</option>`).join('')}</select><select id="stage-filter" aria-label="Filter by stage"><option>All stages</option>${data.stages.map(s=>`<option ${filters.stage===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div><div id="lead-results">${leadResults()}</div>`;
 }
 function leadMatchesSource(l){
  if(filters.source==='All')return true;
@@ -770,7 +876,7 @@ function planner(){
  const filtered=plannerTasks(),emails=(data.emails||[]).filter(emailNeedsResponse).sort((a,b)=>new Date(emailDueAt(a)||0)-new Date(emailDueAt(b)||0)).slice(0,6),events=(data.events||[]).filter(e=>eventDateValue(e)>=new Date()).sort((a,b)=>eventDateValue(a)-eventDateValue(b)).slice(0,5);
  const listLimit=filters.planner==='Done'?PLANNER_DONE_LIMIT:PLANNER_LIST_LIMIT;
  return heading('Planner.','Tasks, email follow-ups and event actions in one place.',data.permissions.sales?`<button class="button primary" data-act="add-task">${icon('plus')}New task</button>`:'')+
- `<div class="stats-grid planner-stats">${stat('Overdue',overdue.length,'Needs attention now','clock')}${stat('Due today',today.length,'Calls and follow-ups','calendar')}${stat('Upcoming',upcoming.length,'Scheduled next steps','arrow')}${stat('Completed',done.length,'Closed actions','check')}</div>
+ `${pageNewNotice('planner')}<div class="stats-grid planner-stats">${stat('Overdue',overdue.length,'Needs attention now','clock')}${stat('Due today',today.length,'Calls and follow-ups','calendar')}${stat('Upcoming',upcoming.length,'Scheduled next steps','arrow')}${stat('Completed',done.length,'Closed actions','check')}</div>
  <div class="planner-layout">
   <section class="planner-main">
    <div class="planner-board">${plannerColumn('Overdue','Open actions past their due date.',overdue,'overdue')}${plannerColumn('Today','Work to clear before end of day.',today,'today')}${plannerColumn('Upcoming','Next scheduled conversations.',upcoming.slice(0,120),'upcoming')}</div>
@@ -782,7 +888,7 @@ function planner(){
   <div class="planner-task-list-panel"><div class="chips planner-chips planner-list-filter">${['Open','Overdue','Today','Upcoming','Done','All'].map(s=>`<button class="chip ${filters.planner===s?'active':''}" data-act="planner-filter" data-id="${s}">${s}</button>`).join('')}</div><section class="panel"><div class="panel-header"><div><h2>${esc(filters.planner)} task list</h2><p>${filtered.length} ${filtered.length===1?'task':'tasks'} in this view</p></div>${icon('calendar')}</div><div class="panel-body planner-list">${filtered.slice(0,listLimit).map(plannerTaskCard).join('')||empty('Nothing here right now','Create a task or change the filter.')}</div>${filtered.length>listLimit?`<div class="crm-more">Showing latest ${listLimit} tasks. Use the filter chips to narrow the list.</div>`:''}</section></div>
  </div>`;
 }
-async function applications(){const result=await api('/api/applications',undefined,'GET',{silent:true});data.applications=result.applications||[];return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.')+(data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+`<div class="application-grid">${data.applications.map(a=>`<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${badge(a.learner?'Enrolled':a.status)}</div>${a.learner?`<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>`:`<div class="requirements">${a.requirements.map(r=>requirement(a,r)).join('')}</div><div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${data.permissions.review?`${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}`:'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>'}</div>`}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`).join('')}</div>${data.applications.length?'':empty('No applications yet','Open a lead to start an application.')}`;}
+async function applications(){const result=await api('/api/applications',undefined,'GET',{silent:true});data.applications=result.applications||[];return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.')+pageNewNotice('applications')+(data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+`<div class="application-grid">${data.applications.map(a=>`<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${badge(a.learner?'Enrolled':a.status)}</div>${a.learner?`<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>`:`<div class="requirements">${a.requirements.map(r=>requirement(a,r)).join('')}</div><div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${data.permissions.review?`${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}`:'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>'}</div>`}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`).join('')}</div>${data.applications.length?'':empty('No applications yet','Open a lead to start an application.')}`;}
 function requirement(a,r){return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} · Version ${r.latest.version}${r.latest.reviewer?' · Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${data.permissions.sales||data.permissions.review?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload new version':'Upload document'}</button>`:''}${r.latest&&data.permissions.review?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>Download</a>${btn('Review','review-evidence',r.latest.id)}`:''}</div></div>`;}
 async function attribution(){const result=await api('/api/attribution?limit=100',undefined,'GET',{silent:true});data.attribution=result.attribution||[];return heading('Know where progress begins.','Trace acquisition through to confirmed enrolment.')+`<div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Acquisition sources</h2></div><div class="panel-body source-bars">${sourceBars()}<p class="bottom-note">One lead is counted for each programme opportunity.</p></div></section><section class="panel"><div class="panel-header"><h2>First-touch outcomes</h2></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Enrolled</th></tr></thead><tbody>${data.source_counts.map(s=>`<tr><td>${esc(s.source)}</td><td>${s.leads}</td><td>${s.enrolled}</td></tr>`).join('')}</tbody></table></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Enrolment snapshots</h2><p>Saved at confirmation · First-touch model</p></div>${icon('shield')}</div><div class="panel-body">${data.attribution.map(s=>`<div class="person-row">${avatar(s)}<div class="person-main"><strong>${esc(fullName(s))}</strong><p>${esc(s.programme)}<br>First: ${esc(s.snapshot.first_touch)} · Capture: ${esc(s.snapshot.lead_capture)}<br>Conversion: ${esc(s.snapshot.conversion_source)}</p></div>${badge('100% '+s.snapshot.first_touch,'green')}</div>`).join('')||empty('No enrolment snapshots yet','A snapshot is saved automatically when enrolment is confirmed.')}</div></section>`;}
 const eventHubTabs=[['dashboard','Dashboard','grid'],['events','Events','calendar'],['people','People','users'],['callbacks','Call backs','phone'],['reports','Reports','chart'],['marketing','Marketing','mail']];
@@ -828,8 +934,8 @@ function filteredEvents(){
 }
 function eventHubShell(content){
  ensureEventFilters();
- const actions=`<div class="actions event-actions">${data.permissions.sales?`<button class="button primary" data-act="import-events">${icon('file')}Import sheet</button>`:''}${data.integrations.find(i=>i.name==='Eventbrite')?.status==='Connected'?`<button class="button soft" data-act="eventbrite-sync">${icon('calendar')}Sync Eventbrite</button>`:''}</div>`;
- return heading('Event registrations.','Confirmation, attendance and follow-up from the source spreadsheet.',actions)+`<div class="event-hub-layout"><aside class="event-hub-tabs" aria-label="Event sections">${eventHubTabs.map(([id,label,ic])=>`<button class="event-tab ${filters.eventView===id?'active':''}" data-act="event-hub-view" data-id="${id}">${icon(ic)}<span>${label}</span></button>`).join('')}</aside><section class="event-hub-content"><div class="event-range-tabs">${eventRangeTabs.map(([id,label])=>`<button class="chip ${filters.eventRange===id?'active':''}" data-act="event-hub-range" data-id="${id}">${label}</button>`).join('')}</div>${content}</section></div>`;
+ const actions=`<div class="actions event-actions">${data.permissions.sales?`<button class="button primary" data-act="import-events">${icon('file')}Import sheet</button>`:''}${data.integrations.find(i=>i.name==='Eventbrite')?.status==='Connected'?`<button class="button soft" data-act="eventbrite-sync">${icon('calendar')}Sync Eventbrite</button>`:''}${data.integrations.find(i=>i.name==='Zoom')?.status==='Connected'?`<button class="button soft" data-act="zoom-sync">${icon('calendar')}Sync Zoom</button>`:''}</div>`;
+ return heading('Event registrations.','Confirmation, attendance and follow-up from the source spreadsheet.',actions)+pageNewNotice('events')+`<div class="event-hub-layout"><aside class="event-hub-tabs" aria-label="Event sections">${eventHubTabs.map(([id,label,ic])=>`<button class="event-tab ${filters.eventView===id?'active':''}" data-act="event-hub-view" data-id="${id}">${icon(ic)}<span>${label}</span></button>`).join('')}</aside><section class="event-hub-content"><div class="event-range-tabs">${eventRangeTabs.map(([id,label])=>`<button class="chip ${filters.eventRange===id?'active':''}" data-act="event-hub-range" data-id="${id}">${label}</button>`).join('')}</div>${content}</section></div>`;
 }
 function eventStat(label,value,foot,ic){return `<div class="stat event-stat"><div class="stat-head">${esc(label)}${icon(ic)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
 function eventTotals(events){
@@ -838,11 +944,12 @@ function eventTotals(events){
 function pct(part,total){return total?`${Math.round(part/total*1000)/10}%`:'0%';}
 function shortEventName(name){return String(name||'Event').replace(/^Fully Funded\s+/i,'').slice(0,44);}
 function eventMiniStats(e){const m=eventMetrics(e);return `<div class="event-mini-grid"><div><span>Booked</span><b>${m.booked}</b></div><div><span>Confirmed</span><b>${m.confirmed}</b></div><div><span>Pending</span><b>${m.pending}</b></div><div><span>Declined</span><b>${m.declined}</b></div></div>`;}
+function eventMeetingLink(e){const attendee=eventAttendees(e).find(a=>a.zoom_link||a.meeting_link);return String(e?.meeting_link||e?.zoom_link||attendee?.zoom_link||attendee?.meeting_link||'').trim();}
+function eventMeetingButton(e,label='Join meeting'){const link=eventMeetingLink(e);return link?`<a class="button soft" href="${esc(link)}" target="_blank" rel="noreferrer">${icon('link')}${esc(label)}</a>`:'';}
 function nextEventCard(events){
  const next=events.filter(e=>eventDateValue(e)>=new Date()).sort((a,b)=>eventDateValue(a)-eventDateValue(b))[0];
  if(!next)return `<section class="panel event-next">${empty('No upcoming event','Imported events in the selected range will appear here.')}</section>`;
- const m=eventMetrics(next),meeting=eventAttendees(next).find(a=>a.zoom_link)?.zoom_link;
- return `<section class="panel event-next"><div class="panel-body"><div class="eyebrow">Next event</div><h2>${esc(next.name)}</h2><p class="muted small">${timestamp(next.start_at)}</p>${eventMiniStats(next)}<div class="actions"><button class="button primary" data-act="event-open" data-id="${esc(next.id)}">Open event</button>${meeting?`<a class="button" href="${esc(meeting)}" target="_blank" rel="noreferrer">${icon('link')}Meeting link</a>`:''}</div></div></section>`;
+ return `<section class="panel event-next"><div class="panel-body"><div class="eyebrow">Next event</div><h2>${esc(next.name)}</h2><p class="muted small">${timestamp(next.start_at)}</p>${eventMiniStats(next)}<div class="actions"><button class="button primary" data-act="event-open" data-id="${esc(next.id)}">Open event</button>${eventMeetingButton(next,'Join meeting')}</div></div></section>`;
 }
 function funnelChart(totals){const max=Math.max(1,totals.booked,totals.confirmed,totals.attended);return `<section class="panel event-chart"><div class="panel-header"><div><h2>Booking to attendance</h2><p>Based on saved outcomes for the selected range.</p></div></div><div class="panel-body chart-bars vertical"><div style="height:${Math.max(4,totals.booked/max*100)}%"><span></span><b>${totals.booked}</b><em>Booked</em></div><div style="height:${Math.max(4,totals.confirmed/max*100)}%"><span></span><b>${totals.confirmed}</b><em>Confirmed</em></div><div style="height:${Math.max(4,totals.attended/max*100)}%"><span></span><b>${totals.attended}</b><em>Attended</em></div></div></section>`;}
 function workloadChart(events){const top=events.slice().sort((a,b)=>eventMetrics(b).pending-eventMetrics(a).pending).slice(0,5),max=Math.max(1,...top.map(e=>eventMetrics(e).pending));return `<section class="panel"><div class="panel-header"><div><h2>Upcoming workload</h2><p>Pending versus confirmed registrations per event.</p></div></div><div class="panel-body">${top.map(e=>{const m=eventMetrics(e);return `<div class="event-workload-row"><span>${esc(shortEventName(e.name))}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(4,m.pending/max*100)}%"></div></div><b>${m.pending}</b></div>`;}).join('')||empty('No pending registrations')}</div></section>`;}
@@ -852,7 +959,7 @@ function eventDashboard(events){
 }
 function eventStatusBadge(e){return eventDateValue(e)<new Date()?badge('past','blue'):badge(String(e.status||'live').toLowerCase()==='cancelled'?'cancelled':'live','green');}
 function eventsToolbar(){return `<div class="toolbar event-list-toolbar"><div class="search">${icon('search')}<input id="event-search" placeholder="Search events, people or email" value="${esc(filters.eventSearch||'')}"></div><select id="event-sort"><option value="soonest" ${filters.eventSort==='soonest'?'selected':''}>Soonest first</option><option value="latest" ${filters.eventSort==='latest'?'selected':''}>Latest first</option><option value="booked" ${filters.eventSort==='booked'?'selected':''}>Most booked</option></select></div>`;}
-function eventsTable(events,showOpen=true){return `<table class="event-table"><thead><tr><th>Event</th><th>Starts</th><th>Status</th><th>Booked</th><th>Confirmed</th><th>Declined</th><th>Pending</th>${showOpen?'<th></th>':''}</tr></thead><tbody>${events.map(e=>{const m=eventMetrics(e);return `<tr><td><strong>${esc(e.name)}</strong><div class="small muted">${esc(e.description||e.campaign||'Imported from spreadsheet')}</div></td><td>${timestamp(e.start_at)}</td><td>${eventStatusBadge(e)}</td><td>${m.booked}</td><td class="ok">${m.confirmed}</td><td class="bad">${m.declined}</td><td>${m.pending}</td>${showOpen?`<td><button class="button" data-act="event-open" data-id="${esc(e.id)}">Open</button></td>`:''}</tr>`;}).join('')}</tbody></table>${events.length?'':empty('No events in this range')}`;}
+function eventsTable(events,showOpen=true){return `<table class="event-table"><thead><tr><th>Event</th><th>Starts</th><th>Status</th><th>Booked</th><th>Confirmed</th><th>Declined</th><th>Pending</th>${showOpen?'<th></th>':''}</tr></thead><tbody>${events.map(e=>{const m=eventMetrics(e);return `<tr><td><strong>${esc(e.name)}</strong><div class="small muted">${esc(e.description||e.campaign||'Imported from spreadsheet')}</div></td><td>${timestamp(e.start_at)}</td><td>${eventStatusBadge(e)}</td><td>${m.booked}</td><td class="ok">${m.confirmed}</td><td class="bad">${m.declined}</td><td>${m.pending}</td>${showOpen?`<td><div class="actions compact-actions">${eventMeetingButton(e,'Join')}<button class="button" data-act="event-open" data-id="${esc(e.id)}">Open</button></div></td>`:''}</tr>`;}).join('')}</tbody></table>${events.length?'':empty('No events in this range')}`;}
 function eventPeople(events){
  const people=new Map();
  events.forEach(e=>eventAttendees(e).forEach(a=>{const key=normalizeEmail(a.email)||a.id;if(!people.has(key))people.set(key,{...a,event:e});}));
@@ -893,9 +1000,54 @@ function eventMarketing(events){
 function eventInfoDialog(id){
  const e=(data.events||[]).find(item=>item.id===id);if(!e)return;
  const m=eventMetrics(e),attendees=eventAttendees(e);
- return information(e.name,`<dl class="definition"><dt>Starts</dt><dd>${timestamp(e.start_at)}</dd><dt>Campaign</dt><dd>${esc(e.campaign||'Imported')}</dd><dt>Booked</dt><dd>${m.booked}</dd><dt>Pending</dt><dd>${m.pending}</dd><dt>Confirmed</dt><dd>${m.confirmed}</dd></dl><div class="table-wrap mt"><table><thead><tr><th>Person</th><th>Email</th><th>Status</th><th>Phone</th></tr></thead><tbody>${attendees.map(a=>`<tr><td>${esc(fullName(a))}</td><td>${esc(a.email||'')}</td><td>${badge(eventStatusKind(a).replace('_',' '))}</td><td>${esc(a.phone||'—')}</td></tr>`).join('')}</tbody></table></div>`);
+ return information(e.name,`<dl class="definition"><dt>Starts</dt><dd>${timestamp(e.start_at)}</dd><dt>Campaign</dt><dd>${esc(e.campaign||'Imported')}</dd><dt>Meeting</dt><dd>${eventMeetingButton(e,'Join meeting')||'<span class="muted small">No meeting link</span>'}</dd><dt>Booked</dt><dd>${m.booked}</dd><dt>Pending</dt><dd>${m.pending}</dd><dt>Confirmed</dt><dd>${m.confirmed}</dd></dl><div class="table-wrap mt"><table><thead><tr><th>Person</th><th>Email</th><th>Status</th><th>Phone</th></tr></thead><tbody>${attendees.map(a=>`<tr><td>${esc(fullName(a))}</td><td>${esc(a.email||'')}</td><td>${badge(eventStatusKind(a).replace('_',' '))}</td><td>${esc(a.phone||'—')}</td></tr>`).join('')}</tbody></table></div>`);
 }
 function events(){ensureEventFilters();const list=filteredEvents();if(filters.eventView==='events')return eventHubShell(`${eventsToolbar()}<section class="panel table-wrap">${eventsTable(list,true)}</section>`);if(filters.eventView==='people')return eventPeople(list);if(filters.eventView==='callbacks')return eventCallbacks();if(filters.eventView==='reports')return eventReports(list);if(filters.eventView==='marketing')return eventMarketing(list);return eventDashboard(list);}
+function ensureZoomFilters(){filters.zoomSearch ||= '';filters.zoomSort ||= 'soonest';}
+function isZoomEvent(e){return Boolean(e.zoom_meeting_id||e.zoom_meeting_uuid||String(e.campaign||'').toLowerCase().startsWith('zoom')||String(e.location||'').toLowerCase()==='zoom');}
+function zoomTypeLabel(e){return String(e.zoom_list_type||e.status||'meeting').replace(/_/g,' ');}
+function zoomFilteredEvents(){
+ ensureZoomFilters();
+ const search=filters.zoomSearch.toLowerCase().trim();
+ return (data.events||[]).filter(isZoomEvent).filter(e=>{
+ if(!search)return true;
+  return [e.name,e.description,e.campaign,e.location,e.zoom_host_label,e.zoom_host_id,e.zoom_meeting_id,zoomTypeLabel(e),...eventAttendees(e).flatMap(a=>[fullName(a),a.email,a.phone])].join(' ').toLowerCase().includes(search);
+ }).sort((a,b)=>filters.zoomSort==='latest'?eventDateValue(b)-eventDateValue(a):filters.zoomSort==='host'?String(a.zoom_host_label||'').localeCompare(String(b.zoom_host_label||'')):eventDateValue(a)-eventDateValue(b));
+}
+function zoomStats(events){
+ const now=new Date(),upcoming=events.filter(e=>eventDateValue(e)>=now).length,hosts=new Set(events.map(e=>e.zoom_host_label||e.zoom_host_id).filter(Boolean)),accounts=new Set(events.map(e=>e.zoom_account_label||e.zoom_account_id).filter(Boolean));
+ return {total:events.length,upcoming,past:events.length-upcoming,hosts:hosts.size,accounts:accounts.size,withLinks:events.filter(eventMeetingLink).length};
+}
+function zoomToolbar(){return `<div class="toolbar event-list-toolbar"><div class="search">${icon('search')}<input id="zoom-search" placeholder="Search Zoom meetings or hosts" value="${esc(filters.zoomSearch||'')}" autocomplete="off"></div><select id="zoom-sort"><option value="soonest" ${filters.zoomSort==='soonest'?'selected':''}>Soonest first</option><option value="latest" ${filters.zoomSort==='latest'?'selected':''}>Latest first</option><option value="host" ${filters.zoomSort==='host'?'selected':''}>Host name</option></select></div>`;}
+function zoomPeopleSummary(e){const attendees=eventAttendees(e),phones=attendees.filter(a=>a.phone).length;return attendees.length?`${attendees.length} people${phones?` / ${phones} phones`:''}`:'—';}
+function zoomTable(events){return `<table class="event-table zoom-table"><thead><tr><th>Meeting</th><th>Starts</th><th>Account</th><th>Host</th><th>People</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody>${events.map(e=>`<tr><td><strong>${esc(e.name)}</strong><div class="small muted">${esc(e.zoom_meeting_id?`Zoom ID ${e.zoom_meeting_id}`:e.description||'Zoom meeting')}</div></td><td>${timestamp(e.start_at)}</td><td>${esc(e.zoom_account_label||e.zoom_account_id||'Zoom')}</td><td>${esc(e.zoom_host_label||e.zoom_host_id||'Zoom')}</td><td>${esc(zoomPeopleSummary(e))}</td><td>${badge(zoomTypeLabel(e),'blue')}</td><td>${eventStatusBadge(e)}</td><td><div class="actions compact-actions">${eventMeetingButton(e,'Join')||'<span class="small muted">No link</span>'}<button class="button" data-act="event-open" data-id="${esc(e.id)}">Open</button></div></td></tr>`).join('')}</tbody></table>${events.length?'':empty('No Zoom meetings yet','Run Sync Zoom, then meetings from the connected Zoom account will appear here.')}`;}
+function zoomFilteredCalls(){
+ ensureZoomFilters();
+ const search=filters.zoomSearch.toLowerCase().trim();
+ return (data.zoom?.calls||[]).filter(call=>{
+  if(!search)return true;
+  return [call.caller_name,call.caller_number,call.callee_name,call.callee_number,call.owner_name,call.lead_name,call.direction,call.result,call.zoom_account_label].join(' ').toLowerCase().includes(search);
+ }).sort((a,b)=>new Date(b.started_at||0)-new Date(a.started_at||0));
+}
+function zoomCallStats(calls){
+ return {total:calls.length,inbound:calls.filter(call=>String(call.direction||'').includes('in')).length,outbound:calls.filter(call=>String(call.direction||'').includes('out')).length,linked:calls.filter(call=>call.lead_id).length};
+}
+function zoomCallDuration(call){return call.duration?durationLabel(Number(call.duration||0)*1000):'â€”';}
+function zoomCallsTable(calls){
+ return `<table class="event-table zoom-table"><thead><tr><th>Started</th><th>Direction</th><th>From</th><th>To</th><th>Duration</th><th>Result</th><th>Lead</th></tr></thead><tbody>${calls.map(call=>`<tr><td>${timestamp(call.started_at)}</td><td>${badge(call.direction||'unknown',String(call.direction||'').includes('in')?'green':'blue')}</td><td><strong>${esc(call.caller_name||call.caller_number||'â€”')}</strong><div class="small muted">${esc(call.caller_number||'')}</div></td><td><strong>${esc(call.callee_name||call.callee_number||'â€”')}</strong><div class="small muted">${esc(call.callee_number||'')}</div></td><td>${esc(zoomCallDuration(call))}</td><td>${esc(call.result||'â€”')}</td><td>${call.lead_id?`<button class="text-button" data-go="leads/${esc(call.lead_id)}">${esc(call.lead_name||call.lead_id)}</button>`:'<span class="small muted">Not linked</span>'}</td></tr>`).join('')}</tbody></table>${calls.length?'':empty('No Zoom calls yet','Run Sync calls after adding Zoom Phone call-history scopes.')}`;
+}
+async function zoom(){
+ ensureZoomFilters();
+ let loadError='';
+ try{
+  await Promise.all([loadZoomEvents(),loadZoomCalls()]);
+ }catch(error){
+  loadError=error.message;
+ }
+ const list=zoomFilteredEvents(),calls=zoomFilteredCalls(),stats=zoomStats(list),callStats=zoomCallStats(calls),connected=data.integrations.find(i=>i.name==='Zoom')?.status==='Connected';
+ const actions=`<div class="actions event-actions">${connected?`<button class="button primary" data-act="zoom-sync">${icon('video')}Sync Zoom</button><button class="button soft" data-act="zoom-calls-sync">${icon('phone')}Sync calls</button>`:`<button class="button" data-go="settings">${icon('settings')}Setup Zoom</button>`}<button class="button soft" data-go="events">${icon('calendar')}All events</button></div>`;
+ return heading('Zoom meetings.','Meetings and phone calls synced from the connected Zoom accounts.',actions)+(loadError?`<div class="notice danger">Zoom data could not be fully loaded: ${esc(loadError)}</div>`:'')+pageNewNotice('zoom')+`<div class="stats-grid zoom-stats">${eventStat('Meetings',stats.total,'Zoom records in this workspace','video')}${eventStat('Upcoming',stats.upcoming,`${stats.past} past meetings`,'calendar')}${eventStat('Hosts',stats.hosts,'Synced account users','users')}${eventStat('Join links',stats.withLinks,'Meetings with a saved URL','link')}${eventStat('Calls',callStats.total,`${callStats.inbound} inbound / ${callStats.outbound} outbound`,'phone')}${eventStat('Linked calls',callStats.linked,'Matched to CRM leads by phone','users')}</div><section class="panel"><div class="panel-header"><div><h2>Synced meetings</h2><p>Zoom meetings are saved as events, with this page focused on Zoom only.</p></div></div><div class="panel-body">${zoomToolbar()}<div class="table-wrap" id="zoom-results">${zoomTable(list)}</div></div></section><section class="panel mt"><div class="panel-header"><div><h2>Zoom calls</h2><p>Phone call history is preserved and merged on each sync.</p></div><span class="small muted">${data.zoom?.last_call_sync_at?`Last sync ${timestamp(data.zoom.last_call_sync_at)}`:'Not synced yet'}</span></div><div class="panel-body"><div class="table-wrap">${zoomCallsTable(calls)}</div></div></section>`;
+}
 function integrationActions(i){
  if(i.name==='Gmail'){
   if(!GMAIL_IMPORT_ENABLED&&i.status==='Connected')return `<div class="actions"><span class="badge amber">Import paused</span></div>`;
@@ -907,6 +1059,10 @@ function integrationActions(i){
   if(i.status==='Connected')return `<div class="actions"><button class="button soft" data-act="eventbrite-sync">${icon('calendar')}Sync events</button></div>`;
   if(i.status==='Ready to connect')return `<div class="actions"><button class="button primary" data-act="eventbrite-connect">${icon('link')}Connect Eventbrite</button></div>`;
   return `<div class="actions"><button class="button" data-act="eventbrite-help">${icon('settings')}Setup details</button></div>`;
+ }
+ if(i.name==='Zoom'){
+  if(i.status==='Connected')return `<div class="actions"><button class="button soft" data-act="zoom-sync">${icon('calendar')}Sync meetings</button></div>`;
+  return `<div class="actions"><button class="button" data-act="zoom-help">${icon('settings')}Setup details</button></div>`;
  }
  if(i.name==='Meta'){
   if(i.status==='Connected')return `<div class="actions"><button class="button soft" data-act="meta-sync">${icon('users')}Sync leads</button></div>`;
@@ -942,7 +1098,38 @@ async function developer(){
 async function settings(){const dev=isDeveloperAccount();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div><p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
 async function auditView(){const result=await api('/api/audit?limit=100',undefined,'GET',{silent:true});data.audit=result.audit||[];return heading('Every decision leaves a trail.','Recorded actions, reviewers and changes.')+`<section class="panel table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr></thead><tbody>${data.audit.map(a=>`<tr><td>${timestamp(a.occurred_at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)}<div class="small muted mono">${esc(a.entity_id)}</div></td></tr>`).join('')}</tbody></table>${data.audit.length?'':empty('No audit records available for this role')}</section>`;}
 function more(){return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.slice(4),['settings','settings','Settings'],...(isDeveloperAccount()? [['developer','shield','Developer']] : []),...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Demo workspace · Fictional sample records':''}</div>${btn('Sign out','logout')}`;}
-async function render(){if(!data)return;const id=++viewId,current=route();if(current==='developer'&&!isDeveloperAccount()){go('settings');return;}try{let html;if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);else{const view=({today,monitoring,leads,phases,planner,inbox,applications,events,attribution,settings,developer,audit:auditView,more}[current]||today);html=await view();}if(id===viewId){$('#app').innerHTML=shell(html,current);if(isDeveloperAccount()){const manageLabel=[...document.querySelectorAll('.sidebar .eyebrow')].find(item=>item.textContent.trim()==='Manage');if(manageLabel&&!document.querySelector('.sidebar [data-go="developer"]'))manageLabel.insertAdjacentHTML('afterend',navButton(['developer','shield','Developer'],current.split('/')[0]));}if(current==='today'&&isDeveloperAccount()){const actions=$('.heading .actions')||$('.heading');actions?.insertAdjacentHTML('beforeend',`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`);}hydrateSelectMenus($('#app'));}}catch(e){if(id===viewId&&data){$('#app').innerHTML=shell(empty('Unable to load this view',e.message)+btn('Try again','reload'),current);hydrateSelectMenus($('#app'));}}}
+async function render(){
+ if(!data)return;
+ const id=++viewId,current=route(),currentPage=current.split('/')[0];
+ acknowledgeVisibleSeenPage(currentPage);
+ if(current==='developer'&&!isDeveloperAccount()){go('settings');return;}
+ try{
+  let html;
+  if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);
+  else{
+   const view=({today,monitoring,leads,phases,planner,inbox,applications,events,zoom,attribution,settings,developer,audit:auditView,more}[current]||today);
+   html=await view();
+  }
+  if(seenPages.includes(currentPage))markPageSeen(currentPage);
+  if(id===viewId){
+   $('#app').innerHTML=shell(html,current);
+   if(isDeveloperAccount()){
+    const manageLabel=[...document.querySelectorAll('.sidebar .eyebrow')].find(item=>item.textContent.trim()==='Manage');
+    if(manageLabel&&!document.querySelector('.sidebar [data-go="developer"]'))manageLabel.insertAdjacentHTML('afterend',navButton(['developer','shield','Developer'],currentPage));
+   }
+   if(current==='today'&&isDeveloperAccount()){
+    const actions=$('.heading .actions')||$('.heading');
+    actions?.insertAdjacentHTML('beforeend',`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`);
+   }
+   hydrateSelectMenus($('#app'));
+  }
+ }catch(e){
+  if(id===viewId&&data){
+   $('#app').innerHTML=shell(empty('Unable to load this view',e.message)+btn('Try again','reload'),current);
+   hydrateSelectMenus($('#app'));
+  }
+ }
+}
 
 function field(name,label,value='',type='text',extra=''){return `<label class="field"><span>${esc(label)}</span><input name="${name}" type="${type}" value="${esc(value)}" ${extra} required></label>`;}
 function select(name,label,options,selected=''){return `<label class="field"><span>${esc(label)}</span><select name="${name}" required>${options.map(o=>{const [v,t]=Array.isArray(o)?o:[o,o];return `<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(t)}</option>`;}).join('')}</select></label>`;}
@@ -960,6 +1147,7 @@ async function action(act,id='',target=null){
  if(act==='auth-mode'){authMode=id==='forgot'?'forgot':'login';authNotice='';return login();}
  if(act==='close')return $('#dialog').close();
  if(act==='reload')return refresh();
+ if(act==='mark-page-seen'){markPageSeen(target.dataset.page||route().split('/')[0]);return render();}
  if(act==='logout'){await api('/api/logout',{});data=null;location.hash='';login();return;}
  if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});toast(`Temporary password: ${result.temporary_password}`);},'Reset password');
  if(act==='delete-user'){if(!confirm('Delete this user?'))return;await api(`/api/users/${encodeURIComponent(id)}`,{},'DELETE');await refresh();toast('User deleted.');return;}
@@ -975,20 +1163,23 @@ async function action(act,id='',target=null){
  if(act==='open-email')return openEmailDialog(id);
  if(act==='open-email-lead'){const dialog=$('#dialog');if(dialog.open)dialog.close();go('leads/'+id);return;}
  if(act==='toggle-message-part'){const card=target.closest('.email-message-card');if(card){card.classList.toggle('expanded');}return;}
- if(act==='complete'){await api(`/api/tasks/${id}/complete`,{});await refresh();toast('Task completed.');return;}
+ if(act==='complete')return completeTaskOptimistic(id);
  if(act==='checkin'){await api(`/api/attendees/${id}/checkin`,{});await refresh();toast('Checked in. A follow-up has been added for the lead owner.');return;}
  if(act==='install'){await deferredInstall.prompt();deferredInstall=null;return render();}
  if(act==='install-help')return information('Take Kent Business College with you',`<p>On iPhone, open this workspace in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>.</p><p>On Android, open it in Chrome and choose <b>Install app</b> or <b>Add to Home screen</b> from the menu.</p><p class="small muted">Installation requires an HTTPS workspace address (or localhost for development). Sign in to access your records. A connection is needed to load and save data.</p>`);
  if(act==='gmail-connect'){location.href='/api/integrations/gmail/connect';return;}
- if(act==='gmail-sync'){runGmailSyncAuto();return;}
+ if(act==='gmail-sync'){await runGmailSyncAuto();return;}
  if(act==='gmail-help')return information('Connect Gmail',`<p>Add a <span class="mono">.env</span> file beside <span class="mono">server.js</span> with:</p><p class="mono">GMAIL_CLIENT_ID=...<br>GMAIL_CLIENT_SECRET=...<br>GMAIL_REDIRECT_URI=http://127.0.0.1:5500/api/integrations/gmail/callback</p><p class="small muted">Then restart the Kent Business College backend and open Settings again. The Gmail card will change to Ready to connect.</p>`);
  if(act==='eventbrite-connect'){location.href='/api/integrations/eventbrite/connect';return;}
- if(act==='eventbrite-sync'){const result=await api('/api/integrations/eventbrite/sync',{max_events:10});await refresh();toast(`${result.imported_events} Eventbrite event${result.imported_events===1?'':'s'} and ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported${result.deleted_events?`; ${result.deleted_events} removed`:''}${result.attendee_errors?`; ${result.attendee_errors} attendee list${result.attendee_errors===1?'':'s'} unavailable`:''}.`);return;}
+ if(act==='eventbrite-sync'){const result=await api('/api/integrations/eventbrite/sync',{max_events:10},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported_events} Eventbrite event${result.imported_events===1?'':'s'} and ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported${result.deleted_events?`; ${result.deleted_events} removed`:''}${result.attendee_errors?`; ${result.attendee_errors} attendee list${result.attendee_errors===1?'':'s'} unavailable`:''}.`);return;}
  if(act==='eventbrite-help')return information('Connect Eventbrite',`<p>Create an Eventbrite API app, then add these values to <span class="mono">.env</span>:</p><p class="mono">EVENTBRITE_CLIENT_ID=...<br>EVENTBRITE_CLIENT_SECRET=...<br>EVENTBRITE_REDIRECT_URI=http://127.0.0.1:5500/api/integrations/eventbrite/callback</p><p class="small muted">Use that exact redirect URI in the Eventbrite app settings. Then restart the Kent Business College backend and open Settings again.</p>`);
- if(act==='import-events')return showDialog('Import events','Upload Excel/CSV or paste a Google Sheets link. Use columns like Event Name, Date, Location, First Name, Last Name, Email and Attended.',`<label class="field"><span>Google Sheets link</span><input name="google_url" type="url" placeholder="https://docs.google.com/spreadsheets/d/..."></label><label class="field"><span>Excel or CSV file</span><input type="file" name="spreadsheet" accept=".xlsx,.xls,.csv"></label>`,async(v,form)=>{const file=form.querySelector('[name="spreadsheet"]').files[0],google_url=String(v.google_url||'').trim();if(!file&&!google_url)throw new Error('Paste a Google Sheets link or choose an Excel file first.');const file_base64=file?await fileToBase64(file):'';const result=await api('/api/events/import',{filename:file?.name||'google-sheet',file_base64,google_url});toast(`${result.imported_events} event${result.imported_events===1?'':'s'} added, ${result.updated_events} updated, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported.`);},'Import');
- if(act==='meta-sync'){const result=await api('/api/integrations/meta/sync',{max_leads:50});await refresh();toast(`${result.imported} Meta lead${result.imported===1?'':'s'} imported from ${result.forms} form${result.forms===1?'':'s'}.`);return;}
+ if(act==='zoom-sync'){const result=await api('/api/integrations/zoom/sync',{max_meetings:2000,report_history_months:6},'POST',{silent:true});await refresh({silent:true});const warnings=(result.history_warnings||[]).filter(Boolean),windowMonths=result.report_history_months||result.history_months||6,skipped=result.report_history_skipped||0;toast(`Zoom sync complete. ${result.imported_events} added, ${result.updated_events} updated, ${result.scanned} scanned${result.users?` from ${result.users} user${result.users===1?'':'s'}`:''}${result.accounts?` across ${result.accounts} account${result.accounts===1?'':'s'}`:''}${result.imported_attendees!==undefined?`, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'}`:''}${result.imported_phones!==undefined?`, ${result.imported_phones} phone${result.imported_phones===1?'':'s'}`:''}${result.history?`. Historical import window: ${windowMonths} month${windowMonths===1?'':'s'}`:''}. Older saved meetings were preserved${skipped?`; report history skipped for ${skipped} user/account pair${skipped===1?'':'s'} not supported by Zoom plan/scope`:''}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
+ if(act==='zoom-calls-sync'){const result=await api('/api/integrations/zoom/calls/sync',{max_calls:1000,call_history_months:3},'POST',{silent:true});await refresh({silent:true});const warnings=(result.warnings||[]).filter(Boolean);toast(`Zoom calls sync complete. ${result.imported_calls} added, ${result.updated_calls} updated, ${result.scanned} scanned across ${result.accounts||0} account${result.accounts===1?'':'s'}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
+ if(act==='zoom-help')return information('Connect Zoom Meetings',`<p>Create a Zoom Server-to-Server OAuth app, then add these values to <span class="mono">.env</span>:</p><p class="mono">ZOOM_ACCOUNT_ID=...<br>ZOOM_CLIENT_ID=...<br>ZOOM_CLIENT_SECRET=...<br>ZOOM_SYNC_ALL_USERS=true<br>ZOOM_MEETING_TYPE=all<br>ZOOM_INCLUDE_HISTORY=true<br>ZOOM_REPORT_HISTORY_MONTHS=6</p><p class="small muted">For all users, the Zoom app needs meeting read and user read scopes. To pull report history, also add the Zoom Reports read scope, commonly <span class="mono">report:read:user:admin</span>. Zoom report history is limited to the recent 6 months; older records already saved in the CRM remain there.</p>`);
+ if(act==='import-events')return showDialog('Import events','Upload Excel/CSV or paste a Google Sheets link. Use columns like Event Name, Date, Location, Meeting Link, First Name, Last Name, Email and Attended.',`<label class="field"><span>Google Sheets link</span><input name="google_url" type="url" placeholder="https://docs.google.com/spreadsheets/d/..."></label><label class="field"><span>Excel or CSV file</span><input type="file" name="spreadsheet" accept=".xlsx,.xls,.csv"></label>`,async(v,form)=>{const file=form.querySelector('[name="spreadsheet"]').files[0],google_url=String(v.google_url||'').trim();if(!file&&!google_url)throw new Error('Paste a Google Sheets link or choose an Excel file first.');const file_base64=file?await fileToBase64(file):'';const result=await api('/api/events/import',{filename:file?.name||'google-sheet',file_base64,google_url});toast(`${result.imported_events} event${result.imported_events===1?'':'s'} added, ${result.updated_events} updated, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported.`);},'Import');
+ if(act==='meta-sync'){const result=await api('/api/integrations/meta/sync',{max_leads:50},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported} Meta lead${result.imported===1?'':'s'} imported from ${result.forms} form${result.forms===1?'':'s'}.`);return;}
  if(act==='meta-help')return information('Connect Meta Lead Ads',`<p>Add a Page access token and Page ID to <span class="mono">.env</span>:</p><p class="mono">META_ACCESS_TOKEN=...<br>META_PAGE_ID=...<br>META_GRAPH_VERSION=v22.0</p><p class="small muted">The token needs Lead Ads permissions such as <span class="mono">leads_retrieval</span> and page access. Optional: set <span class="mono">META_FORM_IDS</span> to a comma-separated list if you only want specific forms.</p>`);
- if(act==='apollo-sync'){const result=await api('/api/integrations/apollo/sync',{max_people:25});await refresh();toast(`${result.imported} Apollo prospect${result.imported===1?'':'s'} created, ${result.updated} updated, ${result.scanned} scanned.`);return;}
+ if(act==='apollo-sync'){const result=await api('/api/integrations/apollo/sync',{max_people:25},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported} Apollo prospect${result.imported===1?'':'s'} created, ${result.updated} updated, ${result.scanned} scanned.`);return;}
  if(act==='apollo-help')return information('Connect Apollo',`<p>Add your Apollo API key and optional search filters to <span class="mono">.env</span>:</p><p class="mono">APOLLO_API_KEY=...<br>APOLLO_KEYWORDS=marketing apprenticeships<br>APOLLO_PERSON_TITLES=Marketing Manager,Sales Director<br>APOLLO_PERSON_LOCATIONS=United Kingdom<br>APOLLO_PER_PAGE=25</p><p class="small muted">People Search creates prospect leads from available person and company data. Apollo does not return email addresses or phone numbers from this search endpoint; enrichment can be added next.</p>`);
 
  if(act==='add-lead')return showDialog('A new learner journey','Create one canonical person record. A first-contact task will be assigned automatically.',`<div class="form-grid">${field('first_name','First name','','text','maxlength="80" autocomplete="given-name"')}${field('last_name','Last name','','text','maxlength="80" autocomplete="family-name"')}</div>${field('email','Email address','','email','maxlength="254"')}${field('employer','Employer','','text','maxlength="160"')}<label class="field"><span>Phone (optional)</span><input name="phone" type="tel" maxlength="24" placeholder="+44…"></label><label class="field"><span>City (optional)</span><input name="city" maxlength="100"></label>${select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name+' · '+p.level]))}<div class="form-grid">${select('source','Acquisition source',data.sources)}${select('priority','Priority',['P0','P1','P2','P3'],'P2')}</div>${ownerSelect()}${select('contact_permission','Recorded contact permission',['Unknown','Granted','Declined'])}`,async values=>{const result=await api('/api/leads',values);toast('Lead created with a first-contact task.');go('leads/'+result.id);},'Create lead');
@@ -1117,9 +1308,10 @@ document.addEventListener('keydown',event=>{
  if(event.key==='Escape')closeSelectMenus();
 });
 document.addEventListener('input',event=>{
- if(event.target.id==='lead-search'){filters.search=event.target.value;scheduleLeadFilterRefresh();return;}
- if(event.target.id==='event-search'){filters.eventSearch=event.target.value;scheduleEventFilterRefresh();return;}
- if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;scheduleInboxFilterRefresh();return;}
+if(event.target.id==='lead-search'){filters.search=event.target.value;scheduleLeadFilterRefresh();return;}
+if(event.target.id==='event-search'){filters.eventSearch=event.target.value;scheduleEventFilterRefresh();return;}
+if(event.target.id==='zoom-search'){filters.zoomSearch=event.target.value;updateZoomResults();return;}
+if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;scheduleInboxFilterRefresh();return;}
  if(event.target.id==='inbox-day'){
   event.target.value=formatDateInputValue(event.target.value);
   filters.inboxDay=event.target.value;
@@ -1164,9 +1356,10 @@ document.addEventListener('change',async event=>{
  }
  if(event.target.id==='programme-filter'){filters.programme=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
  if(event.target.id==='source-filter'){filters.source=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
- if(event.target.id==='stage-filter'){filters.stage=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
- if(event.target.id==='event-sort'){filters.eventSort=event.target.value;return render();}
- if(event.target.id==='event-marketing-status'){filters.eventMarketingStatus=event.target.value;return render();}
+if(event.target.id==='stage-filter'){filters.stage=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
+if(event.target.id==='event-sort'){filters.eventSort=event.target.value;return render();}
+if(event.target.id==='zoom-sort'){filters.zoomSort=event.target.value;updateZoomResults();return;}
+if(event.target.id==='event-marketing-status'){filters.eventMarketingStatus=event.target.value;return render();}
  if(event.target.id==='inbox-day'){filters.inboxDay=formatDateInputValue(event.target.value);event.target.value=filters.inboxDay;await loadInboxEmails(true);return render();}
  if(event.target.classList.contains('native-date')){
   const id=event.target.id.replace('-native',''),visible=document.getElementById(id),value=isoToDisplayDate(event.target.value);
@@ -1311,7 +1504,7 @@ function inboxLoadMoreButton(){
 async function inbox(){
  if(data.email_paging?.filter_key!==inboxFilterKey())await loadInboxEmails(true,{silent:true});
  const list=inboxResults();
- return heading('Every conversation matters.','Incoming mail that still needs a company response.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>${inboxLoadMoreButton()}`;
+ return heading('Every conversation matters.','Incoming mail that still needs a company response.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+pageNewNotice('inbox')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>${inboxLoadMoreButton()}`;
 }
 function emailLead(e){return data.leads.find(l=>l.id===e.lead_id);}
 const GMAIL_SYSTEM_LABELS={INBOX:'Inbox',SENT:'Sent',TRASH:'Trash',SPAM:'Spam',DRAFT:'Draft',STARRED:'Starred',IMPORTANT:'Important',UNREAD:'Unread',CATEGORY_PERSONAL:'Personal',CATEGORY_SOCIAL:'Social',CATEGORY_PROMOTIONS:'Promotions',CATEGORY_UPDATES:'Updates',CATEGORY_FORUMS:'Forums'};
@@ -1393,7 +1586,7 @@ function inboxLabelGroups(list){
 function gmailRows(list){
  const visible=list.slice(0,INBOX_RENDER_LIMIT);
  return `<section class="gmail-list">${visible.map(e=>{
-  const unread=emailNeedsResponse(e),overdue=emailIsOverdue(e),labelText=primaryEmailLabel(e).text;
+  const unread=emailIsUnread(e),overdue=emailIsOverdue(e),labelText=primaryEmailLabel(e).text;
   const trashMeta=emailIsTrashed(e)?`<span class="gmail-age overdue">${esc(e.trash_reason||'Gmail Trash')}</span>`:`<span class="gmail-age ${overdue?'overdue':''}">${esc(emailWaitLabel(e))}</span>`;
   return `<article class="gmail-row ${unread?'unread':''} ${emailIsTrashed(e)?'trashed':''}" data-act="open-email" data-id="${esc(e.id)}" title="Labels: ${esc(labelText)}"><div class="gmail-controls"><span class="gmail-check" aria-hidden="true"></span><span class="gmail-star" aria-hidden="true">&#9734;</span><span class="gmail-marker" aria-hidden="true"></span></div><div class="gmail-sender">${esc(fullName(e))}</div><div class="gmail-message"><span class="gmail-subject">${esc(e.subject)}</span><span class="gmail-label-summary">${esc(labelText)}</span><span class="gmail-dash">-</span><span class="gmail-snippet">${esc(emailSnippet(e))}</span></div><div class="gmail-meta">${trashMeta}<time>${time(e.received_at)}</time></div></article>`;
  }).join('')}${list.length>INBOX_RENDER_LIMIT?`<div class="crm-more">Showing first ${INBOX_RENDER_LIMIT.toLocaleString()} messages. Search or filter to narrow ${list.length.toLocaleString()} matching emails.</div>`:''}${list.length?'':empty('No messages in this view','Try clearing filters or changing the date range.')}</section>`;

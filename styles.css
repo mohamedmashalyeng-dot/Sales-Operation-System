@@ -763,12 +763,12 @@ button:hover,
 }
 .email-thread-item.response .email-thread-summary,
 .email-message-card.response .email-message-row{
- background:linear-gradient(90deg,#fff6df,#fffaf0)!important;
+ background:#fffaf0!important;
  border-bottom:1px solid rgba(205,154,58,.22)!important;
 }
 .email-message-card.response .email-reader-body{
  margin:14px!important;
- background:#fffefb!important;
+ background:#fffaf0!important;
  border:1px solid rgba(205,154,58,.28)!important;
  border-left:4px solid rgba(187,126,32,.74)!important;
  border-radius:14px!important;
@@ -783,7 +783,7 @@ button:hover,
  flex-wrap:wrap!important;
  gap:8px 14px!important;
  padding:12px 18px!important;
- background:rgba(255,255,255,.64)!important;
+ background:#fffaf0!important;
  color:#6f5b7b!important;
  border-bottom:1px solid rgba(205,154,58,.22)!important;
 }
@@ -1752,6 +1752,19 @@ dialog .button,
  padding:10px 16px!important;
  border-radius:var(--kbc-control-radius)!important;
 }
+.compact-actions{
+ display:flex!important;
+ align-items:center!important;
+ justify-content:flex-end!important;
+ flex-wrap:nowrap!important;
+ gap:8px!important;
+ max-width:none!important;
+}
+.compact-actions .button{
+ min-height:34px!important;
+ padding:8px 11px!important;
+ white-space:nowrap!important;
+}
 .select-menu-button{
  padding:10px 40px 10px 16px!important;
 }
@@ -1922,4 +1935,54 @@ dialog .button.danger:hover{
 .workspace .button .icon,
 dialog .button .icon{
  color:currentColor!important;
+}
+
+.new-items-notice{
+ display:flex;
+ align-items:flex-start;
+ justify-content:space-between;
+ gap:16px;
+}
+.new-items-notice strong{
+ white-space:nowrap;
+}
+.new-items-notice div{
+ display:flex;
+ flex-wrap:wrap;
+ gap:8px;
+ justify-content:flex-end;
+ min-width:0;
+}
+.new-items-notice span,
+.new-items-notice b{
+ display:inline-flex;
+ align-items:center;
+ gap:5px;
+ border:1px solid rgba(124,58,237,.16);
+ background:rgba(255,255,255,.68);
+ border-radius:999px;
+ padding:5px 9px;
+ font-size:10px;
+ line-height:1.2;
+ max-width:260px;
+ overflow:hidden;
+ text-overflow:ellipsis;
+ white-space:nowrap;
+}
+.new-items-notice em{
+ color:var(--muted);
+ font-style:normal;
+ overflow:hidden;
+ text-overflow:ellipsis;
+ white-space:nowrap;
+}
+.mobile-tab .nav-count{
+ margin-left:4px;
+ padding:2px 5px;
+ min-width:18px;
+ text-align:center;
+}
+@media(max-width:620px){
+ .new-items-notice{display:block}
+ .new-items-notice div{justify-content:flex-start;margin-top:10px}
 }
