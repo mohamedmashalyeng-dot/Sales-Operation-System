@@ -1,7 +1,7 @@
 'use strict';
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const paths={home:'M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75 M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2',mail:'M3 5h18v14H3z M3 5l9 7 9-7',grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',arrow:'M5 12h14 M14 7l5 5-5 5',back:'M19 12H5 M10 7l-5 5 5 5',plus:'M12 5v14 M5 12h14',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',check:'M5 12l4 4L19 6',bell:'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',close:'M6 6l12 12 M6 18 18 6',phone:'M22 16v3a2 2 0 0 1-2 2C10 21 3 14 3 4a2 2 0 0 1 2-2h3l2 5-3 2c1 3 3 5 6 6l2-3z',file:'M14 2H4v20h16V8z M14 2v6h6 M8 13h8 M8 17h5',chart:'M4 3v18h17 M8 15v-4 M13 15V7 M18 15V4',shield:'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6z M8 12l3 3 5-6',clock:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M12 6v6l4 2',settings:'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M9 2h6l1 4 4 1 2 5-3 3v5l-5 2-3-3-5 1-3-5 2-4-1-5 5-1z',logout:'M9 21H3V3h6 M8 12h14 M17 7l5 5-5 5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',download:'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',spark:'M12 3l2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6z',chevron:'m9 6 6 6-6 6'};
+const paths={home:'M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75 M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2',mail:'M3 5h18v14H3z M3 5l9 7 9-7',grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',arrow:'M5 12h14 M14 7l5 5-5 5',back:'M19 12H5 M10 7l-5 5 5 5',plus:'M12 5v14 M5 12h14',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',check:'M5 12l4 4L19 6',bell:'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',close:'M6 6l12 12 M6 18 18 6',phone:'M22 16v3a2 2 0 0 1-2 2C10 21 3 14 3 4a2 2 0 0 1 2-2h3l2 5-3 2c1 3 3 5 6 6l2-3z',file:'M14 2H4v20h16V8z M14 2v6h6 M8 13h8 M8 17h5',chart:'M4 3v18h17 M8 15v-4 M13 15V7 M18 15V4',shield:'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6z M8 12l3 3 5-6',clock:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M12 6v6l4 2',settings:'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M9 2h6l1 4 4 1 2 5-3 3v5l-5 2-3-3-5 1-3-5 2-4-1-5 5-1z',logout:'M9 21H3V3h6 M8 12h14 M17 7l5 5-5 5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',download:'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',spark:'M12 3l2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6z',chevron:'m9 6 6 6-6 6',eye:'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12 M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6',eyeOff:'M3 3l18 18 M10.6 10.6A3 3 0 0 0 13.4 13.4 M9.9 5.1A10.4 10.4 0 0 1 12 5c6 0 10 7 10 7a17.8 17.8 0 0 1-3.1 3.9 M6.1 6.1C3.5 7.8 2 12 2 12s4 7 10 7c1.2 0 2.4-.3 3.5-.7'};
 paths.video='M15 10l6-4v12l-6-4v4H3V6h12z';
 const icon=(name,cls='')=>`<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.grid}"/></svg>`;
 const logo=()=>'<div class="logo"><img src="/kent-logo-full-dark.png" alt="Kent Business College"></div>';
@@ -15,6 +15,17 @@ const time=d=>d?new Date(d).toLocaleTimeString(undefined,{hour:'2-digit',minute:
 const timestamp=d=>`${date(d)} · ${time(d)}`;
 const localInput=(d=new Date())=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
 const EMAIL_RESPONSE_SLA_MS=48*60*60*1000;
+const APPLICATION_DOCUMENT_TEMPLATES=[
+ ['training_plan','Training Plan','TrainingPlan-Training Plan v3 (5).pdf'],
+ ['onboarding_ilr','OnBoarding ILR','OnBoarding-ILR (3).pdf'],
+ ['employer_agreement','Employer Agreement Form','EmployerAgreementForm - Generic.pdf'],
+ ['written_agreement','Apprenticeship Written Agreement','Apprenticeship-WrittenAgreement V1.1 (2).pdf'],
+ ['apprenticeship_agreement','Apprenticeship Agreement','ApprenticeshipAgreement-Apprenticeship Agreement v5 (3).pdf']
+];
+function applicationRequirement(a,r){
+ const canManage=data.permissions.sales||data.permissions.review;
+ return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} Â· Version ${r.latest.version}${r.latest.reviewer?' Â· Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${canManage?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload signed version':'Upload document'}</button>`:''}${r.latest&&canManage?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>${icon('download')}Download</a>`:''}${r.latest&&data.permissions.review?btn('Review','review-evidence',r.latest.id):''}${r.latest&&canManage?btn('Delete evidence','delete-evidence',r.latest.id,'danger'):''}</div></div>`;
+}
 function parseDisplayDate(value,endOfDay=false){
  const match=String(value||'').trim().match(/^(\d{1,2})[\/. -](\d{1,2})[\/. -](\d{4})$/);
  if(!match)return null;
@@ -161,13 +172,14 @@ function hydrateSelectMenus(root=document){
 const dueLabel=t=>t.status==='Done'?'Done':new Date(t.due_at)<new Date()?'Overdue':date(t.due_at)===date(new Date())?time(t.due_at):date(t.due_at);
 const empty=(title,detail='')=>`<div class="empty">${icon('check')}<h3>${esc(title)}</h3>${esc(detail)}</div>`;
 const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="${act}" data-id="${esc(id)}">${esc(label)}</button>`;
-let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All'},deferredInstall=null;
+let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,dashboardFilterTimer=null,globalSearchTimer=null,globalSearchController=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',dashboard:{preset:'last30',from:'',to:'',college_id:'',programme_id:'',intake_id:'',owner_id:'',lead_source:''}},deferredInstall=null;
+let dashboardState={version:0,controllers:[],widgets:{}};
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300,PLANNER_LIST_LIMIT=120,PLANNER_DONE_LIMIT=30;
 const GMAIL_IMPORT_ENABLED=true;
-const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',phases:'Journey phases',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',attribution:'Attribution',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
-const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['phases','grid','Phases'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom'],['attribution','chart','Attribution']];
+const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
+const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom']];
 const localUserKey='pathway_local_user';
 const localDataKey='pathway_local_data';
 const seenPages=['leads','planner','inbox','applications','events','zoom'];
@@ -307,7 +319,7 @@ function ensureClientIntegration(d,name,status,detail){
  d.integrations ||= [];
  if(!d.integrations.some(item=>item.name===name))d.integrations.push({name,status,detail});
 }
-function recalculate(d){
+function syncClientDerived(d){
  d.permissions={sales:['sales','manager','admissions','qa','director','admin'].includes(d.user.role),review:['manager','admissions','qa','director','admin'].includes(d.user.role),admin:['admin','director'].includes(d.user.role)};
  d.sources ||= [];
  ensureClientIntegration(d,'Zoom',d.zoom?.last_sync_at||d.zoom?.imported_meeting_ids?.length?'Connected':'Needs credentials','Add Zoom Server-to-Server OAuth credentials to enable meeting sync.');
@@ -343,6 +355,7 @@ function recalculate(d){
  d.source_counts=d.sources.map(source=>sourceStats.get(source)||{source,leads:0,enrolled:0}).filter(s=>s.leads||s.enrolled);
  return d;
 }
+function recalculate(d){return syncClientDerived(d);}
 function localTimeline(d,lead){
  const items=[{occurred_at:lead.created_at,source:'Lead capture',summary:`${fullName(lead)} entered the ${lead.programme} pipeline.`,actor:lead.owner,verification:'System recorded',confidence:1}];
  d.tasks.filter(t=>t.lead_id===lead.id).forEach(t=>items.push({occurred_at:t.due_at,source:t.kind,summary:`${t.status} task: ${t.title}`,actor:lead.owner,verification:t.status==='Done'?'Completed':'Scheduled',confidence:.9}));
@@ -351,6 +364,13 @@ function localTimeline(d,lead){
  d.audit.filter(a=>a.entity_id===lead.id).forEach(a=>items.push({occurred_at:a.occurred_at,source:'Workspace',summary:a.action,actor:a.actor,verification:'Audit trail',confidence:1}));
  return items.sort((a,b)=>new Date(b.occurred_at)-new Date(a.occurred_at));
 }
+function localApplicationRequirements(appId,files=[],verified=false){
+ const byKey=new Map((files||[]).map(file=>[String(file.key||''),file]));
+ return APPLICATION_DOCUMENT_TEMPLATES.map(([key,title],index)=>{
+  const file=byKey.get(key);
+  return {id:`R-${appId}-${index+1}`,key,title,latest:file?.content_base64?{id:`ER-${appId}-${index+1}-${Date.now()}`,filename:file.filename||title,version:1,status:verified?'Verified':'Pending',reviewer:verified?data?.user?.name:null,content_base64:file.content_base64}:null};
+ });
+}
 async function localApi(path,body={},method='POST'){
  const clean=path.split('?')[0],user=data?.user||getStoredUser(),now=new Date().toISOString();
  if(clean==='/api/health')return {demo:false};
@@ -358,7 +378,8 @@ async function localApi(path,body={},method='POST'){
  if(clean==='/api/bootstrap'){if(!user)throw new Error('Sign in to your local workspace.');return clone(saveLocalData(getLocalData(user)));}
  const d=getLocalData(user);
  let match=clean.match(/^\/api\/leads\/([^/]+)$/);
- if(match&&method!=='PATCH'){const lead=leadFor(d,match[1]);return {lead:clone(lead),timeline:localTimeline(d,lead)};}
+ if(match&&method==='GET'){const lead=leadFor(d,match[1]);return {lead:clone(lead),timeline:localTimeline(d,lead)};}
+ if(match&&method==='DELETE'){const lead=leadFor(d,match[1]);d.leads=d.leads.filter(l=>l.id!==lead.id);d.tasks=d.tasks.filter(t=>t.lead_id!==lead.id);d.emails=d.emails.filter(e=>e.lead_id!==lead.id);d.applications=d.applications.filter(a=>a.lead_id!==lead.id);d.attribution=d.attribution.filter(a=>a.lead_id!==lead.id);addAudit(d,'Lead deleted','lead',lead.id,fullName(lead));saveLocalData(d);return {ok:true,deleted:{leads:[lead.id],tasks_for_lead:lead.id,emails_for_lead:lead.id,applications_for_lead:lead.id}};}
  if(clean==='/api/leads'){
   const programme=d.programmes.find(p=>p.id===body.programme_id),owner=d.owners.find(o=>o.id===body.owner_id)||d.user,id=numericEmailId(body.email);
   d.leads.push({id,first_name:body.first_name,last_name:body.last_name,full_name:`${body.first_name} ${body.last_name}`,programme:programme.name,programme_id:programme.id,email:body.email,employer:body.employer,phone:body.phone||'',city:body.city||'',owner:owner.name,owner_id:owner.id,stage:'New lead',priority:body.priority,source_first_touch:body.source,source_lead_capture:body.source,contact_permission:body.contact_permission,level:programme.level,person_id:id,created_at:now,next_action_at:null});
@@ -373,23 +394,33 @@ async function localApi(path,body={},method='POST'){
  if(clean==='/api/tasks'){const lead=leadFor(d,body.lead_id);d.tasks.push({id:nextId('T',[d.tasks]),title:body.title,lead_id:lead.id,kind:body.kind,status:'Open',created_at:now,due_at:body.due_at,priority:body.priority,owner_id:body.owner_id});addAudit(d,'Task created','lead',lead.id,body.title);saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/tasks\/([^/]+)\/complete$/);
  if(match){const task=d.tasks.find(t=>t.id===match[1]);if(!task)throw new Error('Task not found.');task.status='Done';task.completed_at=now;addAudit(d,'Task completed','lead',task.lead_id,task.title);saveLocalData(d);return {ok:true};}
+ match=clean.match(/^\/api\/tasks\/([^/]+)$/);
+ if(match&&method==='DELETE'){const task=d.tasks.find(t=>t.id===match[1]);if(!task)throw new Error('Task not found.');d.tasks=d.tasks.filter(t=>t.id!==match[1]);addAudit(d,'Task deleted','lead',task.lead_id,task.title);saveLocalData(d);return {ok:true,deleted:{tasks:[match[1]]}};}
  match=clean.match(/^\/api\/attendees\/([^/]+)\/checkin$/);
  if(match){const attendee=d.events.flatMap(e=>e.attendees||[]).find(a=>a.id===match[1]);if(!attendee)throw new Error('Attendee not found.');attendee.attended_at=attendee.attended_at||now;if(attendee.lead_id){const lead=d.leads.find(l=>l.id===attendee.lead_id);if(lead)d.tasks.push({id:nextId('T',[d.tasks]),title:'Follow up after event attendance',lead_id:lead.id,kind:'Follow-up',status:'Open',created_at:now,due_at:new Date(Date.now()+86400000).toISOString(),priority:lead.priority,owner_id:lead.owner_id});}saveLocalData(d);return {ok:true};}
  if(clean==='/api/calls'){const lead=leadFor(d,body.lead_id);addAudit(d,`Call ${body.outcome}`,'lead',lead.id,body.note);if(body.follow_up)d.tasks.push({id:nextId('T',[d.tasks]),title:body.next_action,lead_id:lead.id,kind:'Follow-up',status:'Open',created_at:now,due_at:body.due_at,priority:lead.priority,owner_id:lead.owner_id});saveLocalData(d);return {ok:true};}
  if(clean==='/api/emails'){const lead=leadFor(d,body.lead_id),received=new Date(body.received_at);d.emails.unshift({id:nextId('E',[d.emails]),first_name:lead.first_name,last_name:lead.last_name,email:lead.email,lead_id:lead.id,subject:body.subject,body:body.body,owner:lead.owner,direction:'inbound',response_at:null,due_at:new Date(received.getTime()+EMAIL_RESPONSE_SLA_MS).toISOString(),received_at:received.toISOString()});addAudit(d,'Inbound email recorded','lead',lead.id,body.subject);saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/emails\/([^/]+)\/resolve$/);
  if(match){const email=d.emails.find(e=>e.id===match[1]);if(!email)throw new Error('Email not found.');const responseAt=new Date(body.response_at);email.response_at=Number.isNaN(responseAt.getTime())||responseAt.getFullYear()<=2000?now:responseAt.toISOString();email.response_note=body.note;addAudit(d,'Email response recorded','lead',email.lead_id,body.note);saveLocalData(d);return {ok:true};}
- if(clean==='/api/applications'){const lead=leadFor(d,body.lead_id),intake=d.intakes.find(i=>i.id===body.intake_id);lead.stage='Application Submitted';d.applications.push({id:nextId('A',[d.applications]),lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:intake?.name||'Next intake',status:'In review',manager:d.user.name,member:lead.first_name,created_at:now,contract:{status:'Draft'},requirements:[{id:nextId('R',[d.applications.flatMap(a=>a.requirements)]),title:'Proof of right to work',latest:null},{id:nextId('R',[d.applications.flatMap(a=>a.requirements),['R-99']]),title:'Employer sponsorship form',latest:null}],learner:null});addAudit(d,'Application started','lead',lead.id);saveLocalData(d);return {ok:true};}
+ match=clean.match(/^\/api\/emails\/([^/]+)\/read$/);
+ if(match&&method==='PATCH'){const email=d.emails.find(e=>e.id===match[1]);if(!email)throw new Error('Email not found.');email.is_read=body.is_read!==false;email.gmail_labels=(email.gmail_labels||[]).filter(label=>label!=='UNREAD');email.gmail_label_names=(email.gmail_label_names||[]).filter(label=>String(label).toLowerCase()!=='unread');saveLocalData(d);return {ok:true,email};}
+ match=clean.match(/^\/api\/emails\/([^/]+)$/);
+ if(match&&method==='DELETE'){const email=d.emails.find(e=>e.id===match[1]);if(!email)throw new Error('Email not found.');d.emails=d.emails.filter(e=>e.id!==match[1]);addAudit(d,'Email deleted','lead',email.lead_id,email.subject);saveLocalData(d);return {ok:true,deleted:{emails:[match[1]]}};}
+ if(clean==='/api/applications'){const lead=leadFor(d,body.lead_id),intake=d.intakes.find(i=>i.id===body.intake_id),already=Boolean(body.already_enrolled),documentsNeedSignature=Boolean(body.documents_need_signature),evidenceVerified=already&&!documentsNeedSignature,appId=nextId('A',[d.applications]),learner=already?{external_reference:body.learner_reference||'Already enrolled',enrolled_at:now,note:body.enrolment_note||'Added as an existing enrolled learner.'}:null;lead.stage=already?'Enrolled':'Application Submitted';const app={id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:intake?.name||'Next intake',status:already?'Enrolled':'In review',manager:d.user.name,member:lead.first_name,created_at:now,contract:evidenceVerified?{status:'Verified',note:'Existing enrolled learner documents uploaded.'}:{status:'Draft',note:documentsNeedSignature?'Documents uploaded for learner signature.':undefined},requirements:localApplicationRequirements(appId,body.evidence_files,evidenceVerified),learner};d.applications.push(app);let attribution=null;if(already){attribution={...lead,programme:app.programme,snapshot:{first_touch:lead.source_first_touch,lead_capture:lead.source_lead_capture,conversion_source:lead.source_lead_capture}};d.attribution.unshift(attribution);}addAudit(d,already?'Existing learner enrolled':'Application started','lead',lead.id);saveLocalData(d);return {ok:true,application:app,lead,attribution};}
  match=clean.match(/^\/api\/applications\/([^/]+)\/evidence$/);
- if(match){const app=applicationFor(d,match[1]),req=app.requirements.find(r=>r.id===body.requirement_id);if(!req)throw new Error('Requirement not found.');const version=(req.latest?.version||0)+1;req.latest={id:nextId('ER',[d.applications.flatMap(a=>a.requirements.map(r=>r.latest).filter(Boolean))]),filename:body.filename,version,status:'Pending',reviewer:null,content_base64:body.content_base64};app.status='In review';saveLocalData(d);return {ok:true};}
+ if(match){const app=applicationFor(d,match[1]),req=app.requirements.find(r=>r.id===body.requirement_id);if(!req)throw new Error('Requirement not found.');const version=(req.latest?.version||0)+1;req.latest={id:nextId('ER',[d.applications.flatMap(a=>a.requirements.map(r=>r.latest).filter(Boolean))]),filename:body.filename,version,status:'Pending',reviewer:null,content_base64:body.content_base64};if(!app.learner)app.status='In review';saveLocalData(d);return {ok:true,application:app};}
  match=clean.match(/^\/api\/evidence\/([^/]+)\/review$/);
- if(match){const req=d.applications.flatMap(a=>a.requirements).find(r=>r.latest?.id===match[1]);if(!req)throw new Error('Evidence not found.');req.latest.status=body.status;req.latest.reviewer=d.user.name;req.latest.review_note=body.note;saveLocalData(d);return {ok:true};}
+ if(match){const app=d.applications.find(a=>(a.requirements||[]).some(r=>r.latest?.id===match[1])),req=app?.requirements.find(r=>r.latest?.id===match[1]);if(!req)throw new Error('Evidence not found.');req.latest.status=body.status;req.latest.reviewer=d.user.name;req.latest.review_note=body.note;saveLocalData(d);return {ok:true,application:app};}
+ match=clean.match(/^\/api\/evidence\/([^/]+)$/);
+ if(match&&method==='DELETE'){const app=d.applications.find(a=>(a.requirements||[]).some(r=>r.latest?.id===match[1]));if(!app)throw new Error('Evidence not found.');const req=app.requirements.find(r=>r.latest?.id===match[1]);req.latest=null;addAudit(d,'Evidence deleted','application',app.id);saveLocalData(d);return {ok:true,application:app,deleted:{evidence:[match[1]]}};}
  match=clean.match(/^\/api\/applications\/([^/]+)\/review$/);
  if(match){const app=applicationFor(d,match[1]),lead=leadFor(d,app.lead_id);app.status=body.status;lead.stage=body.status==='Eligible'?'Ready for Enrolment':'Not Eligible';addAudit(d,'Eligibility decision','lead',lead.id,body.status);saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/applications\/([^/]+)\/contract$/);
  if(match){const app=applicationFor(d,match[1]);app.contract={status:'Verified',signatory:body.signatory,signed_at:body.signed_at,note:body.note,consistency_confirmed:body.consistency_confirmed};saveLocalData(d);return {ok:true};}
  match=clean.match(/^\/api\/applications\/([^/]+)\/enrol$/);
  if(match){const app=applicationFor(d,match[1]),lead=leadFor(d,app.lead_id);app.status='Enrolled';app.learner={external_reference:body.external_reference,enrolled_at:now,note:body.note};lead.stage='Enrolled';d.attribution.unshift({...lead,programme:app.programme,snapshot:{first_touch:lead.source_first_touch,lead_capture:lead.source_lead_capture,conversion_source:lead.source_lead_capture}});addAudit(d,'Learner enrolled','lead',lead.id,body.external_reference);saveLocalData(d);return {ok:true};}
+ match=clean.match(/^\/api\/applications\/([^/]+)$/);
+ if(match&&method==='DELETE'){const app=applicationFor(d,match[1]),lead=d.leads.find(l=>l.id===app.lead_id)||null;d.applications=d.applications.filter(a=>a.id!==match[1]);d.attribution=d.attribution.filter(a=>a.lead_id!==app.lead_id||a.programme!==app.programme);if(lead&&['Application Submitted','Eligibility','Ready for Enrolment','Not Eligible','Enrolled'].includes(lead.stage))lead.stage='Qualified';addAudit(d,'Application deleted','lead',app.lead_id,app.programme);saveLocalData(d);return {ok:true,lead,deleted:{applications:[match[1]]}};}
  if(clean==='/api/password')return {ok:true};
  if(clean==='/api/users'){d.owners.push({id:nextId('U',[d.owners]),name:body.name,role:body.role,email:body.email});addAudit(d,'Team member created','user',body.email);saveLocalData(d);return {ok:true};}
  throw new Error('Local mode does not support this action yet.');
@@ -399,7 +430,7 @@ async function api(path,body,method='POST',options={}){
  const silent=Boolean(options.silent);
  if(!silent)showGlobalLoader();
  try{
-  const res=await fetch(path,{method:requestMethod,credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+  const res=await fetch(path,{method:requestMethod,credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:options.signal});
   const text=await res.text();let value={};
   try{
    value=text?JSON.parse(text):{};
@@ -411,7 +442,7 @@ async function api(path,body,method='POST',options={}){
    throw responseError;
   }
   if(!res.ok){if(res.status===401&&path!=='/api/login'){data=null;login();}const error=new Error(value.error||'Unable to complete the request.');error.status=res.status;throw error;}return value;
- }catch(error){if(canUseLocal(path)&&!error.status)return localApi(path,body,requestMethod);throw error;}
+ }catch(error){if(error.name==='AbortError')throw error;if(canUseLocal(path)&&!error.status)return localApi(path,body,requestMethod);throw error;}
  finally{if(!silent)hideGlobalLoader();}
 }
 function fileToBase64(file){
@@ -421,6 +452,16 @@ function fileToBase64(file){
   reader.onerror=()=>reject(new Error('Unable to read this file.'));
   reader.readAsDataURL(file);
  });
+}
+async function applicationEvidencePayloads(form){
+ const files=[];
+ for(const [key] of APPLICATION_DOCUMENT_TEMPLATES){
+  const file=form?.querySelector(`[name="doc_${key}"]`)?.files?.[0];
+  if(!file)continue;
+  if(file.size>5*1024*1024)throw new Error(`${file.name} is larger than 5 MB.`);
+  files.push({key,filename:file.name,content_base64:await fileToBase64(file)});
+ }
+ return files;
 }
 function showGlobalLoader(){
  loadingCount+=1;
@@ -538,8 +579,11 @@ function updateZoomResults(){
  clearTimeout(eventFilterTimer);
  eventFilterTimer=setTimeout(()=>{
   const results=$('#zoom-results');
-  if(!results)return;
-  results.innerHTML=zoomTable(zoomFilteredEvents());
+  if(results)results.innerHTML=zoomTable(zoomFilteredEvents());
+  const callResults=$('#zoom-call-results');
+  if(callResults)callResults.innerHTML=zoomCallsTable(zoomFilteredCalls());
+  const numberResults=$('#zoom-number-results');
+  if(numberResults)numberResults.innerHTML=zoomNumberTable(zoomNumberSummary(zoomFilteredCalls()));
  },180);
 }
 function mergeEventRecords(events=[]){
@@ -561,13 +605,37 @@ function mergeZoomCalls(calls=[]){
 async function loadZoomCalls(reset=false){
  data.zoom ||= {};
  const page=data.zoom.call_paging||{},offset=reset?0:Number(page.next_offset||0);
- const result=await api(`/api/zoom/calls?limit=50&offset=${offset}`,undefined,'GET',{silent:true});
+ const result=await api(`/api/zoom/calls?limit=250&offset=${offset}`,undefined,'GET',{silent:true});
  if(reset)data.zoom.calls=[];
  mergeZoomCalls(result.calls||[]);
  data.zoom.last_call_sync_at=result.last_sync_at||data.zoom.last_call_sync_at;
  data.zoom.call_paging={loaded:Number(result.loaded||data.zoom.calls.length||0),total:Number(result.total||data.zoom.calls.length||0),limit:Number(result.limit||50),has_more:Boolean(result.has_more),next_offset:Number(result.next_offset||0)};
  return result.calls||[];
 }
+// Leads arrive as a first page in the bootstrap payload. The cursor endpoint loads the
+// remaining database pages into the same workspace cache.
+function leadPageState(){
+ if(data?.lead_paging)return data.lead_paging;
+ const loaded=Number((data?.leads||[]).length||0),total=Number(data?.dashboard?.leads?.total||loaded);
+ return {loaded,total,limit:50,has_more:total>loaded,next_cursor:''};
+}
+async function loadMoreLeads(){
+ const page=leadPageState(),params=new URLSearchParams({limit:'50'});
+ if(page.next_cursor)params.set('cursor',page.next_cursor);
+ const result=await api(`/api/leads?${params.toString()}`,undefined,'GET',{silent:true});
+ const byId=new Map((data.leads||[]).map(lead=>[lead.id,lead]));
+ (result.leads||[]).forEach(lead=>{if(lead?.id)byId.set(lead.id,{...(byId.get(lead.id)||{}),...lead});});
+ data.leads=[...byId.values()];
+ data.lead_paging={loaded:data.leads.length,total:Number(result.total||data.leads.length),limit:Number(result.limit||50),has_more:Boolean(result.has_more),next_cursor:result.next_cursor||''};
+ rebuildClientIndexes(data);
+ return result.leads||[];
+}
+function leadsMore(){
+ const page=leadPageState();
+ if(!page.has_more)return '';
+ return `<div class="crm-more"><button class="button soft" data-act="load-more-leads">More</button><span class="small muted">${Number(page.loaded||0).toLocaleString()} of ${Number(page.total||0).toLocaleString()} leads loaded. Next click loads 50 more.</span></div>`;
+}
+
 function go(route){if(location.hash===`#/${route}`)render();else location.hash=`#/${route}`;}
 function route(){return location.hash.replace(/^#\/?/,'')||'today';}
 function breadcrumbLabel(){
@@ -590,10 +658,10 @@ function navButton(n,current){
 function shell(content,current){
  const navCurrent=current.split('/')[0],user=data.user,bell=`${icon('bell')}${overdueEmailCount()?`<span class="alert-count">${overdueEmailCount()}</span>`:''}`;
  return `<aside class="sidebar">${logo()}<div class="eyebrow">Workspace</div>${navs.map(n=>navButton(n,navCurrent)).join('')}<div class="eyebrow">Manage</div>${navButton(['settings','settings','Settings'],navCurrent)}${['admin','qa','director'].includes(user.role)?navButton(['audit','shield','Audit trail'],navCurrent):''}<div class="sidebar-footer"><div class="workspace-tag"><b>${data.demo?'Demo workspace':'Team workspace'}</b>${data.demo?'Fictional records · Explore freely':'Apprenticeship operations'}</div><div class="sidebar-user">${avatar(user)}<div><b>${esc(user.name)}</b><div class="muted small">${esc(user.role)}</div></div><button class="text-button" data-act="logout" aria-label="Sign out">${icon('logout')}</button></div></div></aside>
- <div class="main-shell"><header class="topbar">${logo()}<div class="breadcrumb">WORKSPACE <span>/</span> <b>${esc(labels[navCurrent]||'Lead 360')}</b></div><div class="top-actions"><span class="small muted"><span class="status-dot"></span>${data.demo?'Demo workspace':'Connected to workspace'}</span><button class="icon-button" data-act="notifications" aria-label="View overdue actions">${icon('bell')}</button>${avatar(user)}</div></header>${navigator.onLine?'':'<div class="offline-banner">Offline — reconnect to view and save changes.</div>'}<main class="workspace">${content}</main></div>
+ <div class="main-shell"><header class="topbar">${logo()}<div class="breadcrumb">WORKSPACE <span>/</span> <b>${esc(labels[navCurrent]||'Lead 360')}</b></div><div class="global-search">${icon('search')}<input id="global-search" aria-label="Search workspace" autocomplete="off" placeholder="Search leads, emails, applications..." value=""><div id="global-search-results" class="global-search-results" hidden></div></div><div class="top-actions"><span class="small muted"><span class="status-dot"></span>${data.demo?'Demo workspace':'Connected to workspace'}</span><button class="icon-button" data-act="notifications" aria-label="View overdue actions">${icon('bell')}</button>${avatar(user)}</div></header>${navigator.onLine?'':'<div class="offline-banner">Offline — reconnect to view and save changes.</div>'}<main class="workspace">${content}</main></div>
  <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['monitoring','chart','Monitor'],['leads','users','Leads'],['planner','calendar','Planner'],['more','grid','More']].map(n=>{const count=navCurrent===n[0]?0:pageNewCount(n[0]);return `<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','monitoring','leads','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;}).join('')}</nav>`;
 }
-function taskRow(t){return `<div class="task-row"><button class="check-button ${t.status==='Done'?'done':''}" data-act="complete" data-id="${t.id}" ${!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${t.status==='Done'?icon('check'):''}</button><div class="task-copy ${t.status==='Done'?'done':''}"><strong>${esc(t.title)}</strong><p><button class="text-button" data-go="leads/${t.lead_id}">${esc(fullName(t))}</button> · ${esc(t.kind)}</p></div>${badge(dueLabel(t),dueLabel(t)==='Overdue'?'red':'')}</div>`;}
+function taskRow(t){return `<div class="task-row"><button class="check-button ${t.status==='Done'?'done':''}" data-act="complete" data-id="${t.id}" ${!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${t.status==='Done'?icon('check'):''}</button><div class="task-copy ${t.status==='Done'?'done':''}"><strong>${esc(t.title)}</strong><p><button class="text-button" data-go="leads/${t.lead_id}">${esc(fullName(t))}</button> · ${esc(t.kind)}</p></div>${badge(dueLabel(t),dueLabel(t)==='Overdue'?'red':'')}${data.permissions.sales?`<button class="icon-button danger" data-act="delete-task" data-id="${esc(t.id)}" aria-label="Delete ${esc(t.title)}">${icon('close')}</button>`:''}</div>`;}
 function plannerLead(t){return data.leads.find(l=>l.id===t.lead_id)||t;}
 function taskDueBucket(t){
  const due=new Date(t.due_at),now=new Date(),today=new Date(now.getFullYear(),now.getMonth(),now.getDate()),tomorrow=new Date(today.getTime()+86400000);
@@ -613,7 +681,7 @@ function plannerTasks(){
 }
 function plannerTaskCard(t,n=0){
  const lead=plannerLead(t),bucket=taskDueBucket(t),done=t.status==='Done';
- return `<article class="planner-task ${done?'done':''}"><button class="check-button ${done?'done':''}" data-act="complete" data-id="${esc(t.id)}" ${done||!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${done?icon('check'):''}</button><div class="planner-task-main"><div class="planner-task-top"><strong>${esc(t.title)}</strong>${badge(bucket,bucket==='Overdue'?'red':bucket==='Done'?'green':bucket==='Today'?'amber':'blue')}</div><p><button class="text-button" data-go="leads/${esc(t.lead_id)}">${esc(fullName(lead))}</button> · ${esc(lead.programme||'No programme')}</p><div class="planner-task-meta"><span>${icon(t.kind==='Call'?'phone':t.kind==='Email'?'mail':t.kind==='Review'?'file':'clock')}${esc(t.kind||'Follow-up')}</span><span>${icon('calendar')}${timestamp(t.due_at)}</span><span>${esc(t.priority||lead.priority||'P2')} priority</span></div></div><button class="icon-button" data-go="leads/${esc(t.lead_id)}" aria-label="Open ${esc(fullName(lead))}">${icon('chevron')}</button></article>`;
+ return `<article class="planner-task ${done?'done':''}"><button class="check-button ${done?'done':''}" data-act="complete" data-id="${esc(t.id)}" ${done||!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${done?icon('check'):''}</button><div class="planner-task-main"><div class="planner-task-top"><strong>${esc(t.title)}</strong>${badge(bucket,bucket==='Overdue'?'red':bucket==='Done'?'green':bucket==='Today'?'amber':'blue')}</div><p><button class="text-button" data-go="leads/${esc(t.lead_id)}">${esc(fullName(lead))}</button> · ${esc(lead.programme||'No programme')}</p><div class="planner-task-meta"><span>${icon(t.kind==='Call'?'phone':t.kind==='Email'?'mail':t.kind==='Review'?'file':'clock')}${esc(t.kind||'Follow-up')}</span><span>${icon('calendar')}${timestamp(t.due_at)}</span><span>${esc(t.priority||lead.priority||'P2')} priority</span></div></div><div class="compact-actions">${data.permissions.sales?`<button class="icon-button danger" data-act="delete-task" data-id="${esc(t.id)}" aria-label="Delete ${esc(t.title)}">${icon('close')}</button>`:''}<button class="icon-button" data-go="leads/${esc(t.lead_id)}" aria-label="Open ${esc(fullName(lead))}">${icon('chevron')}</button></div></article>`;
 }
 async function completeTaskOptimistic(id){
  const task=data?.tasks?.find(t=>t.id===id);
@@ -622,7 +690,7 @@ async function completeTaskOptimistic(id){
  const completedAt=new Date().toISOString();
  task.status='Done';
  task.completed_at=completedAt;
- data=recalculate(data);
+ data=syncClientDerived(data);
  await render();
  try{
   await api(`/api/tasks/${encodeURIComponent(id)}/complete`,{},'POST',{silent:true});
@@ -631,7 +699,7 @@ async function completeTaskOptimistic(id){
   task.status=previous.status;
   if(previous.completed_at)task.completed_at=previous.completed_at;
   else delete task.completed_at;
-  data=recalculate(data);
+  data=syncClientDerived(data);
   await render();
   throw error;
  }
@@ -650,14 +718,158 @@ function plannerEventCard(e){
 }
 function personRow(l,n){return `<div class="person-row">${avatar(l,n)}<div class="person-main"><strong>${esc(fullName(l))}</strong><p>${esc(l.programme)}</p></div>${badge(l.stage)}<button class="icon-button" data-go="leads/${l.id}" aria-label="Open ${esc(fullName(l))}">${icon('chevron')}</button></div>`;}
 function stat(label,value,foot,ic){return `<div class="stat"><div class="stat-head">${label}${icon(ic)}</div><div class="stat-value">${value}</div><div class="stat-foot">${foot}</div></div>`;}
+// Database aggregates keep dashboard numbers accurate even though bootstrap only ships the
+// first page of leads/tasks/emails/events. Local mode falls back to the in-memory stats.
+function dashboardNumbers(){
+ const d=data?.dashboard||null,s=data?.stats||{};
+ const num=(value,fallback)=>{const parsed=Number(value);return Number.isFinite(parsed)?parsed:Number(fallback||0);};
+ return {
+  active:d?num(d.leads?.active,s.active):num(s.active),
+  leadsTotal:d?num(d.leads?.total,(data?.leads||[]).length):(data?.leads||[]).length,
+  applications:d?num(d.applications?.total,s.applications):num(s.applications),
+  enrolled:d?num(d.applications?.enrolled,s.enrolled):num(s.enrolled),
+  overdue:d?num(d.tasks?.overdue,s.overdue):num(s.overdue),
+  unanswered:d?num(d.emails?.unanswered,s.unanswered):num(s.unanswered)
+ };
+}
+const dashboardDateIso=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);
+function dashboardPresetDates(preset){
+ const now=new Date(),today=new Date(now.getFullYear(),now.getMonth(),now.getDate()),end=d=>dashboardDateIso(d);
+ if(preset==='today')return {from:end(today),to:end(today)};
+ if(preset==='last7')return {from:end(new Date(today.getTime()-6*msDay)),to:end(today)};
+ if(preset==='this_month')return {from:end(new Date(today.getFullYear(),today.getMonth(),1)),to:end(today)};
+ if(preset==='last_month'){const first=new Date(today.getFullYear(),today.getMonth()-1,1),last=new Date(today.getFullYear(),today.getMonth(),0);return {from:end(first),to:end(last)};}
+ return {from:end(new Date(today.getTime()-29*msDay)),to:end(today)};
+}
+function ensureDashboardFilters(){
+ const f=filters.dashboard;
+ if(!f.from||!f.to||f.preset!=='custom')Object.assign(f,dashboardPresetDates(f.preset||'last30'));
+ return f;
+}
+function dashboardParams(){
+ const f=ensureDashboardFilters(),params=new URLSearchParams();
+ ['from','to','college_id','programme_id','intake_id','owner_id','lead_source'].forEach(key=>{if(f[key])params.set(key,f[key]);});
+ return params.toString();
+}
+function dashboardUrl(path){const q=dashboardParams();return q?`${path}?${q}`:path;}
+function dashboardFilterBar(){
+ const f=ensureDashboardFilters();
+ const programmeOptions=[['','All programmes'],...(data.programmes||[]).map(p=>[p.id,p.name])];
+ const intakeOptions=[['','All intakes'],...(data.intakes||[]).map(i=>[i.id,`${i.name}${i.programme_id?'':''}`])];
+ const ownerOptions=[['','All owners'],...(data.owners||[]).map(o=>[o.id,o.name])];
+ const sourceOptions=[['','All sources'],...(data.sources||[]).map(s=>[s,s])];
+ return `<section class="dashboard-filters" aria-label="Dashboard filters">
+  <label class="field"><span>Date Range</span><select id="dash-preset">${[['today','Today'],['last7','Last 7 Days'],['last30','Last 30 Days'],['this_month','This Month'],['last_month','Last Month'],['custom','Custom']].map(([v,l])=>`<option value="${v}" ${f.preset===v?'selected':''}>${l}</option>`).join('')}</select></label>
+  <label class="field"><span>From</span><input id="dash-from" type="date" value="${esc(f.from)}" ${f.preset!=='custom'?'disabled':''}></label>
+  <label class="field"><span>To</span><input id="dash-to" type="date" value="${esc(f.to)}" ${f.preset!=='custom'?'disabled':''}></label>
+  <label class="field"><span>College</span><select id="dash-college"><option value="">All colleges</option><option value="kent-business-college" ${f.college_id==='kent-business-college'?'selected':''}>Kent Business College</option></select></label>
+  <label class="field"><span>Programme</span><select id="dash-programme">${selectOptions(programmeOptions,f.programme_id)}</select></label>
+  <label class="field"><span>Intake</span><select id="dash-intake">${selectOptions(intakeOptions,f.intake_id)}</select></label>
+  <label class="field"><span>Owner</span><select id="dash-owner">${selectOptions(ownerOptions,f.owner_id)}</select></label>
+  <label class="field"><span>Lead Source</span><select id="dash-source">${selectOptions(sourceOptions,f.lead_source)}</select></label>
+ </section>`;
+}
+function dashboardCard(id,title,sub,priority=''){
+ return `<section class="panel dashboard-widget ${priority}" id="dash-${id}" aria-live="polite"><div class="panel-header"><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div>${icon(id==='pipeline'?'chart':id==='work'?'calendar':id==='priority'?'users':id==='source'?'link':id==='integrations'?'settings':id==='activity'?'clock':'bell')}</div><div class="panel-body">${dashboardLoading()}</div></section>`;
+}
+function dashboardLoading(){return '<div class="dashboard-skeleton"><span></span><span></span><span></span></div>';}
+function dashboardWidgetError(label){return `<div class="empty">${icon('close')}<h3>Unable to load ${esc(label)}.</h3><button class="button soft" data-act="dashboard-retry">Retry</button></div>`;}
+function dashSet(id,html){const el=document.querySelector(`#dash-${id} .panel-body`);if(el)el.innerHTML=html;}
+function dashboardKpiCard(kpi){
+ return `<button class="stat dashboard-kpi" data-go="${esc(kpi.route||'today')}" aria-label="Open ${esc(kpi.label)}"><div class="stat-head">${esc(kpi.label)}${icon(kpi.icon||'grid')}</div><div class="stat-value">${fmtNumber(kpi.value)}</div><div class="stat-foot">${esc(kpi.route?'Open matching records':'Current filters')}</div></button>`;
+}
+function renderDashboardSummary(result){
+ const kpis=result.kpis||[],attention=result.attention||[];
+ dashSet('kpis',`<div class="stats-grid dashboard-kpis">${kpis.map(dashboardKpiCard).join('')}</div>`);
+ dashSet('attention',attention.map(row=>`<button class="attention-row" data-go="${esc(row.route||'today')}"><span>${esc(row.label)}</span>${badge(row.value?String(row.value):'Clear',row.kind||'green')}</button>`).join('')||empty('No attention items','Nothing urgent in the selected filters.'));
+}
+function renderDashboardPipeline(result){
+ const stages=result.stages||[],max=Math.max(1,...stages.map(s=>Number(s.count||0)));
+ const stuck=(result.stuck||[]).slice(0,3);
+ dashSet('pipeline',`${stages.map(s=>`<button class="pipeline-row" data-go="leads"><span><b>${esc(s.stage)}</b><small>${s.conversion_from_previous===null?'Start':`${s.conversion_from_previous}% from previous`} · avg ${Number(s.avg_time_in_stage_days||0).toFixed(1)}d</small></span><span class="bar-track"><i style="width:${Math.max(4,Math.min(100,Number(s.count||0)/max*100))}%"></i></span><strong>${fmtNumber(s.count)}</strong>${s.stuck?badge(`${s.stuck} stuck`,'amber'):''}</button>`).join('')||empty('No pipeline data','No leads match these filters.')}${stuck.length?`<div class="notice warning">${stuck.map(s=>`<button class="text-button" data-go="leads">${esc(s.label)} ${icon('arrow')}</button>`).join('')}</div>`:''}`);
+}
+function renderDashboardWork(result){
+ const items=result.items||[];
+ dashSet('work',items.map(item=>`<div class="task-row dashboard-work-row"><div class="event-date"><b>${esc(time(item.due_at))}</b>${esc(date(item.due_at,{month:'short',day:'numeric'}))}</div><div class="task-copy"><strong>${esc(item.title)}</strong><p>${esc(item.kind)} — ${esc(item.person||'No learner')} · ${esc(item.programme||'No programme')}</p></div>${item.type==='task'?`<button class="check-button" data-act="dash-complete-task" data-id="${esc(item.id)}" aria-label="Complete ${esc(item.title)}">${icon('check')}</button>`:`<button class="icon-button" data-go="applications" aria-label="Open application">${icon('chevron')}</button>`}</div>`).join('')||empty('No work due','Overdue, today and upcoming actions will appear here.'));
+}
+function renderDashboardPriority(result){
+ const leads=result.leads||[];
+ dashSet('priority',leads.map((lead,n)=>`<div class="person-row"><button class="avatar ${['sage','blue','rose'][n%3]}" data-go="leads/${esc(lead.id)}">${esc(initials({first_name:lead.name,last_name:''}))}</button><div class="person-main"><strong>${esc(lead.name||'Unknown lead')}</strong><p>${esc(lead.programme||'No programme')}<br>${(lead.reasons||[]).slice(0,3).map(esc).join(' · ')}</p></div>${badge(lead.priority||'Priority','amber')}<button class="button soft" data-go="leads/${esc(lead.id)}">Follow up</button></div>`).join('')||empty('No priority leads','No high-intent or overdue leads in this filter.'));
+}
+function renderDashboardSource(result){
+ const rows=result.sources||[];
+ dashSet('source',`<div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Qualified</th><th>Applications</th><th>Enrolled</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.source||'Other')}</td><td>${fmtNumber(r.leads)}</td><td>${fmtNumber(r.qualified)}</td><td>${fmtNumber(r.applications)}</td><td>${fmtNumber(r.enrolled)}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No source data')}</div>`);
+}
+function renderDashboardIntegrations(result){
+ const rows=result.integrations||[];
+ const kind=status=>status==='Healthy'?'green':status==='Disabled'?'':'amber';
+ dashSet('integrations',rows.map(row=>`<div class="integration-health-row"><div><strong>${esc(row.name)}</strong><p>${row.last_successful_sync?`Last sync: ${timestamp(row.last_successful_sync)}`:'No successful sync recorded'}${row.message?`<br>${esc(row.message)}`:''}</p></div>${badge(row.status,kind(row.status))}${row.retry_allowed?`<button class="button soft" data-act="${esc(row.retry_action)}">Retry</button>`:''}</div>`).join('')||empty('No integration issues detected'));
+}
+function renderDashboardActivity(result){
+ const rows=result.activity||[];
+ dashSet('activity',rows.map(row=>`<button class="activity-row" data-go="${esc(row.route||'audit')}"><span>${esc(row.action||'Activity')}</span><small>${esc(row.actor||'Workspace')} · ${timestamp(row.occurred_at)}</small></button>`).join('')||empty('No recent activity','Activity will appear as records change.'));
+}
+const dashboardWidgets=[
+ ['summary','/api/dashboard/summary',renderDashboardSummary,'summary'],
+ ['pipeline','/api/dashboard/pipeline',renderDashboardPipeline,'pipeline data'],
+ ['work','/api/dashboard/my-work',renderDashboardWork,'work'],
+ ['priority','/api/dashboard/priority-leads',renderDashboardPriority,'priority leads'],
+ ['source','/api/dashboard/source-performance',renderDashboardSource,'source performance'],
+ ['integrations','/api/dashboard/integrations',renderDashboardIntegrations,'integration health'],
+ ['activity','/api/dashboard/activity?limit=15',renderDashboardActivity,'recent activity']
+];
+function loadDashboardWidgets(only=null){
+ if(route()!=='today')return;
+ const version=++dashboardState.version;
+ dashboardState.controllers.forEach(controller=>controller.abort());
+ dashboardState.controllers=[];
+ const wanted=new Set(only||dashboardWidgets.map(item=>item[0]));
+ const jobs=dashboardWidgets.filter(([id])=>wanted.has(id)).map(([id,path,renderFn,label])=>{
+  const controller=new AbortController();
+  dashboardState.controllers.push(controller);
+  const separator=path.includes('?')?'&':'?';
+  return api(`${path}${separator}${dashboardParams()}`,undefined,'GET',{silent:true,signal:controller.signal}).then(result=>{if(version===dashboardState.version||only)renderFn(result);}).catch(error=>{if(error.name!=='AbortError'&&(version===dashboardState.version||only))dashSet(id,dashboardWidgetError(label));});
+ });
+ Promise.allSettled(jobs);
+}
+function scheduleDashboardLoad(only=null){
+ clearTimeout(dashboardFilterTimer);
+ dashboardFilterTimer=setTimeout(()=>loadDashboardWidgets(only),120);
+}
+function cockpitToday(){
+ const greeting=new Date().getHours()<12?'Good morning':'Good afternoon';
+ setTimeout(()=>{if(route()==='today')loadDashboardWidgets();},0);
+ return heading(`${greeting}, ${data.user.name.split(' ')[0]}`,'Sales + Operations Cockpit',data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
+ `${dashboardFilterBar()}<div class="dashboard-cockpit">
+  ${dashboardCard('attention','Needs Your Attention','The operational queue to clear first','dashboard-primary')}
+  ${dashboardCard('work','My Work Today','Overdue, due today and next actions','dashboard-primary')}
+  ${dashboardCard('priority','Priority Leads','Deterministic signals and reasons','dashboard-primary')}
+  ${dashboardCard('kpis','KPI Summary','Six live database counters')}
+  ${dashboardCard('pipeline','Sales Pipeline','Stage counts, conversion and stuck leads')}
+  ${dashboardCard('source','Source Performance','Lead source to enrolment outcomes')}
+  ${dashboardCard('integrations','Integration Health','Safe sync status only')}
+  ${dashboardCard('activity','Recent Activity','Latest audit events')}
+ </div><p class="bottom-note">Dashboard widgets load independently from PostgreSQL and do not use bootstrap analytics.</p>`;
+}
+function coverageNotice(){
+ const d=data?.dashboard;
+ if(!d)return '';
+ const gaps=[];
+ [['leads','leads'],['emails','emails'],['events','events'],['applications','applications']].forEach(([key,label])=>{
+  const total=Number(d[key]?.total||0),loaded=Number((data?.[key]||[]).length||0);
+  if(total>loaded)gaps.push(`${fmtNumber(total-loaded)} more ${label}`);
+ });
+ if(!gaps.length)return '';
+ return `<div class="notice">Totals come from the database. The lists on this page hold the records loaded in your workspace, so ${gaps.join(', ')} are not loaded yet. Open the matching page and use its "More" control to widen the list.</div>`;
+}
 function today(){
- const s=data.stats,waitingEmails=s.unanswered||0,open=data.tasks.filter(t=>t.status==='Open'),focus=data.leads.filter(l=>!['Enrolled','Lost','Deferred','Not Eligible'].includes(l.stage)).sort((a,b)=>a.priority.localeCompare(b.priority)||b.score-a.score).slice(0,4);
+ const s=dashboardNumbers(),waitingEmails=s.unanswered||0,open=data.tasks.filter(t=>t.status==='Open'),focus=data.leads.filter(l=>!['Enrolled','Lost','Deferred','Not Eligible'].includes(l.stage)).sort((a,b)=>a.priority.localeCompare(b.priority)||b.score-a.score).slice(0,4);
  const greeting=new Date().getHours()<12?'Good morning':'Good afternoon';
  return heading(`${greeting}, ${data.user.name.split(' ')[0]}`,`${date(new Date(),{weekday:'long',day:'numeric',month:'long'})} · Let’s move the right opportunities forward.`,data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
  `<section class="hero"><div class="hero-copy"><div class="eyebrow">Every journey starts with a next step</div><h2>A clear path to the<br>next intake.</h2><p>${s.overdue?`${s.overdue} follow-ups need your attention. A timely conversation can make all the difference.`:'Your next opportunity is waiting. Keep every learner’s journey moving forward.'}</p><button class="button lime" data-go="planner">Open my planner ${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="hero-note">In your active pipeline<b>${s.active}</b>people taking their next step</div></section>
  <div class="stats-grid">${stat('Active leads',s.active,'Across your programmes','users')}${stat('Applications',s.applications,'In the admissions journey','file')}${stat('Enrolled learners',s.enrolled,'Confirmed learner records','shield')}${stat('Actions overdue',s.overdue,'Ready for your attention','clock')}</div>
  <div class="dashboard-grid"><div><section class="panel"><div class="panel-header"><div><h2>Your next conversations</h2><p>Prioritised by urgency and recorded intent</p></div><button class="text-button" data-go="leads">View all ${icon('arrow')}</button></div><div class="panel-body">${focus.length?focus.map(personRow).join(''):empty('Your pipeline is clear','Create a lead to start a new learner journey.')}</div></section>
- <section class="panel mt"><div class="panel-header"><div><h2>Where journeys begin</h2><p>Leads by first-touch source</p></div><button class="text-button" data-go="attribution">Explore ${icon('arrow')}</button></div><div class="panel-body source-bars">${sourceBars()}<div class="info-strip">${icon('link')}One person. One connected journey.</div></div></section></div>
+ <section class="panel mt"><div class="panel-header"><div><h2>Where journeys begin</h2><p>Leads by first-touch source</p></div><button class="text-button" data-go="leads">Explore ${icon('arrow')}</button></div><div class="panel-body source-bars">${sourceBars()}<div class="info-strip">${icon('link')}One person. One connected journey.</div></div></section></div>
  <div><section class="panel"><div class="panel-header"><div><h2>On your planner</h2><p>${open.length} open actions · ${s.overdue} overdue</p></div><button class="text-button" data-go="planner">View all ${icon('arrow')}</button></div><div class="panel-body">${open.length?open.slice(0,4).map(taskRow).join(''):empty('All caught up','Your open follow-ups will appear here.')}</div></section>
 <section class="panel mt"><div class="panel-header"><div><h2>Keep the conversation going</h2><p>Your email response queue</p></div>${icon('mail')}</div><div class="panel-body"><p class="muted small">${waitingEmails} incoming ${waitingEmails===1?'conversation needs':'conversations need'} a company response.</p><button class="button full" data-go="inbox">Open email queue ${icon('arrow')}</button></div></section></div></div><p class="bottom-note">Metrics are calculated from the records you can access.</p>`;
 }
@@ -770,6 +982,7 @@ async function monitoring(){
   `<tr><td>Audit activity</td><td>${system.audit_24h||0}</td><td>Last 24 hours</td></tr>`
  ];
  return heading('Monitoring dashboard.','Operations, integrations, team performance, risk and system health.',`<button class="button soft" data-act="reload">${icon('arrow')}Refresh</button>`)+
+ coverageNotice()+
  `<div class="stats-grid monitoring-stats">${monStat('Leads today',countFrom(ops.leads,'created_at',startOfToday()),'Since midnight','users')}${monStat('Leads this week',countSince(ops.leads,'created_at',7),'Rolling 7 days','chart')}${monStat('Leads this month',countSince(ops.leads,'created_at',30),'Rolling 30 days','calendar')}${monStat('Conversion',ops.enrolRate,`${ops.applicationRate} applied`,'shield')}</div>
  <div class="stats-grid monitoring-stats">${monStat('New',ops.stageCount('New lead'),'New lead stage','users')}${monStat('Qualified',ops.stageCount('Qualified'),'Ready for next step','check')}${monStat('Lost',ops.stageCount('Lost'),'Closed lost','close','risk')}${monStat('Enrolled',ops.enrolled,'Confirmed learners','shield')}</div>
  <section class="monitoring-alerts">${alerts.map(a=>`<button class="panel monitoring-alert" data-go="${esc(a.go)}"><span>${esc(a.label)}</span><strong>${fmtNumber(a.value)}</strong><em>${esc(a.detail)}</em></button>`).join('')}</section>
@@ -785,7 +998,7 @@ function leadSourceOptions(){
  return ['All',...new Set(values)].sort((a,b)=>a==='All'?-1:b==='All'?1:a.localeCompare(b));
 }
 function leads(){
- return heading('People, with potential.',`${data.leads.length} leads · Every opportunity, one connected record.`,data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
+ return heading('People, with potential.',`${dashboardNumbers().leadsTotal.toLocaleString()} leads · Every opportunity, one connected record.`,data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
  `${pageNewNotice('leads')}<div class="toolbar lead-toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search leads" placeholder="Search name, employer or email…" value="${esc(filters.search)}"></div><select id="programme-filter" aria-label="Filter by programme"><option value="All">All programmes</option>${data.programmes.map(p=>`<option value="${p.id}" ${filters.programme===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select><select id="source-filter" aria-label="Filter by source">${leadSourceOptions().map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source==='All'?'All sources':source)}</option>`).join('')}</select><select id="stage-filter" aria-label="Filter by stage"><option>All stages</option>${data.stages.map(s=>`<option ${filters.stage===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div><div id="lead-results">${leadResults()}</div>`;
 }
 function leadMatchesSource(l){
@@ -830,9 +1043,9 @@ function leadTable(list){
 }
 function leadResults(){
  const list=filteredLeads().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
- if(filters.leadView!=='board')return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>Table view with live status controls</span></div>${leadTableFast(list)}`;
+ if(filters.leadView!=='board')return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>Table view with live status controls</span></div>${leadTableFast(list)}${leadsMore()}`;
  const stages=(filters.stage==='All'||filters.stage==='All stages'?data.stages:[filters.stage]),max=Math.max(1,...stages.map(stage=>list.filter(l=>l.stage===stage).length));
- return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>${stages.length} pipeline stage${stages.length===1?'':'s'} shown</span></div><div class="crm-board">${stages.map(stage=>{const rows=list.filter(l=>l.stage===stage).sort((a,b)=>String(a.priority||'').localeCompare(String(b.priority||''))||new Date(b.created_at||0)-new Date(a.created_at||0));const width=Math.max(1,Math.round(rows.length/max*12));return `<section class="crm-column"><header><div><h2>${esc(stage)}</h2><p>${rows.length.toLocaleString()} lead${rows.length===1?'':'s'}</p></div><span class="badge ${stage==='Lost'||stage==='Not Eligible'?'red':stage==='Enrolled'?'green':'amber'}">${rows.length}</span></header><div class="bar-track"><div class="bar-fill w${width}"></div></div><div class="crm-column-body">${rows.slice(0,80).map((l,n)=>crmLeadCard(l,n)).join('')||empty('No leads here')}</div>${rows.length>80?`<div class="crm-more">${rows.length-80} more hidden by this filter</div>`:''}</section>`;}).join('')}</div>${list.length?'':empty('No matching leads','Try another name, programme or stage.')}`;
+ return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>${stages.length} pipeline stage${stages.length===1?'':'s'} shown</span></div><div class="crm-board">${stages.map(stage=>{const rows=list.filter(l=>l.stage===stage).sort((a,b)=>String(a.priority||'').localeCompare(String(b.priority||''))||new Date(b.created_at||0)-new Date(a.created_at||0));const width=Math.max(1,Math.round(rows.length/max*12));return `<section class="crm-column"><header><div><h2>${esc(stage)}</h2><p>${rows.length.toLocaleString()} lead${rows.length===1?'':'s'}</p></div><span class="badge ${stage==='Lost'||stage==='Not Eligible'?'red':stage==='Enrolled'?'green':'amber'}">${rows.length}</span></header><div class="bar-track"><div class="bar-fill w${width}"></div></div><div class="crm-column-body">${rows.slice(0,80).map((l,n)=>crmLeadCard(l,n)).join('')||empty('No leads here')}</div>${rows.length>80?`<div class="crm-more">${rows.length-80} more hidden by this filter</div>`:''}</section>`;}).join('')}</div>${leadsMore()}${list.length?'':empty('No matching leads','Try another name, programme or stage.')}`;
 }
 const phaseConfig=[
  {id:'capture',title:'Capture',subtitle:'New records and source quality',kind:'lead',stages:['New lead'],owner:'Sales',goal:'Contact permission, owner and first task recorded',go:'leads'},
@@ -864,12 +1077,12 @@ function phaseCard(phase,n){
 function phases(){
  const active=phaseConfig.reduce((sum,phase)=>sum+phaseRecords(phase).length,0),blocked=data.applications.filter(a=>!a.learner&&a.requirements?.some(r=>!r.latest||['Pending','Rejected'].includes(r.latest.status))).length,ready=data.leads.filter(l=>l.stage==='Ready for Enrolment').length;
  return heading('Journey phases.','Track the learner journey from first touch to confirmed enrolment.',data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
- `<div class="stats-grid phase-stats">${stat('Records in phases',active,'Across active journey controls','grid')}${stat('Evidence blockers',blocked,'Applications needing attention','file')}${stat('Ready to enrol',ready,'Waiting for confirmation','shield')}${stat('Confirmed learners',data.stats.enrolled,'Saved attribution snapshots','check')}</div><section class="phase-map">${phaseConfig.map(phaseCard).join('')}</section><section class="panel mt"><div class="panel-header"><div><h2>Phase operating rules</h2><p>Controls that keep the journey auditable</p></div>${icon('shield')}</div><div class="panel-body phase-rules"><div>${icon('check')}Every lead keeps one source history.</div><div>${icon('check')}Human review gates eligibility and contracts.</div><div>${icon('check')}Enrolment saves the conversion snapshot.</div></div></section>`;
+ `<div class="stats-grid phase-stats">${stat('Records in phases',active,'Across active journey controls','grid')}${stat('Evidence blockers',blocked,'Applications needing attention','file')}${stat('Ready to enrol',ready,'Waiting for confirmation','shield')}${stat('Confirmed learners',dashboardNumbers().enrolled,'Saved attribution snapshots','check')}</div><section class="phase-map">${phaseConfig.map(phaseCard).join('')}</section><section class="panel mt"><div class="panel-header"><div><h2>Phase operating rules</h2><p>Controls that keep the journey auditable</p></div>${icon('shield')}</div><div class="panel-body phase-rules"><div>${icon('check')}Every lead keeps one source history.</div><div>${icon('check')}Human review gates eligibility and contracts.</div><div>${icon('check')}Enrolment saves the conversion snapshot.</div></div></section>`;
 }
 async function leadDetail(id){
  const detail=await api('/api/leads/'+id),l=detail.lead,app=data.applications.find(a=>a.lead_id===id);
  return `${pageBreadcrumb('Lead 360')}<button class="text-button" data-go="leads">${icon('back')} All leads</button><div class="detail-header">${avatar(l,0,true)}<div><h1>${esc(fullName(l))}</h1><p>${esc(l.employer)} · ${esc(l.city||'Location not recorded')}</p></div>${badge(l.stage)}</div>
- <div class="actions">${data.permissions.sales?`${btn('Log a call','log-call',id,'primary')}${btn('Add follow-up','add-task',id)}${btn('Update stage','update-lead',id)}${btn('Add programme','add-programme',id)}${btn('Record email','record-email',id)}`:''}${data.permissions.sales||data.permissions.review?btn('Add note','add-note',id):''}${!app&&(data.permissions.sales||data.permissions.review)?btn('Start application','apply',id,'soft'):''}${app?'<button class="button soft" data-go="applications">View application</button>':''}</div>${leadEmailGroups(l)}
+ <div class="actions">${data.permissions.sales?`${btn('Log a call','log-call',id,'primary')}${btn('Add follow-up','add-task',id)}${btn('Update stage','update-lead',id)}${btn('Add programme','add-programme',id)}${btn('Record email','record-email',id)}${btn('Delete lead','delete-lead',id,'danger')}`:''}${data.permissions.sales||data.permissions.review?btn('Add note','add-note',id):''}${!app&&(data.permissions.sales||data.permissions.review)?btn('Start application','apply',id,'soft'):''}${app?'<button class="button soft" data-go="applications">View application</button>':''}</div>${leadEmailGroups(l)}
  <div class="detail-grid"><div><section class="panel"><div class="panel-header"><h2>The Golden Record</h2>${icon('users')}</div><div class="panel-body"><dl class="definition"><dt>Programme</dt><dd>${esc(l.programme)} · ${esc(l.level)}</dd><dt>Email</dt><dd>${esc(l.email)}</dd><dt>Phone</dt><dd>${esc(l.phone||'Not provided')}</dd><dt>Owner</dt><dd>${esc(l.owner)}</dd><dt>Contact consent</dt><dd>${esc(l.contact_permission)}</dd><dt>Priority</dt><dd>${esc(l.priority)}</dd><dt>Next action</dt><dd>${l.next_action_at?timestamp(l.next_action_at):'No open follow-up'}</dd><dt>Person ID</dt><dd class="mono">${esc(l.person_id)}</dd></dl></div></section>
  <section class="panel mt"><div class="panel-header"><h2>Acquisition lineage</h2>${icon('link')}</div><div class="panel-body"><dl class="definition"><dt>First touch</dt><dd>${esc(l.source_first_touch)}</dd><dt>Lead capture</dt><dd>${esc(l.source_lead_capture)}</dd><dt>Captured</dt><dd>${timestamp(l.created_at)}</dd></dl><div class="info-strip">${icon('shield')}Source history is preserved with your record.</div></div></section>
  <section class="panel mt"><div class="panel-header"><h2>Open actions</h2></div><div class="panel-body">${data.tasks.filter(t=>t.lead_id===id&&t.status==='Open').map(taskRow).join('')||empty('No open actions')}</div></section></div>
@@ -892,8 +1105,30 @@ function planner(){
   <div class="planner-task-list-panel"><div class="chips planner-chips planner-list-filter">${['Open','Overdue','Today','Upcoming','Done','All'].map(s=>`<button class="chip ${filters.planner===s?'active':''}" data-act="planner-filter" data-id="${s}">${s}</button>`).join('')}</div><section class="panel"><div class="panel-header"><div><h2>${esc(filters.planner)} task list</h2><p>${filtered.length} ${filtered.length===1?'task':'tasks'} in this view</p></div>${icon('calendar')}</div><div class="panel-body planner-list">${filtered.slice(0,listLimit).map(plannerTaskCard).join('')||empty('Nothing here right now','Create a task or change the filter.')}</div>${filtered.length>listLimit?`<div class="crm-more">Showing latest ${listLimit} tasks. Use the filter chips to narrow the list.</div>`:''}</section></div>
  </div>`;
 }
-async function applications(){const result=await api('/api/applications',undefined,'GET',{silent:true});data.applications=result.applications||[];return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.')+pageNewNotice('applications')+(data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+`<div class="application-grid">${data.applications.map(a=>`<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${badge(a.learner?'Enrolled':a.status)}</div>${a.learner?`<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>`:`<div class="requirements">${a.requirements.map(r=>requirement(a,r)).join('')}</div><div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${data.permissions.review?`${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}`:'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>'}</div>`}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`).join('')}</div>${data.applications.length?'':empty('No applications yet','Open a lead to start an application.')}`;}
-function requirement(a,r){return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} · Version ${r.latest.version}${r.latest.reviewer?' · Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${data.permissions.sales||data.permissions.review?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload new version':'Upload document'}</button>`:''}${r.latest&&data.permissions.review?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>Download</a>${btn('Review','review-evidence',r.latest.id)}`:''}</div></div>`;}
+function applicationActions(a){
+ const canDelete=data.permissions.sales||data.permissions.review;
+ if(!data.permissions.review)return canDelete?btn('Delete application','delete-application',a.id,'danger'):'<span class="small muted">Admissions or QA approves eligibility and contracts.</span>';
+ return `${btn('Review eligibility','review-app',a.id,'primary')}${btn('Verify agreement','contract',a.id)}${btn('Confirm enrolment','enrol',a.id,'soft')}${canDelete?btn('Delete application','delete-application',a.id,'danger'):''}`;
+}
+function applicationCard(a){
+ const status=badge(a.learner?'Enrolled':a.status);
+ const requirements=`<div class="requirements">${(a.requirements||[]).map(r=>applicationRequirement(a,r)).join('')}</div>`;
+ const learner=a.learner
+  ? `<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>${requirements}<div class="actions">${(data.permissions.sales||data.permissions.review)?btn('Delete application','delete-application',a.id,'danger'):''}</div>`
+  : `${requirements}<div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${applicationActions(a)}</div>`;
+ return `<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${status}</div>${learner}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`;
+}
+async function applications(){
+ const result=await api('/api/applications',undefined,'GET',{silent:true});
+ data.applications=result.applications||[];
+ const canAdd=data.permissions.sales||data.permissions.review;
+ const action=canAdd?`<button class="button primary" data-act="add-application">${icon('plus')}Manual application</button>`:'';
+ return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.',action)+
+  pageNewNotice('applications')+
+  (data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+
+  `<div class="application-grid">${data.applications.map(applicationCard).join('')}</div>${data.applications.length?'':empty('No applications yet','Use Manual application to start one from an existing lead.')}`;
+}
+function requirement(a,r){return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} · Version ${r.latest.version}${r.latest.reviewer?' · Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${data.permissions.sales||data.permissions.review?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload new version':'Upload document'}</button>`:''}${r.latest&&data.permissions.review?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>Download</a>${btn('Review','review-evidence',r.latest.id)}`:''}${r.latest&&(data.permissions.sales||data.permissions.review)?btn('Delete evidence','delete-evidence',r.latest.id,'danger'):''}</div></div>`;}
 async function attribution(){const result=await api('/api/attribution?limit=100',undefined,'GET',{silent:true});data.attribution=result.attribution||[];return heading('Know where progress begins.','Trace acquisition through to confirmed enrolment.')+`<div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Acquisition sources</h2></div><div class="panel-body source-bars">${sourceBars()}<p class="bottom-note">One lead is counted for each programme opportunity.</p></div></section><section class="panel"><div class="panel-header"><h2>First-touch outcomes</h2></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Enrolled</th></tr></thead><tbody>${data.source_counts.map(s=>`<tr><td>${esc(s.source)}</td><td>${s.leads}</td><td>${s.enrolled}</td></tr>`).join('')}</tbody></table></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Enrolment snapshots</h2><p>Saved at confirmation · First-touch model</p></div>${icon('shield')}</div><div class="panel-body">${data.attribution.map(s=>`<div class="person-row">${avatar(s)}<div class="person-main"><strong>${esc(fullName(s))}</strong><p>${esc(s.programme)}<br>First: ${esc(s.snapshot.first_touch)} · Capture: ${esc(s.snapshot.lead_capture)}<br>Conversion: ${esc(s.snapshot.conversion_source)}</p></div>${badge('100% '+s.snapshot.first_touch,'green')}</div>`).join('')||empty('No enrolment snapshots yet','A snapshot is saved automatically when enrolment is confirmed.')}</div></section>`;}
 const eventHubTabs=[['dashboard','Dashboard','grid'],['events','Events','calendar'],['people','People','users'],['callbacks','Call backs','phone'],['reports','Reports','chart'],['marketing','Marketing','mail']];
 const eventRangeTabs=[['next7','Next 7 days'],['next30','Next 30 days'],['next90','Next 90 days'],['upcoming','All upcoming'],['past','Past events'],['all','All time']];
@@ -1030,20 +1265,53 @@ function zoomFilteredCalls(){
  const search=filters.zoomSearch.toLowerCase().trim();
  return (data.zoom?.calls||[]).filter(call=>{
   if(!search)return true;
-  return [call.caller_name,call.caller_number,call.callee_name,call.callee_number,call.owner_name,call.lead_name,call.direction,call.result,call.zoom_account_label].join(' ').toLowerCase().includes(search);
+  return [call.caller_name,call.caller_number,call.caller_digits,call.callee_name,call.callee_number,call.callee_digits,call.owner_name,call.owner_extension,call.site_name,call.path,call.source_detail,call.lead_name,call.matched_side,call.matched_number,call.direction,call.result,call.zoom_account_label].join(' ').toLowerCase().includes(search);
  }).sort((a,b)=>new Date(b.started_at||0)-new Date(a.started_at||0));
 }
 function zoomCallStats(calls){
- return {total:calls.length,inbound:calls.filter(call=>String(call.direction||'').includes('in')).length,outbound:calls.filter(call=>String(call.direction||'').includes('out')).length,linked:calls.filter(call=>call.lead_id).length};
+ const numbers=zoomNumberSummary(calls);
+ return {total:calls.length,inbound:calls.filter(call=>String(call.direction||'').includes('in')).length,outbound:calls.filter(call=>String(call.direction||'').includes('out')).length,linked:calls.filter(call=>call.lead_id).length,numbers:numbers.length};
 }
 function zoomCallDuration(call){return call.duration?durationLabel(Number(call.duration||0)*1000):'â€”';}
+function zoomCallDirectionKind(direction=''){return String(direction||'').includes('in')?'green':String(direction||'').includes('out')?'blue':'amber';}
+function zoomCallSource(call){return [call.zoom_account_label||call.zoom_account_id,call.owner_name,call.owner_extension?`Ext ${call.owner_extension}`:'',call.site_name,call.path].filter(Boolean).join(' / ')||'Zoom Phone';}
+function zoomCallMatchedLabel(call){return call.lead_id?`${call.matched_side||'phone'} match: ${call.matched_number||''}`:'No CRM phone match';}
+function zoomNumberKey(number=''){const digits=String(number||'').replace(/\D/g,'');return digits.length>10?digits.slice(-10):digits;}
+function zoomNumberSummary(calls=[]){
+ const byNumber=new Map();
+ for(const call of calls){
+  [['caller',call.caller_number,call.caller_name],['callee',call.callee_number,call.callee_name]].forEach(([side,number,name])=>{
+   const key=zoomNumberKey(number);
+   if(!key)return;
+   const row=byNumber.get(key)||{key,number,display:number,name:name||'',total:0,inbound:0,outbound:0,caller:0,callee:0,linked:0,last_at:'',lead_id:'',lead_name:'',sources:new Set(),accounts:new Set()};
+   row.total+=1;
+   row[side]+=1;
+   if(String(call.direction||'').includes('in'))row.inbound+=1;
+   if(String(call.direction||'').includes('out'))row.outbound+=1;
+   if(call.lead_id&&(call.matched_number?zoomNumberKey(call.matched_number)===key:true)){row.linked+=1;row.lead_id=call.lead_id;row.lead_name=call.lead_name||call.lead_id;}
+   if(!row.last_at||new Date(call.started_at||0)>new Date(row.last_at||0))row.last_at=call.started_at||'';
+   if(name&&!row.name)row.name=name;
+   if(call.zoom_account_label||call.zoom_account_id)row.accounts.add(call.zoom_account_label||call.zoom_account_id);
+   row.sources.add(zoomCallSource(call));
+   byNumber.set(key,row);
+  });
+ }
+ return [...byNumber.values()].map(row=>({...row,sources:[...row.sources],accounts:[...row.accounts]})).sort((a,b)=>b.total-a.total||new Date(b.last_at||0)-new Date(a.last_at||0));
+}
+function zoomNumberTable(rows){
+ return `<table class="event-table zoom-table zoom-number-table"><thead><tr><th>Number</th><th>Calls</th><th>Direction</th><th>Source</th><th>Lead</th><th>Last seen</th></tr></thead><tbody>${rows.map(row=>`<tr><td><strong>${esc(row.display||row.number)}</strong><div class="small muted">${esc(row.name||row.key)}</div></td><td>${fmtNumber(row.total)}<div class="small muted">${row.caller} from / ${row.callee} to</div></td><td>${badge(`${row.inbound} in`,'green')} ${badge(`${row.outbound} out`,'blue')}</td><td><strong>${esc((row.accounts||[])[0]||'Zoom Phone')}</strong><div class="small muted">${esc((row.sources||[]).slice(0,2).join(' · ')||'Call history')}</div></td><td>${row.lead_id?`<button class="text-button" data-go="leads/${esc(row.lead_id)}">${esc(row.lead_name||row.lead_id)}</button>`:'<span class="small muted">Not linked</span>'}</td><td>${row.last_at?timestamp(row.last_at):'—'}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No phone numbers yet','Sync Zoom calls to build the number source map.')}`;
+}
 function zoomCallsMore(){
  const page=data.zoom?.call_paging||{};
  if(!page.has_more)return '';
- return `<div class="crm-more"><button class="button soft" data-act="load-more-zoom-calls">More</button><span class="small muted">${Number(page.loaded||0).toLocaleString()} of ${Number(page.total||0).toLocaleString()} calls loaded. Next click loads 50 more.</span></div>`;
+ return `<div class="crm-more"><button class="button soft" data-act="load-more-zoom-calls">More</button><span class="small muted">${Number(page.loaded||0).toLocaleString()} of ${Number(page.total||0).toLocaleString()} calls loaded. Next click loads 250 more.</span></div>`;
 }
 function zoomCallsTable(calls){
  return `<table class="event-table zoom-table"><thead><tr><th>Started</th><th>Direction</th><th>From</th><th>To</th><th>Duration</th><th>Result</th><th>Lead</th></tr></thead><tbody>${calls.map(call=>`<tr><td>${timestamp(call.started_at)}</td><td>${badge(call.direction||'unknown',String(call.direction||'').includes('in')?'green':'blue')}</td><td><strong>${esc(call.caller_name||call.caller_number||'â€”')}</strong><div class="small muted">${esc(call.caller_number||'')}</div></td><td><strong>${esc(call.callee_name||call.callee_number||'â€”')}</strong><div class="small muted">${esc(call.callee_number||'')}</div></td><td>${esc(zoomCallDuration(call))}</td><td>${esc(call.result||'â€”')}</td><td>${call.lead_id?`<button class="text-button" data-go="leads/${esc(call.lead_id)}">${esc(call.lead_name||call.lead_id)}</button>`:'<span class="small muted">Not linked</span>'}</td></tr>`).join('')}</tbody></table>${calls.length?'':empty('No Zoom calls yet','Run Sync calls after adding Zoom Phone call-history scopes.')}${zoomCallsMore()}`;
+}
+function zoomCallDuration(call){return call.duration?durationLabel(Number(call.duration||0)*1000):'—';}
+function zoomCallsTable(calls){
+ return `<table class="event-table zoom-table"><thead><tr><th>Started</th><th>Direction</th><th>From</th><th>To</th><th>Source</th><th>Duration</th><th>Result</th><th>Lead</th></tr></thead><tbody>${calls.map(call=>`<tr><td>${timestamp(call.started_at)}<div class="small muted mono">${esc(call.zoom_call_history_uuid||call.zoom_call_id||'')}</div></td><td>${badge(call.direction||'unknown',zoomCallDirectionKind(call.direction))}</td><td><strong>${esc(call.caller_name||call.caller_number||'—')}</strong><div class="small muted">${esc(call.caller_number||'')}</div></td><td><strong>${esc(call.callee_name||call.callee_number||'—')}</strong><div class="small muted">${esc(call.callee_number||'')}</div></td><td><strong>${esc(call.zoom_account_label||call.zoom_account_id||'Zoom')}</strong><div class="small muted">${esc(zoomCallSource(call))}</div></td><td>${esc(zoomCallDuration(call))}</td><td>${esc(call.result||'—')}<div class="small muted">${esc(call.call_type||call.path||'')}</div></td><td>${call.lead_id?`<button class="text-button" data-go="leads/${esc(call.lead_id)}">${esc(call.lead_name||call.lead_id)}</button><div class="small muted">${esc(zoomCallMatchedLabel(call))}</div>`:'<span class="small muted">Not linked</span>'}</td></tr>`).join('')}</tbody></table>${calls.length?'':empty('No Zoom calls yet','Run Sync calls after adding Zoom Phone call-history scopes.')}${zoomCallsMore()}`;
 }
 async function zoom(){
  ensureZoomFilters();
@@ -1055,7 +1323,7 @@ async function zoom(){
  }
  const list=zoomFilteredEvents(),calls=zoomFilteredCalls(),stats=zoomStats(list),callStats=zoomCallStats(calls),connected=data.integrations.find(i=>i.name==='Zoom')?.status==='Connected';
  const actions=`<div class="actions event-actions">${connected?`<button class="button primary" data-act="zoom-sync">${icon('video')}Sync Zoom</button><button class="button soft" data-act="zoom-calls-sync">${icon('phone')}Sync calls</button>`:`<button class="button" data-go="settings">${icon('settings')}Setup Zoom</button>`}<button class="button soft" data-go="events">${icon('calendar')}All events</button></div>`;
- return heading('Zoom meetings.','Meetings and phone calls synced from the connected Zoom accounts.',actions)+(loadError?`<div class="notice danger">Zoom data could not be fully loaded: ${esc(loadError)}</div>`:'')+pageNewNotice('zoom')+`<div class="stats-grid zoom-stats">${eventStat('Meetings',stats.total,'Zoom records in this workspace','video')}${eventStat('Upcoming',stats.upcoming,`${stats.past} past meetings`,'calendar')}${eventStat('Hosts',stats.hosts,'Synced account users','users')}${eventStat('Join links',stats.withLinks,'Meetings with a saved URL','link')}${eventStat('Calls',callStats.total,`${callStats.inbound} inbound / ${callStats.outbound} outbound`,'phone')}${eventStat('Linked calls',callStats.linked,'Matched to CRM leads by phone','users')}</div><section class="panel"><div class="panel-header"><div><h2>Synced meetings</h2><p>Zoom meetings are saved as events, with this page focused on Zoom only.</p></div></div><div class="panel-body">${zoomToolbar()}<div class="table-wrap" id="zoom-results">${zoomTable(list)}</div></div></section><section class="panel mt"><div class="panel-header"><div><h2>Zoom calls</h2><p>Phone call history is preserved and merged on each sync.</p></div><span class="small muted">${data.zoom?.last_call_sync_at?`Last sync ${timestamp(data.zoom.last_call_sync_at)}`:'Not synced yet'}</span></div><div class="panel-body"><div class="table-wrap">${zoomCallsTable(calls)}</div></div></section>`;
+ return heading('Zoom meetings.','Meetings and phone calls synced from the connected Zoom accounts.',actions)+(loadError?`<div class="notice danger">Zoom data could not be fully loaded: ${esc(loadError)}</div>`:'')+pageNewNotice('zoom')+`<div class="stats-grid zoom-stats">${eventStat('Meetings',stats.total,'Zoom records in this workspace','video')}${eventStat('Upcoming',stats.upcoming,`${stats.past} past meetings`,'calendar')}${eventStat('Hosts',stats.hosts,'Synced account users','users')}${eventStat('Join links',stats.withLinks,'Meetings with a saved URL','link')}${eventStat('Calls',callStats.total,`${callStats.inbound} inbound / ${callStats.outbound} outbound`,'phone')}${eventStat('Numbers',callStats.numbers,`${callStats.linked} linked calls`,'phone')}</div><section class="panel"><div class="panel-header"><div><h2>Synced meetings</h2><p>Zoom meetings are saved as events, with this page focused on Zoom only.</p></div></div><div class="panel-body">${zoomToolbar()}<div class="table-wrap" id="zoom-results">${zoomTable(list)}</div></div></section><section class="panel mt"><div class="panel-header"><div><h2>Phone numbers & source</h2><p>Every number found in Zoom call history, where it came from, and whether it is linked to a CRM lead.</p></div><span class="small muted">${calls.length.toLocaleString()} loaded calls</span></div><div class="panel-body"><div class="table-wrap" id="zoom-number-results">${zoomNumberTable(zoomNumberSummary(calls))}</div></div></section><section class="panel mt"><div class="panel-header"><div><h2>Zoom calls</h2><p>Phone call history is preserved with direction, owner, account and matched lead details.</p></div><span class="small muted">${data.zoom?.last_call_sync_at?`Last sync ${timestamp(data.zoom.last_call_sync_at)}`:'Not synced yet'}</span></div><div class="panel-body"><div class="table-wrap" id="zoom-call-results">${zoomCallsTable(calls)}</div></div></section>`;
 }
 function integrationActions(i){
  if(i.name==='Gmail'){
@@ -1104,7 +1372,7 @@ async function developer(){
   <section class="dev-panel"><div class="dev-panel-header"><div><h2>Team access</h2><p class="dev-muted">Reset a password if someone forgets it. Leave the prompt blank to generate one.</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>User</th><th>Role</th><th>Temporary password</th><th>Status</th><th></th></tr></thead><tbody>${users.length?users.map(user=>`<tr><td><div class="dev-user-cell"><span class="dev-avatar">${esc((user.name||user.email||'?').slice(0,1).toUpperCase())}</span><div><strong>${esc(user.name)}</strong><code>${esc(user.email)}</code></div></div></td><td><div class="dev-role-stack">${devRoleSelect(user)}</div></td><td><code class="dev-secret">${esc(user.temporary_password||'Changed by user')}</code></td><td>${user.temporary_password?devPill('Temporary','warn'):devPill('Private','ok')}</td><td>${devUserActions(user)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="dev-empty">No users have been invited yet.</div></td></tr>'}</tbody></table></div></section>
   <section class="dev-panel"><div class="dev-panel-header"><div><h2>Runtime</h2><p class="dev-muted">Storage mode: ${esc(config.storage)}</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>Key</th><th>Status</th><th>Value</th></tr></thead><tbody>${(config.server||[]).map(item=>`<tr><td><strong>${esc(item.label)}</strong><br><code>${esc(item.key)}</code></td><td>${devPill(item.configured?'Configured':'Missing',item.configured?'ok':'warn')}</td><td><code>${esc(item.value||'Not set')}</code></td></tr>`).join('')}</tbody></table></div></section>`;
 }
-async function settings(){const dev=isDeveloperAccount();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div><p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
+async function settings(){const dev=isDeveloperAccount();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}<button class="button soft" data-act="reconcile-leads">${icon('link')}Link imported data</button>${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div><p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
 async function auditView(){const result=await api('/api/audit?limit=100',undefined,'GET',{silent:true});data.audit=result.audit||[];return heading('Every decision leaves a trail.','Recorded actions, reviewers and changes.')+`<section class="panel table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr></thead><tbody>${data.audit.map(a=>`<tr><td>${timestamp(a.occurred_at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)}<div class="small muted mono">${esc(a.entity_id)}</div></td></tr>`).join('')}</tbody></table>${data.audit.length?'':empty('No audit records available for this role')}</section>`;}
 function more(){return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.slice(4),['settings','settings','Settings'],...(isDeveloperAccount()? [['developer','shield','Developer']] : []),...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Demo workspace · Fictional sample records':''}</div>${btn('Sign out','logout')}`;}
 async function render(){
@@ -1112,11 +1380,12 @@ async function render(){
  const id=++viewId,current=route(),currentPage=current.split('/')[0];
  acknowledgeVisibleSeenPage(currentPage);
  if(current==='developer'&&!isDeveloperAccount()){go('settings');return;}
+ if(['phases','attribution'].includes(currentPage)){go('today');return;}
  try{
   let html;
   if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);
   else{
-   const view=({today,monitoring,leads,phases,planner,inbox,applications,events,zoom,attribution,settings,developer,audit:auditView,more}[current]||today);
+   const view=({today:cockpitToday,monitoring,leads,planner,inbox,applications,events,zoom,settings,developer,audit:auditView,more}[current]||cockpitToday);
    html=await view();
   }
   if(seenPages.includes(currentPage))markPageSeen(currentPage);
@@ -1141,25 +1410,158 @@ async function render(){
 }
 
 function field(name,label,value='',type='text',extra=''){return `<label class="field"><span>${esc(label)}</span><input name="${name}" type="${type}" value="${esc(value)}" ${extra} required></label>`;}
-function select(name,label,options,selected=''){return `<label class="field"><span>${esc(label)}</span><select name="${name}" required>${options.map(o=>{const [v,t]=Array.isArray(o)?o:[o,o];return `<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(t)}</option>`;}).join('')}</select></label>`;}
+function passwordRevealField(name,label,extra=''){
+ return `<label class="field password-field"><span>${esc(label)}</span><span class="password-input-wrap"><input name="${name}" type="password" ${extra} required><button class="password-toggle" type="button" data-password-toggle="${esc(name)}" aria-label="Show password" title="Show password">${icon('eye')}</button></span></label>`;
+}
+function selectOptions(options,selected=''){
+ return options.map(o=>{const [v,t]=Array.isArray(o)?o:[o,o];return `<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(t)}</option>`;}).join('');
+}
+function select(name,label,options,selected=''){return `<label class="field"><span>${esc(label)}</span><select name="${name}" required>${selectOptions(options,selected)}</select></label>`;}
 function area(name,label,value=''){return `<label class="field"><span>${esc(label)}</span><textarea name="${name}" required maxlength="3000">${esc(value)}</textarea></label>`;}
 function leadSelect(id=''){return select('lead_id','Learner opportunity',data.leads.map(l=>[l.id,fullName(l)+' · '+l.programme]),id);}
 function ownerSelect(id=''){return select('owner_id','Owner',data.owners.filter(o=>data.user.role!=='sales'||o.id===data.user.id).map(o=>[o.id,o.name]),id||data.user.id);}
+const DEFAULT_INTAKE_ID='__next_intake__';
+function applicationCandidateLeads(){
+ const appLeadIds=new Set((data.applications||[]).map(a=>String(a.lead_id||'')));
+ return (data.leads||[]).filter(l=>l?.id&&!appLeadIds.has(String(l.id))&&!['Duplicate','Enrolled'].includes(l.stage));
+}
+function applicationLeadSelect(selected=''){
+ return select('lead_id','Lead',applicationCandidateLeads().map(l=>[l.id,`${fullName(l)} · ${l.programme||'No programme'}`]),selected);
+}
+function applicationIntakeOptions(leadId=''){
+ const programmeNames=new Map((data.programmes||[]).map(p=>[p.id,p.name]));
+ const lead=(data.leads||[]).find(l=>l.id===leadId);
+ const intakes=(data.intakes||[]).filter(i=>!lead?.programme_id||i.programme_id===lead.programme_id);
+ if(!intakes.length)return [[DEFAULT_INTAKE_ID,'Next intake (not configured)']];
+ return intakes.map(i=>[i.id,`${i.name} · ${programmeNames.get(i.programme_id)||'Programme intake'}`]);
+}
+function applicationIntakeSelect(leadId=''){
+ const options=applicationIntakeOptions(leadId);
+ return select('intake_id','Intake',options,options[0]?.[0]||'');
+}
+function applicationExistingLearnerFields(options={}){
+ const docFields=APPLICATION_DOCUMENT_TEMPLATES.map(([key,title])=>`<label class="field"><span>${esc(title)}</span><input type="file" name="doc_${esc(key)}" accept="application/pdf,image/png,image/jpeg"></label>`).join('');
+ const templateLinks=options.manual?applicationDocumentTemplateLinks():'';
+ const enrolledControl=options.manual
+  ? `<div class="notice">Manual applications are saved as enrolled learners. Uploaded documents stay available to download, sign and upload again.</div>`
+  : `<label class="field checkbox"><input type="checkbox" name="already_enrolled"><span>Already enrolled learner</span></label>`;
+ return `${templateLinks}${enrolledControl}<label class="field"><span>Aptem / LMS reference</span><input name="learner_reference" maxlength="180" placeholder="Optional if already enrolled"></label><div class="form-grid">${docFields}</div>`;
+}
+function applicationDocumentTemplateLinks(){
+ return `<div class="document-templates"><div class="document-templates-head"><strong>Documents to complete</strong><span>Download, fill and upload the signed copies below.</span></div><div class="document-template-grid">${APPLICATION_DOCUMENT_TEMPLATES.map(([key,title])=>`<a class="document-template-link" href="/api/document-templates/${encodeURIComponent(key)}/file" target="_blank" rel="noopener" download>${icon('download')}<span>${esc(title)}</span></a>`).join('')}</div></div>`;
+}
+function updateManualApplicationIntakes(form){
+ const leadSelect=form?.elements?.lead_id,intakeSelect=form?.elements?.intake_id;
+ if(!leadSelect||!intakeSelect)return;
+ const options=applicationIntakeOptions(leadSelect.value),selected=options[0]?.[0]||'';
+ intakeSelect.innerHTML=selectOptions(options,selected);
+ syncSelectMenu(intakeSelect);
+}
 function showDialog(title,subtitle,fields,onSubmit,label='Save'){
  const dialog=$('#dialog');if(dialog.open)dialog.close();dialog.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-act="close" aria-label="Close dialog">${icon('close')}</button></div><div class="dialog-body">${subtitle?`<p class="dialog-subtitle">${esc(subtitle)}</p>`:''}<form id="action-form">${fields}<div class="form-error" role="alert"></div><div class="dialog-actions"><button type="button" class="button" data-act="close">Cancel</button><button type="submit" class="button primary">${esc(label)}</button></div></form></div>`;dialog.showModal();
  hydrateSelectMenus(dialog);
- $('#action-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,submit=form.querySelector('[type=submit]');submit.disabled=true;form.querySelector('.form-error').textContent='';try{const values=Object.fromEntries(new FormData(form));await onSubmit(values,form);dialog.close();if(data)await refresh();}catch(error){form.querySelector('.form-error').textContent=error.message;}finally{submit.disabled=false;}});
+ $('#action-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,submit=form.querySelector('[type=submit]');submit.disabled=true;form.querySelector('.form-error').textContent='';try{const values=Object.fromEntries(new FormData(form)),shouldRefresh=await onSubmit(values,form);dialog.close();if(data&&shouldRefresh!==false)await refresh();}catch(error){form.querySelector('.form-error').textContent=error.message;}finally{submit.disabled=false;}});
+}
+function upsertRecord(list,item,prepend=true){
+ if(!item?.id)return list||[];
+ const rows=list||[],index=rows.findIndex(row=>row.id===item.id);
+ if(index>=0)rows[index]={...rows[index],...item};
+ else prepend?rows.unshift(item):rows.push(item);
+ return rows;
+}
+function removeRecords(list,ids=[]){
+ const remove=new Set((ids||[]).map(String));
+ return (list||[]).filter(item=>!remove.has(String(item.id)));
+}
+async function applyServerMutation(result={}){
+ if(!data)return;
+ if(result.deleted){
+  if(result.deleted.leads)data.leads=removeRecords(data.leads,result.deleted.leads);
+  if(result.deleted.tasks)data.tasks=removeRecords(data.tasks,result.deleted.tasks);
+  if(result.deleted.emails)data.emails=removeRecords(data.emails,result.deleted.emails);
+  if(result.deleted.applications)data.applications=removeRecords(data.applications,result.deleted.applications);
+  if(result.deleted.tasks_for_lead)data.tasks=(data.tasks||[]).filter(item=>item.lead_id!==result.deleted.tasks_for_lead);
+  if(result.deleted.emails_for_lead)data.emails=(data.emails||[]).filter(item=>item.lead_id!==result.deleted.emails_for_lead);
+  if(result.deleted.applications_for_lead)data.applications=(data.applications||[]).filter(item=>item.lead_id!==result.deleted.applications_for_lead);
+ }
+ if(result.lead)data.leads=upsertRecord(data.leads,result.lead,false);
+ if(result.task)data.tasks=upsertRecord(data.tasks,result.task);
+ if(result.email)data.emails=upsertRecord(data.emails,result.email);
+ if(result.application)data.applications=upsertRecord(data.applications,result.application);
+ if(result.audit)data.audit=upsertRecord(data.audit,result.audit);
+ if(result.event){
+  data.events=upsertRecord(data.events,result.event,false);
+  eventMetricCache.delete(result.event);
+ }
+ if(result.attribution)data.attribution=upsertRecord(data.attribution,result.attribution);
+ data=syncClientDerived(data);
+ await render();
 }
 function information(title,html){const dialog=$('#dialog');if(dialog.open)dialog.close();dialog.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" data-act="close" aria-label="Close dialog">${icon('close')}</button></div><div class="dialog-body">${html}</div>`;dialog.showModal();hydrateSelectMenus(dialog);}
+function confirmAction({title='Are you sure?',message='',confirmLabel='Delete',cancelLabel='Cancel'}={}){
+ return new Promise(resolve=>{
+  const dialog=document.createElement('dialog');
+  dialog.className='confirm-dialog';
+  dialog.innerHTML=`<div class="confirm-card"><div class="confirm-icon">${icon('shield')}</div><div class="confirm-copy"><h2>${esc(title)}</h2>${message?`<p>${esc(message)}</p>`:''}</div><div class="dialog-actions confirm-actions"><button type="button" class="button" data-confirm="cancel">${esc(cancelLabel)}</button><button type="button" class="button danger" data-confirm="ok">${esc(confirmLabel)}</button></div></div>`;
+  const done=value=>{dialog.close();dialog.remove();resolve(value);};
+  dialog.addEventListener('click',event=>{if(event.target===dialog)done(false);});
+  dialog.addEventListener('cancel',event=>{event.preventDefault();done(false);});
+  dialog.querySelector('[data-confirm="cancel"]').addEventListener('click',()=>done(false));
+  dialog.querySelector('[data-confirm="ok"]').addEventListener('click',()=>done(true));
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  dialog.querySelector('[data-confirm="ok"]').focus();
+ });
+}
+async function openManualApplicationDialog(){
+ if(!applicationCandidateLeads().length&&leadPageState().has_more)await loadMoreLeads();
+ const candidates=applicationCandidateLeads();
+ if(!candidates.length)return information('Manual application','<p>No available leads found. Create a lead first, or load more leads from the Leads page.</p>');
+ const firstLeadId=candidates[0]?.id||'';
+ showDialog(
+  'Manual application',
+  'Add an already enrolled learner from an existing lead.',
+  applicationLeadSelect(firstLeadId)+applicationIntakeSelect(firstLeadId)+applicationExistingLearnerFields({manual:true}),
+  async (values,form)=>{
+   const selectedLead=data.leads.find(l=>l.id===values.lead_id);
+   if(values.intake_id===DEFAULT_INTAKE_ID)values.intake_id='';
+   values.already_enrolled=true;
+   values.documents_need_signature=true;
+   values.evidence_files=await applicationEvidencePayloads(form);
+   APPLICATION_DOCUMENT_TEMPLATES.forEach(([key])=>delete values[`doc_${key}`]);
+   const intake=values.intake_id?data.intakes.find(i=>i.id===values.intake_id):null;
+   if(!selectedLead)throw new Error('Choose a lead first.');
+   if(values.intake_id&&!intake)throw new Error('Choose an intake for this lead.');
+   if(intake?.programme_id&&selectedLead.programme_id&&intake.programme_id!==selectedLead.programme_id)throw new Error('Choose an intake for the same programme as the lead.');
+   const result=await api('/api/applications',values);
+   await applyServerMutation(result);
+   toast('Enrolled learner added. Documents are ready to download, sign and upload again.');
+   go('applications');
+   return false;
+  },
+  'Create application'
+ );
+ const form=$('#action-form');
+ form?.elements?.lead_id?.addEventListener('change',()=>updateManualApplicationIntakes(form));
+ updateManualApplicationIntakes(form);
+}
 async function action(act,id='',target=null){
  const lead=data?.leads.find(l=>l.id===id),app=data?.applications.find(a=>a.id===id);
  if(act==='auth-mode'){authMode=id==='forgot'?'forgot':'login';authNotice='';return login();}
  if(act==='close')return $('#dialog').close();
  if(act==='reload')return refresh();
+ if(act==='dashboard-retry'){loadDashboardWidgets();return;}
+ if(act==='dash-complete-task'){await api(`/api/tasks/${encodeURIComponent(id)}/complete`,{},'POST',{silent:true});toast('Task completed.');loadDashboardWidgets(['summary','work']);return;}
  if(act==='mark-page-seen'){markPageSeen(target.dataset.page||route().split('/')[0]);return render();}
  if(act==='logout'){await api('/api/logout',{});data=null;location.hash='';login();return;}
+ if(act==='reconcile-leads'){const result=await api('/api/leads/reconcile',{},'POST',{silent:true});await refresh({silent:true});const s=result.summary||{};toast(`${s.leads_created||0} leads created, ${s.attendees_linked||0} attendees linked, ${s.calls_linked||0} calls linked.`);return;}
  if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});toast(`Temporary password: ${result.temporary_password}`);},'Reset password');
- if(act==='delete-user'){if(!confirm('Delete this user?'))return;await api(`/api/users/${encodeURIComponent(id)}`,{},'DELETE');await refresh();toast('User deleted.');return;}
+ if(act==='delete-user'){if(!await confirmAction({title:'Delete user?',message:'This removes their workspace access.',confirmLabel:'Delete user'}))return;await api(`/api/users/${encodeURIComponent(id)}`,{},'DELETE');await refresh();toast('User deleted.');return;}
+ if(act==='delete-lead'){const lead=data.leads.find(l=>l.id===id);if(!await confirmAction({title:'Delete lead?',message:`${lead?fullName(lead):'This lead'} and related tasks, emails and applications will be removed.`,confirmLabel:'Delete lead'}))return;const result=await api(`/api/leads/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});go('leads');await applyServerMutation(result);toast('Lead deleted.');return;}
+ if(act==='delete-task'){const task=data.tasks.find(t=>t.id===id);if(!await confirmAction({title:'Delete task?',message:task?task.title:'This task will be removed from the planner.',confirmLabel:'Delete task'}))return;const result=await api(`/api/tasks/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});await applyServerMutation(result);toast('Task deleted.');return;}
+ if(act==='delete-email'){if(!await confirmAction({title:'Delete email record?',message:'This removes the CRM copy of this email record.',confirmLabel:'Delete email'}))return;const result=await api(`/api/emails/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});const dialog=$('#dialog');if(dialog?.open)dialog.close();await applyServerMutation(result);toast('Email deleted.');return;}
+ if(act==='delete-application'){const app=data.applications.find(a=>a.id===id);if(!await confirmAction({title:'Delete application?',message:app?`${fullName(app)} · ${app.programme||'Application'}`:'This application will be removed.',confirmLabel:'Delete application'}))return;const result=await api(`/api/applications/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});await applyServerMutation(result);toast('Application deleted.');return;}
+ if(act==='delete-evidence'){if(!await confirmAction({title:'Delete evidence file?',message:'The uploaded document will be removed from this application.',confirmLabel:'Delete file'}))return;const result=await api(`/api/evidence/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});await applyServerMutation(result);toast('Evidence deleted.');return;}
   if(act==='notifications'){if(overdueEmailCount()){Object.assign(filters,{inbox:'Overdue',inboxSort:'due-soon',inboxDate:'due',inboxLabel:'All'});go('inbox');return;}filters.planner='Overdue';go('planner');return;}
   if(act==='planner-filter'){filters.planner=id;return render();}
  if(act==='lead-view'){filters.leadView=id==='board'?'board':'table';return render();}
@@ -1169,12 +1571,13 @@ async function action(act,id='',target=null){
  if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'Unanswered'});await loadInboxEmails(true);return render();}
  if(act==='load-more-emails'){const result=await loadInboxEmails(false);await render();toast(`${(result.emails||[]).length} more emails loaded.`);return;}
  if(act==='load-more-zoom-calls'){const calls=await loadZoomCalls(false);await render();toast(`${calls.length} more Zoom call${calls.length===1?'':'s'} loaded.`);return;}
+ if(act==='load-more-leads'){const leads=await loadMoreLeads();await render();toast(`${leads.length} more lead${leads.length===1?'':'s'} loaded.`);return;}
  if(act==='date-picker'){openDatePicker(id);return;}
  if(act==='open-email')return openEmailDialog(id);
  if(act==='open-email-lead'){const dialog=$('#dialog');if(dialog.open)dialog.close();go('leads/'+id);return;}
  if(act==='toggle-message-part'){const card=target.closest('.email-message-card');if(card){card.classList.toggle('expanded');}return;}
  if(act==='complete')return completeTaskOptimistic(id);
- if(act==='checkin'){await api(`/api/attendees/${id}/checkin`,{});await refresh();toast('Checked in. A follow-up has been added for the lead owner.');return;}
+ if(act==='checkin'){const result=await api(`/api/attendees/${id}/checkin`,{},'POST',{silent:true});await applyServerMutation(result);toast('Checked in. A follow-up has been added for the lead owner.');return;}
  if(act==='install'){await deferredInstall.prompt();deferredInstall=null;return render();}
  if(act==='install-help')return information('Take Kent Business College with you',`<p>On iPhone, open this workspace in Safari, tap <b>Share</b>, then <b>Add to Home Screen</b>.</p><p>On Android, open it in Chrome and choose <b>Install app</b> or <b>Add to Home screen</b> from the menu.</p><p class="small muted">Installation requires an HTTPS workspace address (or localhost for development). Sign in to access your records. A connection is needed to load and save data.</p>`);
  if(act==='gmail-connect'){location.href='/api/integrations/gmail/connect';return;}
@@ -1184,7 +1587,7 @@ async function action(act,id='',target=null){
  if(act==='eventbrite-sync'){const result=await api('/api/integrations/eventbrite/sync',{max_events:10},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported_events} Eventbrite event${result.imported_events===1?'':'s'} and ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported${result.deleted_events?`; ${result.deleted_events} removed`:''}${result.attendee_errors?`; ${result.attendee_errors} attendee list${result.attendee_errors===1?'':'s'} unavailable`:''}.`);return;}
  if(act==='eventbrite-help')return information('Connect Eventbrite',`<p>Create an Eventbrite API app, then add these values to <span class="mono">.env</span>:</p><p class="mono">EVENTBRITE_CLIENT_ID=...<br>EVENTBRITE_CLIENT_SECRET=...<br>EVENTBRITE_REDIRECT_URI=http://127.0.0.1:5500/api/integrations/eventbrite/callback</p><p class="small muted">Use that exact redirect URI in the Eventbrite app settings. Then restart the Kent Business College backend and open Settings again.</p>`);
  if(act==='zoom-sync'){const result=await api('/api/integrations/zoom/sync',{max_meetings:2000,report_history_months:6},'POST',{silent:true});await refresh({silent:true});const warnings=(result.history_warnings||[]).filter(Boolean),windowMonths=result.report_history_months||result.history_months||6,skipped=result.report_history_skipped||0;toast(`Zoom sync complete. ${result.imported_events} added, ${result.updated_events} updated, ${result.scanned} scanned${result.users?` from ${result.users} user${result.users===1?'':'s'}`:''}${result.accounts?` across ${result.accounts} account${result.accounts===1?'':'s'}`:''}${result.imported_attendees!==undefined?`, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'}`:''}${result.imported_phones!==undefined?`, ${result.imported_phones} phone${result.imported_phones===1?'':'s'}`:''}${result.history?`. Historical import window: ${windowMonths} month${windowMonths===1?'':'s'}`:''}. Older saved meetings were preserved${skipped?`; report history skipped for ${skipped} user/account pair${skipped===1?'':'s'} not supported by Zoom plan/scope`:''}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
- if(act==='zoom-calls-sync'){const result=await api('/api/integrations/zoom/calls/sync',{max_calls:1000,call_history_months:3},'POST',{silent:true});await refresh({silent:true});const warnings=(result.warnings||[]).filter(Boolean);toast(`Zoom calls sync complete. ${result.imported_calls} added, ${result.updated_calls} updated, ${result.scanned} scanned across ${result.accounts||0} account${result.accounts===1?'':'s'}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
+ if(act==='zoom-calls-sync'){const result=await api('/api/integrations/zoom/calls/sync',{max_calls:5000,call_history_months:12},'POST',{silent:true});await refresh({silent:true});const warnings=(result.warnings||[]).filter(Boolean);toast(`Zoom calls sync complete. ${result.imported_calls} added, ${result.updated_calls} updated, ${result.scanned} scanned across ${result.accounts||0} account${result.accounts===1?'':'s'} over ${result.call_history_months||12} month${(result.call_history_months||12)===1?'':'s'}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
  if(act==='zoom-help')return information('Connect Zoom Meetings',`<p>Create a Zoom Server-to-Server OAuth app, then add these values to <span class="mono">.env</span>:</p><p class="mono">ZOOM_ACCOUNT_ID=...<br>ZOOM_CLIENT_ID=...<br>ZOOM_CLIENT_SECRET=...<br>ZOOM_SYNC_ALL_USERS=true<br>ZOOM_MEETING_TYPE=all<br>ZOOM_INCLUDE_HISTORY=true<br>ZOOM_REPORT_HISTORY_MONTHS=6</p><p class="small muted">For all users, the Zoom app needs meeting read and user read scopes. To pull report history, also add the Zoom Reports read scope, commonly <span class="mono">report:read:user:admin</span>. Zoom report history is limited to the recent 6 months; older records already saved in the CRM remain there.</p>`);
  if(act==='import-events')return showDialog('Import events','Upload Excel/CSV or paste a Google Sheets link. Use columns like Event Name, Date, Location, Meeting Link, First Name, Last Name, Email and Attended.',`<label class="field"><span>Google Sheets link</span><input name="google_url" type="url" placeholder="https://docs.google.com/spreadsheets/d/..."></label><label class="field"><span>Excel or CSV file</span><input type="file" name="spreadsheet" accept=".xlsx,.xls,.csv"></label>`,async(v,form)=>{const file=form.querySelector('[name="spreadsheet"]').files[0],google_url=String(v.google_url||'').trim();if(!file&&!google_url)throw new Error('Paste a Google Sheets link or choose an Excel file first.');const file_base64=file?await fileToBase64(file):'';const result=await api('/api/events/import',{filename:file?.name||'google-sheet',file_base64,google_url});toast(`${result.imported_events} event${result.imported_events===1?'':'s'} added, ${result.updated_events} updated, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported.`);},'Import');
  if(act==='meta-sync'){const result=await api('/api/integrations/meta/sync',{max_leads:50},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported} Meta lead${result.imported===1?'':'s'} imported from ${result.forms} form${result.forms===1?'':'s'}.`);return;}
@@ -1192,27 +1595,28 @@ async function action(act,id='',target=null){
  if(act==='apollo-sync'){const result=await api('/api/integrations/apollo/sync',{max_people:25},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported} Apollo prospect${result.imported===1?'':'s'} created, ${result.updated} updated, ${result.scanned} scanned.`);return;}
  if(act==='apollo-help')return information('Connect Apollo',`<p>Add your Apollo API key and optional search filters to <span class="mono">.env</span>:</p><p class="mono">APOLLO_API_KEY=...<br>APOLLO_KEYWORDS=marketing apprenticeships<br>APOLLO_PERSON_TITLES=Marketing Manager,Sales Director<br>APOLLO_PERSON_LOCATIONS=United Kingdom<br>APOLLO_PER_PAGE=25</p><p class="small muted">People Search creates prospect leads from available person and company data. Apollo does not return email addresses or phone numbers from this search endpoint; enrichment can be added next.</p>`);
 
- if(act==='add-lead')return showDialog('A new learner journey','Create one canonical person record. A first-contact task will be assigned automatically.',`<div class="form-grid">${field('first_name','First name','','text','maxlength="80" autocomplete="given-name"')}${field('last_name','Last name','','text','maxlength="80" autocomplete="family-name"')}</div>${field('email','Email address','','email','maxlength="254"')}${field('employer','Employer','','text','maxlength="160"')}<label class="field"><span>Phone (optional)</span><input name="phone" type="tel" maxlength="24" placeholder="+44…"></label><label class="field"><span>City (optional)</span><input name="city" maxlength="100"></label>${select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name+' · '+p.level]))}<div class="form-grid">${select('source','Acquisition source',data.sources)}${select('priority','Priority',['P0','P1','P2','P3'],'P2')}</div>${ownerSelect()}${select('contact_permission','Recorded contact permission',['Unknown','Granted','Declined'])}`,async values=>{const result=await api('/api/leads',values);toast('Lead created with a first-contact task.');go('leads/'+result.id);},'Create lead');
- if(act==='add-programme')return showDialog('Add a programme opportunity','Reuse this person’s Golden Record and preserve their source history.',select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name])),async v=>{const result=await api(`/api/leads/${id}/opportunities`,v);toast('Programme opportunity created.');go('leads/'+result.id);},'Create opportunity');
- if(act==='update-lead')return showDialog('Update opportunity','Stage changes and assignment changes are recorded in the audit trail.',select('stage','Stage',data.stages.filter(s=>!['Application Submitted','Eligibility','Ready for Enrolment','Enrolled','Not Eligible','Call Completed','Duplicate'].includes(s)),lead.stage)+ownerSelect(lead.owner_id)+select('priority','Priority',['P0','P1','P2','P3'],lead.priority)+area('reason','Reason for this change'),async values=>{await api('/api/leads/'+id,values,'PATCH');toast('Opportunity updated.');});
- if(act==='add-task')return showDialog('Plan the next step','Tasks follow the owner of the selected learner opportunity.',leadSelect(id)+field('title','Action to take','','text','maxlength="180"')+select('kind','Action type',['Call','Email','Follow-up','Review'])+field('due_at','Due date and time',localInput(new Date(Date.now()+86400000)),'datetime-local')+select('priority','Priority',['P0','P1','P2','P3'],'P2'),async v=>{v.owner_id=data.leads.find(l=>l.id===v.lead_id).owner_id;v.due_at=new Date(v.due_at).toISOString();await api('/api/tasks',v);toast('Follow-up added to the planner.');},'Create task');
- if(act==='add-note')return showDialog('Add to the journey','Your note will appear in the programme timeline.',area('note','Note'),async v=>{await api(`/api/leads/${id}/notes`,v);toast('Note added.');});
- if(act==='log-call')return showDialog('Log the conversation',`Record the outcome for ${fullName(lead)} and give the next step an owner and due time.`,select('outcome','Call outcome',['Completed','No-show','Cancelled'])+area('note','Outcome and notes')+field('next_action','Next action','','text','maxlength="180"')+field('due_at','Follow-up date and time',localInput(new Date(Date.now()+86400000)),'datetime-local'),async v=>{v.lead_id=id;v.follow_up=true;v.due_at=new Date(v.due_at).toISOString();await api('/api/calls',v);toast('Call logged and follow-up scheduled.');},'Save call & follow-up');
- if(act==='record-email')return showDialog('Record an inbound email','This records an email received outside Kent Business College. The response SLA is two days from receipt.',leadSelect(id)+field('subject','Subject','','text','maxlength="200"')+area('body','Message content')+field('received_at','Received date and time',localInput(),'datetime-local'),async v=>{v.received_at=new Date(v.received_at).toISOString();await api('/api/emails',v);toast('Email added to the response queue.');});
- if(act==='resolve-email')return showDialog('Record a response','Use this after you have responded outside Kent Business College. No message is sent by this action.',field('response_at','When did you respond?',localInput(),'datetime-local')+area('note','Response summary'),async v=>{v.response_at=new Date(v.response_at).toISOString();await api(`/api/emails/${id}/resolve`,v);toast('Response recorded.');},'Record response');
- if(act==='send-email-response')return showDialog('Send response','This sends a Gmail response to this sender and marks the message as responded.',area('message','Response message'),async v=>{await api(`/api/emails/${id}/reply`,v);toast('Response sent and recorded.');},'Send response');
- if(act==='apply')return showDialog('Start an application',`Open eligibility review for ${fullName(lead)}.`,select('intake_id','Intake',data.intakes.filter(i=>i.programme_id===lead.programme_id).map(i=>[i.id,i.name])),async v=>{v.lead_id=id;await api('/api/applications',v);toast('Application created. Evidence review is pending.');go('applications');},'Submit application');
+ if(act==='add-application')return openManualApplicationDialog();
+ if(act==='add-lead')return showDialog('A new learner journey','Create one canonical person record. A first-contact task will be assigned automatically.',`<div class="form-grid">${field('first_name','First name','','text','maxlength="80" autocomplete="given-name"')}${field('last_name','Last name','','text','maxlength="80" autocomplete="family-name"')}</div>${field('email','Email address','','email','maxlength="254"')}${field('employer','Employer','','text','maxlength="160"')}<label class="field"><span>Phone (optional)</span><input name="phone" type="tel" maxlength="24" placeholder="+44…"></label><label class="field"><span>City (optional)</span><input name="city" maxlength="100"></label>${select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name+' · '+p.level]))}<div class="form-grid">${select('source','Acquisition source',data.sources)}${select('priority','Priority',['P0','P1','P2','P3'],'P2')}</div>${ownerSelect()}${select('contact_permission','Recorded contact permission',['Unknown','Granted','Declined'])}`,async values=>{const result=await api('/api/leads',values);await applyServerMutation(result);toast('Lead created with a first-contact task.');go('leads/'+result.id);return false;},'Create lead');
+ if(act==='add-programme')return showDialog('Add a programme opportunity','Reuse this person’s Golden Record and preserve their source history.',select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name])),async v=>{const result=await api(`/api/leads/${id}/opportunities`,v);await applyServerMutation(result);toast('Programme opportunity created.');go('leads/'+result.id);return false;},'Create opportunity');
+ if(act==='update-lead')return showDialog('Update opportunity','Stage changes and assignment changes are recorded in the audit trail.',select('stage','Stage',data.stages.filter(s=>!['Application Submitted','Eligibility','Ready for Enrolment','Enrolled','Not Eligible','Call Completed','Duplicate'].includes(s)),lead.stage)+ownerSelect(lead.owner_id)+select('priority','Priority',['P0','P1','P2','P3'],lead.priority)+area('reason','Reason for this change'),async values=>{const result=await api('/api/leads/'+id,values,'PATCH');if(result.lead){Object.assign(lead,result.lead);data=syncClientDerived(data);await render();}toast('Opportunity updated.');return false;});
+ if(act==='add-task')return showDialog('Plan the next step','Tasks follow the owner of the selected learner opportunity.',leadSelect(id)+field('title','Action to take','','text','maxlength="180"')+select('kind','Action type',['Call','Email','Follow-up','Review'])+field('due_at','Due date and time',localInput(new Date(Date.now()+86400000)),'datetime-local')+select('priority','Priority',['P0','P1','P2','P3'],'P2'),async v=>{v.owner_id=data.leads.find(l=>l.id===v.lead_id).owner_id;v.due_at=new Date(v.due_at).toISOString();const result=await api('/api/tasks',v);if(result.task)data.tasks.unshift(result.task);data=syncClientDerived(data);await render();toast('Follow-up added to the planner.');return false;},'Create task');
+ if(act==='add-note')return showDialog('Add to the journey','Your note will appear in the programme timeline.',area('note','Note'),async v=>{const result=await api(`/api/leads/${id}/notes`,v);await applyServerMutation(result);toast('Note added.');return false;});
+ if(act==='log-call')return showDialog('Log the conversation',`Record the outcome for ${fullName(lead)} and give the next step an owner and due time.`,select('outcome','Call outcome',['Completed','No-show','Cancelled'])+area('note','Outcome and notes')+field('next_action','Next action','','text','maxlength="180"')+field('due_at','Follow-up date and time',localInput(new Date(Date.now()+86400000)),'datetime-local'),async v=>{v.lead_id=id;v.follow_up=true;v.due_at=new Date(v.due_at).toISOString();const result=await api('/api/calls',v);await applyServerMutation(result);toast('Call logged and follow-up scheduled.');return false;},'Save call & follow-up');
+ if(act==='record-email')return showDialog('Record an inbound email','This records an email received outside Kent Business College. The response SLA is two days from receipt.',leadSelect(id)+field('subject','Subject','','text','maxlength="200"')+area('body','Message content')+field('received_at','Received date and time',localInput(),'datetime-local'),async v=>{v.received_at=new Date(v.received_at).toISOString();const result=await api('/api/emails',v);await applyServerMutation(result);toast('Email added to the response queue.');return false;});
+ if(act==='resolve-email')return showDialog('Record a response','Use this after you have responded outside Kent Business College. No message is sent by this action.',field('response_at','When did you respond?',localInput(),'datetime-local')+area('note','Response summary'),async v=>{v.response_at=new Date(v.response_at).toISOString();const result=await api(`/api/emails/${id}/resolve`,v);await applyServerMutation(result);toast('Response recorded.');return false;},'Record response');
+ if(act==='send-email-response')return showDialog('Send response','This sends a Gmail response to this sender and marks the message as responded.',area('message','Response message'),async v=>{await api(`/api/emails/${id}/reply`,v);const email=data.emails.find(item=>item.id===id);if(email){email.response_at=new Date().toISOString();email.response_note=v.message;data=syncClientDerived(data);await render();}toast('Response sent and recorded.');return false;},'Send response');
+ if(act==='apply')return showDialog('Start an application',`Open eligibility review for ${fullName(lead)}.`,applicationIntakeSelect(id)+applicationExistingLearnerFields(),async(v,form)=>{v.lead_id=id;if(v.intake_id===DEFAULT_INTAKE_ID)v.intake_id='';v.already_enrolled=v.already_enrolled==='on';v.evidence_files=await applicationEvidencePayloads(form);APPLICATION_DOCUMENT_TEMPLATES.forEach(([key])=>delete v[`doc_${key}`]);const result=await api('/api/applications',v);await applyServerMutation(result);toast(v.already_enrolled?'Enrolled learner added with documents.':'Application created. Evidence review is pending.');go('applications');return false;},'Submit application');
  if(act==='upload'){
  const req=app.requirements.find(r=>r.id===target.dataset.req);
  return showDialog('Upload evidence',`${req.title}. Uploads remain pending until reviewed by admissions or QA. New versions invalidate prior eligibility approval.`,`<label class="field"><span>PDF, PNG or JPEG · maximum 5 MB</span><input type="file" name="document" accept="application/pdf,image/png,image/jpeg" required></label>`,async(v,form)=>{
   const file=form.document.files[0];if(!file||file.size>5*1024*1024)throw new Error('Choose a document no larger than 5 MB.');
   const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));
-  await api(`/api/applications/${id}/evidence`,{requirement_id:req.id,filename:file.name,content_base64:btoa(binary)});toast('Evidence uploaded for human review.');},'Upload document');
+  const result=await api(`/api/applications/${id}/evidence`,{requirement_id:req.id,filename:file.name,content_base64:btoa(binary)});await applyServerMutation(result);toast('Evidence uploaded for human review.');return false;},'Upload document');
  }
- if(act==='review-evidence')return showDialog('Human evidence review','Download and inspect the latest document before recording your decision.',select('status','Decision',['Verified','Rejected'])+area('note','Checks performed and decision reason'),async v=>{await api(`/api/evidence/${id}/review`,v);toast('Evidence review recorded.');},'Record decision');
- if(act==='review-app')return showDialog('Eligibility decision','Only approve when you have checked all applicable eligibility rules and the latest evidence. Every required document must be verified.',select('status','Decision',['Eligible','Not Eligible'])+area('note','Eligibility checks and decision reason'),async v=>{await api(`/api/applications/${id}/review`,v);toast('Human eligibility decision recorded.');},'Record decision');
- if(act==='contract')return showDialog('Verify the learning agreement','Inspect the signed agreement and compare it with the learner, employer, programme and intake records.',field('signatory','Learner signatory name',fullName(app))+field('signed_at','Signed date and time',localInput(),'datetime-local')+area('note','Verification checks and findings')+`<label class="field checkbox"><input type="checkbox" name="consistency_confirmed" required><span>I checked the signatory, employer, programme and intake dates against the signed agreement.</span></label>`,async v=>{v.signed_at=new Date(v.signed_at).toISOString();v.consistency_confirmed=v.consistency_confirmed==='on';await api(`/api/applications/${id}/contract`,v);toast('Agreement verified. Ready for enrolment.');},'Verify agreement');
- if(act==='enrol')return showDialog('Confirm learner enrolment','Confirm the outcome from your learner system. All eligibility, evidence and contract controls must pass. Attribution is saved with this confirmation.',field('external_reference','Aptem / LMS confirmation reference','','text','maxlength="180"')+area('note','How the enrolment was confirmed'),async v=>{await api(`/api/applications/${id}/enrol`,v);toast('Learner enrolled. Attribution snapshot saved.');},'Confirm enrolment');
+ if(act==='review-evidence')return showDialog('Human evidence review','Download and inspect the latest document before recording your decision.',select('status','Decision',['Verified','Rejected'])+area('note','Checks performed and decision reason'),async v=>{const result=await api(`/api/evidence/${id}/review`,v);await applyServerMutation(result);toast('Evidence review recorded.');return false;},'Record decision');
+ if(act==='review-app')return showDialog('Eligibility decision','Only approve when you have checked all applicable eligibility rules and the latest evidence. Every required document must be verified.',select('status','Decision',['Eligible','Not Eligible'])+area('note','Eligibility checks and decision reason'),async v=>{const result=await api(`/api/applications/${id}/review`,v);await applyServerMutation(result);toast('Human eligibility decision recorded.');return false;},'Record decision');
+ if(act==='contract')return showDialog('Verify the learning agreement','Inspect the signed agreement and compare it with the learner, employer, programme and intake records.',field('signatory','Learner signatory name',fullName(app))+field('signed_at','Signed date and time',localInput(),'datetime-local')+area('note','Verification checks and findings')+`<label class="field checkbox"><input type="checkbox" name="consistency_confirmed" required><span>I checked the signatory, employer, programme and intake dates against the signed agreement.</span></label>`,async v=>{v.signed_at=new Date(v.signed_at).toISOString();v.consistency_confirmed=v.consistency_confirmed==='on';const result=await api(`/api/applications/${id}/contract`,v);await applyServerMutation(result);toast('Agreement verified. Ready for enrolment.');return false;},'Verify agreement');
+ if(act==='enrol')return showDialog('Confirm learner enrolment','Confirm the outcome from your learner system. All eligibility, evidence and contract controls must pass. Attribution is saved with this confirmation.',field('external_reference','Aptem / LMS confirmation reference','','text','maxlength="180"')+area('note','How the enrolment was confirmed'),async v=>{const result=await api(`/api/applications/${id}/enrol`,v);await applyServerMutation(result);toast('Learner enrolled. Attribution snapshot saved.');return false;},'Confirm enrolment');
  if(act==='password')return showDialog('Change password','Changing your password signs out all your sessions.',field('current_password','Current password','','password','autocomplete="current-password"')+field('new_password','New password','','password','minlength="12" maxlength="128" autocomplete="new-password"'),async v=>{await api('/api/password',v);data=null;login();toast('Password changed. Sign in again.');},'Change password');
 }
 async function login(){
@@ -1220,7 +1624,17 @@ async function login(){
  if(data)return;
  const forgot=authMode==='forgot',notice=authNotice,emailValue=authEmail||stored?.email||'';
  authNotice='';
- $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':field('password','Password','','password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
+ $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':passwordRevealField('password','Password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
+ $('#login-form')?.querySelector('[data-password-toggle]')?.addEventListener('click',e=>{
+  const button=e.currentTarget,input=button.closest('.password-input-wrap')?.querySelector('input');
+  if(!input)return;
+  const show=input.type==='password';
+  input.type=show?'text':'password';
+  button.setAttribute('aria-label',show?'Hide password':'Show password');
+  button.title=show?'Hide password':'Show password';
+  button.innerHTML=icon(show?'eyeOff':'eye');
+  input.focus();
+ });
  $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget,button=form.querySelector('[type=submit]');form.querySelector('.form-error').textContent='';setActionLoading(button,true,forgot?'Sending':'Logging in');try{
   const values={email:form.elements.email.value.trim(),password:form.elements.password?.value||''};
   if(!values.email || (!forgot&&!values.password))throw new Error(forgot?'Please enter your email.':'Please enter your email and password.');
@@ -1259,6 +1673,46 @@ function resetPassword(){
   authMode='login';location.hash='';login();toast('Password reset. Login with your new password.');
  }catch(err){form.querySelector('.form-error').textContent=err.message;}finally{setActionLoading(button,false);}});
 }
+function updateDashboardFiltersFromControl(target){
+ const f=filters.dashboard;
+ if(target.id==='dash-preset'){
+  f.preset=target.value;
+  if(f.preset!=='custom')Object.assign(f,dashboardPresetDates(f.preset));
+  const from=$('#dash-from'),to=$('#dash-to');
+  if(from){from.value=f.from;from.disabled=f.preset!=='custom';}
+  if(to){to.value=f.to;to.disabled=f.preset!=='custom';}
+ }else if(target.id==='dash-from'){f.preset='custom';f.from=target.value;}
+ else if(target.id==='dash-to'){f.preset='custom';f.to=target.value;}
+ else if(target.id==='dash-college')f.college_id=target.value;
+ else if(target.id==='dash-programme')f.programme_id=target.value;
+ else if(target.id==='dash-intake')f.intake_id=target.value;
+ else if(target.id==='dash-owner')f.owner_id=target.value;
+ else if(target.id==='dash-source')f.lead_source=target.value;
+ else return false;
+ scheduleDashboardLoad();
+ return true;
+}
+function globalSearchSections(result){
+ const section=(label,rows)=>rows?.length?`<div class="global-search-section"><b>${esc(label)}</b>${rows.map(row=>`<button data-go="${esc(row.route||'today')}"><span>${esc(row.title||row.id)}</span><small>${esc(row.detail||'')}</small></button>`).join('')}</div>`:'';
+ return section('Leads',result.leads)+section('Emails',result.emails)+section('Applications',result.applications)+section('Tasks',result.tasks);
+}
+async function runGlobalSearch(query){
+ const box=$('#global-search-results');
+ if(!box)return;
+ if(globalSearchController)globalSearchController.abort();
+ const q=String(query||'').trim();
+ if(q.length<2){box.hidden=true;box.innerHTML='';return;}
+ globalSearchController=new AbortController();
+ box.hidden=false;
+ box.innerHTML=dashboardLoading();
+ try{
+  const result=await api(`/api/dashboard/search?q=${encodeURIComponent(q)}`,undefined,'GET',{silent:true,signal:globalSearchController.signal});
+  const html=globalSearchSections(result);
+  box.innerHTML=html||`<div class="global-search-empty">No matches.</div>`;
+ }catch(error){
+  if(error.name!=='AbortError')box.innerHTML='<div class="global-search-empty">Unable to search workspace.</div>';
+ }
+}
 document.addEventListener('click',async event=>{
  const selectToggle=event.target.closest('[data-select-toggle]');
  if(selectToggle){
@@ -1291,6 +1745,7 @@ document.addEventListener('click',async event=>{
  }
  if(!event.target.closest('.date-field'))closeDatePickers();
  if(!event.target.closest('.select-menu'))closeSelectMenus();
+ if(!event.target.closest('.global-search'))$('#global-search-results')?.setAttribute('hidden','');
  if(event.target.classList.contains('date-input')){openDatePicker(event.target.id);return;}
  const target=event.target.closest('[data-go],[data-act]');if(!target||target.disabled)return;
  if(target.dataset.go){go(target.dataset.go);window.scrollTo(0,0);return;}
@@ -1319,6 +1774,7 @@ document.addEventListener('keydown',event=>{
 });
 document.addEventListener('input',event=>{
 if(event.target.id==='lead-search'){filters.search=event.target.value;scheduleLeadFilterRefresh();return;}
+if(event.target.id==='global-search'){clearTimeout(globalSearchTimer);globalSearchTimer=setTimeout(()=>runGlobalSearch(event.target.value),180);return;}
 if(event.target.id==='event-search'){filters.eventSearch=event.target.value;scheduleEventFilterRefresh();return;}
 if(event.target.id==='zoom-search'){filters.zoomSearch=event.target.value;updateZoomResults();return;}
 if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;scheduleInboxFilterRefresh();return;}
@@ -1329,6 +1785,7 @@ if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;sche
  }
 });
 document.addEventListener('change',async event=>{
+ if(updateDashboardFiltersFromControl(event.target))return;
  const roleControl=event.target.closest('[data-dev-role]');
  if(roleControl){
   const previous=roleControl.dataset.previous||roleControl.value;
@@ -1347,20 +1804,23 @@ document.addEventListener('change',async event=>{
   return;
  }
  if(event.target.classList.contains('crm-stage-select')){
-  const lead=data.leads.find(l=>l.id===event.target.dataset.id),stage=event.target.value;
-  if(!lead||lead.stage===stage)return;
-  const previous=lead.stage;
-  event.target.disabled=true;
+ const lead=data.leads.find(l=>l.id===event.target.dataset.id),stage=event.target.value;
+ if(!lead||lead.stage===stage)return;
+ const previous=lead.stage;
+ lead.stage=stage;
+  data=syncClientDerived(data);
+ const results=$('#lead-results');
+ if(results){results.innerHTML=leadResults();hydrateSelectMenus(results);}
   try{
-   await api(`/api/leads/${lead.id}`,{stage,owner_id:lead.owner_id,priority:lead.priority,reason:`CRM stage changed from ${previous} to ${stage}`},'PATCH');
-   lead.stage=stage;
-   await refresh();
+   const result=await api(`/api/leads/${lead.id}`,{stage,owner_id:lead.owner_id,priority:lead.priority,reason:`CRM stage changed from ${previous} to ${stage}`},'PATCH');
+   if(result.lead)Object.assign(lead,result.lead);
    toast('Lead stage updated.');
   }catch(error){
-   event.target.value=previous;
+   lead.stage=previous;
+ data=syncClientDerived(data);
+   const rollbackResults=$('#lead-results');
+   if(rollbackResults){rollbackResults.innerHTML=leadResults();hydrateSelectMenus(rollbackResults);}
    toast(error.message);
-  }finally{
-   event.target.disabled=false;
   }
   return;
  }
@@ -1744,11 +2204,23 @@ function emailThreadRow(item,activeId,gmailConnected){
 }
 async function openEmailDialog(id){
  let e=data.emails.find(item=>item.id===id);if(!e)return;
+ const wasUnread=emailIsUnread(e);
+ if(wasUnread){
+  e.is_read=true;
+  e.gmail_labels=(e.gmail_labels||[]).filter(label=>label!=='UNREAD');
+  e.gmail_label_names=(e.gmail_label_names||[]).filter(label=>String(label).toLowerCase()!=='unread');
+ }
  const result=await api(`/api/emails/${encodeURIComponent(id)}`,undefined,'GET',{silent:true});
  if(result.email){
   e={...e,...result.email};
+  if(wasUnread){
+   e.is_read=true;
+   e.gmail_labels=(e.gmail_labels||[]).filter(label=>label!=='UNREAD');
+   e.gmail_label_names=(e.gmail_label_names||[]).filter(label=>String(label).toLowerCase()!=='unread');
+  }
   data.emails=data.emails.map(item=>item.id===id?e:item);
  }
+ if(wasUnread)api(`/api/emails/${encodeURIComponent(id)}/read`,{is_read:true},'PATCH',{silent:true}).then(result=>{if(result.email)data.emails=data.emails.map(item=>item.id===id?{...item,...result.email}:item);}).catch(error=>toast(error.message));
  if(result.thread?.length){
   data.email_threads||={};
   data.email_threads[id]=result.thread;
@@ -1758,7 +2230,7 @@ async function openEmailDialog(id){
  const byDay=new Map();
  thread.forEach(item=>{const day=emailThreadDay(item);if(!byDay.has(day))byDay.set(day,[]);byDay.get(day).push(item);});
  if(dialog.open)dialog.close();
- dialog.innerHTML=`<div class="dialog-head email-reader-head"><div><h2 id="dialog-title">${esc(e.subject)}</h2><p class="small muted">${esc(visibleMessageCount)} message${visibleMessageCount===1?'':'s'} in this conversation - ${esc(fullName(e))} - ${esc(e.email)}</p></div><button class="icon-button" data-act="close" aria-label="Close dialog">${icon('close')}</button></div><div class="dialog-body email-reader"><div class="email-thread">${[...byDay.entries()].map(([day,items])=>`<section class="email-thread-day"><div class="email-thread-day-title">${esc(day)}</div>${items.map(item=>emailThreadRow(item,id,gmailConnected)).join('')}</section>`).join('')}</div><div class="dialog-actions">${lead?`<button class="button" data-act="open-email-lead" data-id="${esc(lead.id)}">Open Lead 360</button>`:''}<button class="button" data-act="close">Close</button></div></div>`;
+ dialog.innerHTML=`<div class="dialog-head email-reader-head"><div><h2 id="dialog-title">${esc(e.subject)}</h2><p class="small muted">${esc(visibleMessageCount)} message${visibleMessageCount===1?'':'s'} in this conversation - ${esc(fullName(e))} - ${esc(e.email)}</p></div><button class="icon-button" data-act="close" aria-label="Close dialog">${icon('close')}</button></div><div class="dialog-body email-reader"><div class="email-thread">${[...byDay.entries()].map(([day,items])=>`<section class="email-thread-day"><div class="email-thread-day-title">${esc(day)}</div>${items.map(item=>emailThreadRow(item,id,gmailConnected)).join('')}</section>`).join('')}</div><div class="dialog-actions">${lead?`<button class="button" data-act="open-email-lead" data-id="${esc(lead.id)}">Open Lead 360</button>`:''}${data.permissions.sales?`<button class="button danger" data-act="delete-email" data-id="${esc(e.id)}">Delete email</button>`:''}<button class="button" data-act="close">Close</button></div></div>`;
  dialog.showModal();
 }
 if(route().startsWith('reset-password'))resetPassword();

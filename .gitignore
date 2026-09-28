@@ -5,6 +5,8 @@ node_modules/
 dist/
 npm-debug.log*
 *.log
+*.tsbuildinfo
+*.zip
 .DS_Store
 Thumbs.db
 brand-logo.webp

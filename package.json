@@ -10,7 +10,9 @@
     "start:prod": "node dist/main.js",
     "start:dev": "nest start --watch",
     "start:legacy": "node server.js",
-    "check": "node --check server.js && npm run build"
+    "test:security": "node scripts/security-static-smoke-test.js",
+    "test:rocket": "node scripts/rocket-crud-static-audit.js",
+    "check": "node --check server.js && node --check app.js && npm run test:security && npm run test:rocket && npm run build"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -28,6 +30,6 @@
     "@nestjs/cli": "^10.4.9"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   }
 }

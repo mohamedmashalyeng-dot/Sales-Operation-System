@@ -1,5 +1,5 @@
-const CACHE='pathway-shell-v15';
-const SHELL=['/offline.html','/styles.css?v=20260924-calm-sync','/Kent%20Business%20College%20logo.svg','/kent-logo-full-dark.png'];
+const CACHE='pathway-shell-v20260927-remove-phases-attribution';
+const SHELL=['/offline.html','/styles.css?v=20260927-remove-phases-attribution','/app.js?v=20260927-remove-phases-attribution','/developer.css?v=20260927-remove-phases-attribution','/Kent%20Business%20College%20logo.svg','/kent-logo-full-dark.png'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)));self.skipWaiting();});
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{

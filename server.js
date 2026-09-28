@@ -23,6 +23,7 @@ const POSTGRES_LOGIN_EVENTS_TABLE = process.env.POSTGRES_LOGIN_EVENTS_TABLE || '
 const POSTGRES_PASSWORD_RESETS_TABLE = process.env.POSTGRES_PASSWORD_RESETS_TABLE || 'app_password_resets';
 const POSTGRES_SESSIONS_TABLE = process.env.POSTGRES_SESSIONS_TABLE || 'app_sessions';
 const SESSION_TTL = 8 * 60 * 60 * 1000;
+const SESSION_TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const memorySessions = new Map();
 let mongoClient = null;
 let mongoStateCollection = null;
@@ -89,7 +90,8 @@ let zoomAutoSyncTimer = null;
 let zoomAutoSyncRunning = false;
 let zoomAutoSyncState = { enabled: ZOOM_AUTO_SYNC_ENABLED, meetings: ZOOM_AUTO_SYNC_MEETINGS, calls: ZOOM_AUTO_SYNC_CALLS, running: false, last_result: null, last_error: null, next_run_at: null };
 const serverStartedAt = new Date();
-const monitoringState = { last_save_at: null, api_errors: [] };
+const API_TIMING_WARN_MS = Math.max(100, Number(process.env.API_TIMING_WARN_MS || 1000));
+const monitoringState = { last_save_at: null, api_errors: [], api_timings: [] };
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -101,6 +103,9 @@ const mime = {
   '.webp': 'image/webp',
   '.gif': 'image/gif',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.pdf': 'application/pdf',
   '.ico': 'image/x-icon'
 };
 
@@ -110,15 +115,24 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
 }
 
 function verifyPassword(password, stored) {
-  const [salt, expected] = String(stored || '').split(':');
-  if (!salt || !expected) return false;
-  const actual = hashPassword(password, salt).split(':')[1];
-  return crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
+  try {
+    const [salt, expected] = String(stored || '').split(':');
+    if (!salt || !expected || !/^[a-f0-9]{64}$/i.test(expected)) return false;
+    const actual = hashPassword(password, salt).split(':')[1];
+    const actualBuffer = Buffer.from(actual, 'hex');
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    if (actualBuffer.length !== expectedBuffer.length) return false;
+    return crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+  } catch {
+    return false;
+  }
 }
 
 function loadEnv() {
-  const envFile = path.join(ROOT, '.env');
-  if (!fs.existsSync(envFile)) return;
+  const envFile = ['.env', '.env.hostinger']
+    .map(name => path.join(ROOT, name))
+    .find(file => fs.existsSync(file));
+  if (!envFile) return;
   const fileWins = new Set(['DEV_PANEL_PASSWORD', 'INITIAL_ADMIN_PASSWORD']);
   for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -433,6 +447,7 @@ async function ensurePostgresUserSchema() {
     create table if not exists ${sessionsTable} (
       id text primary key,
       user_id text not null,
+      token_hash text,
       gmail_state text,
       eventbrite_state text,
       expires_at timestamptz not null,
@@ -440,8 +455,10 @@ async function ensurePostgresUserSchema() {
       updated_at timestamptz not null default now()
     )
   `);
+  await postgresPool.query(`alter table ${sessionsTable} add column if not exists token_hash text`);
   await postgresPool.query(`create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_user_id_idx`, 'app_sessions_user_id_idx')} on ${sessionsTable} (user_id)`);
   await postgresPool.query(`create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_expires_at_idx`, 'app_sessions_expires_at_idx')} on ${sessionsTable} (expires_at)`);
+  await postgresPool.query(`create unique index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_token_hash_idx`, 'app_sessions_token_hash_idx')} on ${sessionsTable} (token_hash) where token_hash is not null`);
   postgresUserSchemaReady = true;
 }
 
@@ -591,6 +608,31 @@ async function createPostgresAppTables() {
       created_at timestamptz not null default now()
     )
   `);
+  await postgresPool.query(`
+    create table if not exists app_document_templates (
+      key text primary key,
+      title text not null,
+      filename text not null,
+      content_type text not null,
+      content bytea not null,
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await postgresPool.query(`create index if not exists app_leads_stage_idx on app_leads(stage)`);
+  await postgresPool.query(`create index if not exists app_leads_owner_id_idx on app_leads(owner_id)`);
+  await postgresPool.query(`create index if not exists app_leads_created_at_idx on app_leads(created_at)`);
+  await postgresPool.query(`create index if not exists app_tasks_lead_id_idx on app_tasks(lead_id)`);
+  await postgresPool.query(`create index if not exists app_tasks_status_idx on app_tasks(status)`);
+  await postgresPool.query(`create index if not exists app_tasks_due_at_idx on app_tasks(due_at)`);
+  await postgresPool.query(`create index if not exists app_tasks_owner_status_due_idx on app_tasks(owner_id, status, due_at)`);
+  await postgresPool.query(`create index if not exists app_applications_lead_id_idx on app_applications(lead_id)`);
+  await postgresPool.query(`create index if not exists app_applications_status_idx on app_applications(status)`);
+  await postgresPool.query(`create index if not exists app_applications_created_at_idx on app_applications(created_at)`);
+  await postgresPool.query(`create index if not exists app_emails_received_at_idx on app_emails(received_at)`);
+  await postgresPool.query(`create index if not exists app_leads_programme_id_idx on app_leads(programme_id)`);
+  await postgresPool.query(`create index if not exists app_leads_source_capture_idx on app_leads(source_lead_capture)`);
+  await postgresPool.query(`create index if not exists app_audit_occurred_at_idx on app_audit(occurred_at)`);
+  await seedDocumentTemplatesFromDisk();
 }
 
 async function loadDb() {
@@ -645,6 +687,7 @@ async function loadDb() {
 }
 
 async function saveDb(db) {
+  if (db && (db.__partial || db.__partial_load)) throw statusError(500, 'Refusing to save a partially loaded workspace. Load the full workspace first.');
   await ensureStorage();
   const data = recalculate(db);
   if (postgresPool) {
@@ -693,14 +736,37 @@ function workspaceMetaState(db = {}) {
   };
 }
 
+function mergeZoomState(currentZoom = {}, nextZoom = {}) {
+  const currentCalls = Array.isArray(currentZoom.calls) ? currentZoom.calls : [];
+  const nextCalls = Array.isArray(nextZoom.calls) ? nextZoom.calls : [];
+  if (!currentCalls.length && !nextCalls.length) return { ...currentZoom, ...nextZoom };
+  const byId = new Map();
+  for (const call of currentCalls) {
+    if (call?.id) byId.set(call.id, call);
+  }
+  for (const call of nextCalls) {
+    if (call?.id) byId.set(call.id, { ...(byId.get(call.id) || {}), ...call });
+  }
+  const limit = Math.max(currentCalls.length, nextCalls.length, Number(process.env.ZOOM_MAX_CALLS || 5000));
+  return {
+    ...currentZoom,
+    ...nextZoom,
+    calls: [...byId.values()]
+      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0))
+      .slice(0, limit)
+  };
+}
+
 async function workspaceMetaForSave(client, db = {}, options = {}) {
   let meta = workspaceMetaState(db);
-  if (options.preserveMeta || options.preserveApollo || options.preserveZoom) {
+  const shouldReadCurrentMeta = options.preserveMeta || options.preserveApollo || options.preserveZoom || Array.isArray(meta.zoom?.calls);
+  if (shouldReadCurrentMeta) {
     const current = await client.query(`select meta from app_workspace where id = $1`, ['main']);
     const currentMeta = current.rows[0]?.meta || {};
     if (options.preserveMeta) meta = { ...currentMeta, ...meta };
     if (options.preserveApollo) meta.apollo = currentMeta.apollo || meta.apollo || { imported_person_ids: [] };
     if (options.preserveZoom) meta.zoom = currentMeta.zoom || meta.zoom || { imported_meeting_ids: [] };
+    else meta.zoom = mergeZoomState(currentMeta.zoom || {}, meta.zoom || {});
   }
   return meta;
 }
@@ -797,6 +863,7 @@ async function deleteMissingIds(client, table, ids) {
 }
 
 async function savePostgresTables(db) {
+  if (db && (db.__partial || db.__partial_load)) throw statusError(500, 'Refusing full-table sync for a partially loaded workspace.');
   const programmeRows = importProgrammeRows(db);
   const intakeRows = (db.intakes || []).map(item => ({ id: item.id, programme_id: item.programme_id || null, name: item.name, data: item }));
   const leadRows = importLeadRows(db);
@@ -915,9 +982,21 @@ async function savePostgresTables(db) {
          ) ranked
          where rn = 1
        ),
+       incoming_rows as (
+         select
+           coalesce(existing.id, deduped.id) as id,
+           deduped.lead_id, deduped.first_name, deduped.last_name, deduped.email, deduped.subject, deduped.body,
+           deduped.owner, deduped.response_at, deduped.response_note, deduped.due_at, deduped.received_at,
+           deduped.gmail_message_id, deduped.data
+         from deduped
+         left join app_emails existing
+           on deduped.gmail_message_id is not null
+          and deduped.gmail_message_id <> ''
+          and existing.gmail_message_id = deduped.gmail_message_id
+       ),
        removed_duplicates as (
          delete from app_emails existing
-         using deduped incoming
+         using incoming_rows incoming
          where incoming.gmail_message_id is not null
            and incoming.gmail_message_id <> ''
            and existing.gmail_message_id = incoming.gmail_message_id
@@ -925,7 +1004,7 @@ async function savePostgresTables(db) {
          returning existing.id
        )
        insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
-       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, nullif(gmail_message_id, ''), data from deduped
+       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, nullif(gmail_message_id, ''), data from incoming_rows
        on conflict (id) do update set
          lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
          subject = excluded.subject, body = excluded.body, owner = excluded.owner, response_at = excluded.response_at,
@@ -1346,9 +1425,21 @@ async function saveGmailImportTables(db, options = {}) {
          ) ranked
          where rn = 1
        ),
+       incoming_rows as (
+         select
+           coalesce(existing.id, deduped.id) as id,
+           deduped.lead_id, deduped.first_name, deduped.last_name, deduped.email, deduped.subject, deduped.body,
+           deduped.owner, deduped.response_at, deduped.response_note, deduped.due_at, deduped.received_at,
+           deduped.gmail_message_id, deduped.data
+         from deduped
+         left join app_emails existing
+           on deduped.gmail_message_id is not null
+          and deduped.gmail_message_id <> ''
+          and existing.gmail_message_id = deduped.gmail_message_id
+       ),
        removed_duplicates as (
          delete from app_emails existing
-         using deduped incoming
+         using incoming_rows incoming
          where incoming.gmail_message_id is not null
            and incoming.gmail_message_id <> ''
            and existing.gmail_message_id = incoming.gmail_message_id
@@ -1356,7 +1447,7 @@ async function saveGmailImportTables(db, options = {}) {
          returning existing.id
        )
        insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
-       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, nullif(gmail_message_id, ''), data from deduped
+       select id, lead_id, first_name, last_name, email, subject, body, owner, response_at::timestamptz, response_note, due_at::timestamptz, received_at::timestamptz, nullif(gmail_message_id, ''), data from incoming_rows
        on conflict (id) do update set
          lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
          subject = excluded.subject, body = excluded.body, owner = excluded.owner, response_at = excluded.response_at,
@@ -1496,12 +1587,12 @@ async function createSession(user) {
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
     await postgresQuery(
-      `insert into ${table} (id, user_id, expires_at, created_at, updated_at)
-       values ($1, $2, $3, now(), now())`,
-      [sid, user.id, expiresAt.toISOString()]
+      `insert into ${table} (id, user_id, token_hash, expires_at, created_at, updated_at)
+       values ($1, $2, $3, $4, now(), now())`,
+      [sid, user.id, tokenHash(sid), expiresAt.toISOString()]
     );
   } else {
-    memorySessions.set(sid, { user_id: user.id, expires_at: expiresAt.getTime() });
+    memorySessions.set(sid, { user_id: user.id, expires_at: expiresAt.getTime(), updated_at: Date.now() });
   }
   return sid;
 }
@@ -1512,8 +1603,8 @@ async function getSession(sid) {
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
     const result = await postgresQuery(
-      `select id, user_id, gmail_state, eventbrite_state, expires_at from ${table} where id = $1 limit 1`,
-      [sid]
+      `select id, user_id, gmail_state, eventbrite_state, expires_at, updated_at from ${table} where id = $1 or token_hash = $2 limit 1`,
+      [sid, tokenHash(sid)]
     );
     const session = result.rows[0];
     if (!session) return null;
@@ -1539,7 +1630,10 @@ async function touchSession(sid) {
     await postgresQuery(`update ${table} set expires_at = $2, updated_at = now() where id = $1`, [sid, expiresAt.toISOString()]);
   } else {
     const session = memorySessions.get(sid);
-    if (session) session.expires_at = expiresAt.getTime();
+    if (session) {
+      session.expires_at = expiresAt.getTime();
+      session.updated_at = Date.now();
+    }
   }
 }
 
@@ -1574,11 +1668,43 @@ async function deleteSession(sid) {
 
 async function currentSessionUser(req) {
   const sid = parseCookies(req).sid;
+  if (!sid) throw statusError(401, 'Sign in to continue.');
+  await ensureUserStorage();
+  if (postgresPool) {
+    const sessionsTable = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
+    const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const authStart = performance.now();
+    const result = await postgresQuery(
+      `select
+         s.id as session_id,
+         s.expires_at,
+         s.updated_at as session_updated_at,
+         u.id, u.name, u.email, u.role, u.password_hash, u.temporary_password, u.invited_at, u.password_changed_at
+       from ${sessionsTable} s
+       join ${usersTable} u on u.id = s.user_id
+       where (s.id = $1 or s.token_hash = $2)
+         and s.expires_at > now()
+       limit 1`,
+      [sid, tokenHash(sid)]
+    );
+    const row = result.rows[0];
+    if (!row) throw statusError(401, 'Sign in to continue.');
+    const updatedAt = new Date(row.session_updated_at || 0).getTime();
+    if (!updatedAt || Date.now() - updatedAt > SESSION_TOUCH_INTERVAL_MS) {
+      await postgresQuery(
+        `update ${sessionsTable} set expires_at = $2, updated_at = now(), token_hash = coalesce(token_hash, $3) where id = $1`,
+        [row.session_id, new Date(Date.now() + SESSION_TTL).toISOString(), tokenHash(sid)]
+      );
+    }
+    const { session_id, expires_at, session_updated_at, ...user } = row;
+    user.__auth_ms = performance.now() - authStart;
+    return user;
+  }
   const session = await getSession(sid);
   if (!session) throw statusError(401, 'Sign in to continue.');
   const user = await findUserById(session.user_id);
   if (!user) throw statusError(401, 'Sign in to continue.');
-  await touchSession(sid);
+  if (!session.updated_at || Date.now() - Number(session.updated_at || 0) > SESSION_TOUCH_INTERVAL_MS) await touchSession(sid);
   return user;
 }
 
@@ -1746,7 +1872,7 @@ async function sendPasswordResetMail(db, req, user, token) {
 
 function publicUser(user) {
   if (!user) return null;
-  const { password_hash, temporary_password, ...safe } = user;
+  const { password_hash, temporary_password, __auth_ms, ...safe } = user;
   return safe;
 }
 
@@ -1971,7 +2097,7 @@ function addLeadSource(lead, source, detail = {}) {
   if (!source) return;
   lead.source_history ||= [];
   if (!lead.source_history.some(item => item.source === source && item.provider_id === detail.provider_id)) {
-    lead.source_history.push({ source, provider_id: detail.provider_id || '', captured_at: detail.captured_at || new Date().toISOString() });
+    lead.source_history.push({ source, provider_id: detail.provider_id || '', captured_at: detail.captured_at || new Date().toISOString(), ...detail });
   }
 }
 
@@ -2265,6 +2391,153 @@ function dedupeLeadRecords(db, user) {
   return { merged, migrated, removed_excluded: removedExcluded };
 }
 
+function validLeadIdSet(db) {
+  return new Set((db.leads || []).map(lead => lead.id).filter(Boolean));
+}
+
+function leadByContact(db, { email = '', phone = '' } = {}) {
+  const normalizedEmail = normalizeEmail(email);
+  if (normalizedEmail) {
+    const byEmail = (db.leads || []).find(lead => normalizeEmail(lead.email) === normalizedEmail);
+    if (byEmail) return byEmail;
+  }
+  if (phone) {
+    const byPhone = (db.leads || []).find(lead => samePhone(lead.phone, phone));
+    if (byPhone) return byPhone;
+  }
+  return null;
+}
+
+function eventSourceName(event = {}, attendee = {}) {
+  if (event.zoom_meeting_id || event.zoom_meeting_uuid || attendee.zoom_source || String(event.location || '').toLowerCase() === 'zoom') return 'Zoom';
+  if (event.eventbrite_event_id || attendee.eventbrite_attendee_id) return 'Eventbrite';
+  return 'Event';
+}
+
+function leadInputFromAttendee(db, event = {}, attendee = {}) {
+  const source = eventSourceName(event, attendee);
+  const email = normalizeEmail(attendee.email);
+  const fallbackName = [attendee.first_name, attendee.last_name].filter(Boolean).join(' ') || attendee.name || `${source} attendee`;
+  const parts = nameParts(fallbackName, email || `${attendee.id || numericHash(fallbackName)}@${source.toLowerCase()}.local`);
+  const programme = programmeForEvent(db, event.name || event.description || event.campaign || '');
+  return {
+    first_name: attendee.first_name || parts.first_name || source,
+    last_name: attendee.last_name || parts.last_name || 'Attendee',
+    programme_id: programme.id,
+    email: email || `${attendee.id || numericHash(`${event.id || event.name}:${fallbackName}`)}@${source.toLowerCase()}.local`,
+    employer: attendee.employer || attendee.company || '',
+    phone: attendee.phone || '',
+    city: attendee.city || '',
+    stage: 'New lead',
+    priority: 'P2',
+    source_first_touch: source,
+    source_lead_capture: source,
+    contact_permission: attendee.contact_permission || 'Unknown',
+    created_at: attendee.created_at || attendee.attended_at || event.start_at || event.created_at || new Date().toISOString(),
+    eventbrite_attendee_id: attendee.eventbrite_attendee_id || ''
+  };
+}
+
+function reconcileImportedData(db, user, options = {}) {
+  db.leads ||= [];
+  db.emails ||= [];
+  db.events ||= [];
+  db.zoom ||= {};
+  db.zoom.calls ||= [];
+  const existingLeadIds = validLeadIdSet(db);
+  const summary = { leads_created: 0, leads_updated: 0, emails_linked: 0, attendees_linked: 0, calls_linked: 0, unlinked_attendees: 0, unlinked_calls: 0 };
+
+  for (const email of db.emails || []) {
+    const beforeLeadId = email.lead_id;
+    const beforeCount = db.leads.length;
+    const lead = ensureLeadForEmailSender(db, user, email);
+    if (!lead) continue;
+    if (db.leads.length > beforeCount) summary.leads_created += 1;
+    if (!beforeLeadId && email.lead_id) summary.emails_linked += 1;
+  }
+
+  for (const event of db.events || []) {
+    for (const attendee of event.attendees || []) {
+      if (attendee.lead_id && existingLeadIds.has(attendee.lead_id)) {
+        const lead = db.leads.find(item => item.id === attendee.lead_id);
+        addLeadSource(lead, eventSourceName(event, attendee), {
+          provider_id: attendee.eventbrite_attendee_id || attendee.zoom_participant_id || attendee.id || event.id || '',
+          captured_at: attendee.created_at || attendee.attended_at || event.start_at
+        });
+        continue;
+      }
+      const contactLead = leadByContact(db, attendee);
+      if (contactLead) {
+        attendee.lead_id = contactLead.id;
+        addLeadSource(contactLead, eventSourceName(event, attendee), {
+          provider_id: attendee.eventbrite_attendee_id || attendee.zoom_participant_id || attendee.id || event.id || '',
+          captured_at: attendee.created_at || attendee.attended_at || event.start_at
+        });
+        summary.attendees_linked += 1;
+        continue;
+      }
+      const canCreateLead = normalizeEmail(attendee.email) || attendee.phone || attendee.first_name || attendee.last_name || attendee.name;
+      if (!canCreateLead) {
+        summary.unlinked_attendees += 1;
+        continue;
+      }
+      const beforeCount = db.leads.length;
+      const result = ensureLeadRecord(db, user, leadInputFromAttendee(db, event, attendee), {
+        taskTitle: `Follow up after ${event.name || eventSourceName(event, attendee)}`,
+        taskKind: 'Follow-up'
+      });
+      if (result.lead) {
+        attendee.lead_id = result.lead.id;
+        attendee.first_name ||= result.lead.first_name;
+        attendee.last_name ||= result.lead.last_name;
+        attendee.email ||= result.lead.email;
+        attendee.phone ||= result.lead.phone;
+        if (db.leads.length > beforeCount) summary.leads_created += 1;
+        else summary.leads_updated += 1;
+        summary.attendees_linked += 1;
+      } else {
+        summary.unlinked_attendees += 1;
+      }
+    }
+  }
+
+  for (const [index, storedCall] of (db.zoom.calls || []).entries()) {
+    const call = hydrateZoomStoredCall(db, storedCall);
+    db.zoom.calls[index] = call;
+    if (call.lead_id && existingLeadIds.has(call.lead_id)) continue;
+    const match = zoomCallLeadMatch(db, call);
+    const lead = match.lead || leadByContact(db, { phone: call.caller_number }) || leadByContact(db, { phone: call.callee_number });
+    if (lead) {
+      call.lead_id = lead.id;
+      call.lead_name = fullName(lead);
+      call.matched_side ||= match.side || (samePhone(lead.phone, call.caller_number) ? 'caller' : samePhone(lead.phone, call.callee_number) ? 'callee' : '');
+      call.matched_number ||= match.number || call.caller_number || call.callee_number || '';
+      call.matched_source ||= 'CRM lead phone';
+      addLeadSource(lead, 'Zoom Call', {
+        provider_id: call.zoom_call_history_uuid || call.zoom_call_id || call.id || '',
+        captured_at: call.started_at,
+        phone: call.matched_number || '',
+        direction: call.direction || '',
+        matched_side: call.matched_side || '',
+        account: call.zoom_account_label || call.zoom_account_id || '',
+        owner: call.owner_name || ''
+      });
+      summary.calls_linked += 1;
+    } else {
+      summary.unlinked_calls += 1;
+    }
+  }
+
+  const deduped = dedupeLeadRecords(db, user);
+  summary.leads_merged = deduped.merged;
+  summary.ids_migrated = deduped.migrated;
+  const changed = summary.leads_created || summary.emails_linked || summary.attendees_linked || summary.calls_linked || summary.leads_merged || summary.ids_migrated;
+  if (options.audit !== false && changed) {
+    addAudit(db, user, 'Imported data reconciled', 'integration', 'all', `${summary.leads_created} leads created, ${summary.emails_linked} emails linked, ${summary.attendees_linked} attendees linked, ${summary.calls_linked} calls linked`);
+  }
+  return summary;
+}
+
 function scheduleIdentityCleanup(db, user) {
   if (identityCleanupRunning) return;
   identityCleanupRunning = true;
@@ -2273,8 +2546,9 @@ function scheduleIdentityCleanup(db, user) {
   setImmediate(async () => {
     try {
       const promoted = promoteEmailSendersToLeads(snapshot, actor);
+      const reconciled = reconcileImportedData(snapshot, actor, { audit: false });
       const deduped = dedupeLeadRecords(snapshot, actor);
-      if (promoted.created || promoted.linked || deduped.merged || deduped.migrated || deduped.removed_excluded) await saveDb(snapshot);
+      if (promoted.created || promoted.linked || reconciled.leads_created || reconciled.emails_linked || reconciled.attendees_linked || reconciled.calls_linked || deduped.merged || deduped.migrated || deduped.removed_excluded) await saveDb(snapshot);
     } catch (error) {
       console.error(`Lead identity cleanup failed: ${error.message}`);
     } finally {
@@ -2284,9 +2558,13 @@ function scheduleIdentityCleanup(db, user) {
 }
 
 function runIdentityCleanupInMemory(db, user) {
+  // A bootstrap payload only contains the first page of every table. Writing it back
+  // would delete every record outside that page, so partial workspaces are never saved.
+  if (db && (db.__partial || db.__partial_load)) return false;
   const promoted = promoteEmailSendersToLeads(db, user);
+  const reconciled = reconcileImportedData(db, user, { audit: false });
   const deduped = dedupeLeadRecords(db, user);
-  const changed = Boolean(promoted.created || promoted.linked || deduped.merged || deduped.migrated || deduped.removed_excluded);
+  const changed = Boolean(promoted.created || promoted.linked || reconciled.leads_created || reconciled.emails_linked || reconciled.attendees_linked || reconciled.calls_linked || deduped.merged || deduped.migrated || deduped.removed_excluded);
   if (changed) {
     dbCache = cloneDb(recalculate(db));
     scheduleIdentityCleanup(db, user);
@@ -2353,6 +2631,9 @@ function recalculate(db) {
     row.leads += 1;
     if (lead.stage === 'Enrolled') row.enrolled += 1;
     sourceStats.set(source, row);
+    for (const item of lead.source_history || []) {
+      if (item.source && !db.sources.includes(item.source)) db.sources.push(item.source);
+    }
   }
   db.stats = {
     active,
@@ -2361,25 +2642,27 @@ function recalculate(db) {
     overdue: db.tasks.filter(task => task.status === 'Open' && new Date(task.due_at) < new Date()).length,
     unanswered: db.emails.filter(email => emailNeedsResponse(db, email)).length
   };
-  db.source_counts = db.sources.map(source => sourceStats.get(source) || { source, leads: 0, enrolled: 0 }).filter(row => row.leads || row.enrolled);
+  db.source_counts = [...new Set([...db.sources, ...sourceStats.keys()])]
+    .map(source => sourceStats.get(source) || { source, leads: 0, enrolled: 0 })
+    .filter(row => row.leads || row.enrolled);
   const gmailReady = gmailConfigured();
   const gmailStatus = db.gmail.connected ? 'Connected' : gmailReady ? 'Ready to connect' : 'Needs credentials';
-  const gmailDetail = db.gmail.connected ? `Mailbox sync connected${db.gmail.email ? ` for ${db.gmail.email}` : ''}.` : gmailReady ? 'OAuth credentials are configured. Connect a mailbox from Settings.' : 'Add GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to .env to enable Gmail OAuth.';
+  const gmailDetail = db.gmail.connected ? `Mailbox sync connected${db.gmail.email ? ` for ${db.gmail.email}` : ''}.` : gmailReady ? 'OAuth credentials are configured. Connect a mailbox from Settings.' : 'Add Gmail OAuth credentials to enable mailbox sync.';
   const eventbriteReady = eventbriteConfigured();
   const eventbriteTokenReady = eventbritePrivateTokenConfigured();
   const eventbriteConnected = db.eventbrite.connected || eventbriteTokenReady;
   const eventbriteStatus = eventbriteConnected ? 'Connected' : eventbriteReady ? 'Ready to connect' : 'Needs credentials';
-  const eventbriteDetail = eventbriteConnected ? `Eventbrite sync connected${db.eventbrite.name ? ` for ${db.eventbrite.name}` : eventbriteTokenReady ? ' by private token' : ''}.` : eventbriteReady ? 'OAuth credentials are configured. Connect Eventbrite from Settings.' : 'Add EVENTBRITE_CLIENT_ID and EVENTBRITE_CLIENT_SECRET, or EVENTBRITE_PRIVATE_TOKEN, to .env to enable Eventbrite sync.';
+  const eventbriteDetail = eventbriteConnected ? `Eventbrite sync connected${db.eventbrite.name ? ` for ${db.eventbrite.name}` : eventbriteTokenReady ? ' by private token' : ''}.` : eventbriteReady ? 'OAuth credentials are configured. Connect Eventbrite from Settings.' : 'Add Eventbrite credentials to enable event sync.';
   const metaReady = metaConfigured();
   const metaStatus = metaReady ? 'Connected' : 'Needs credentials';
-  const metaDetail = metaReady ? `Meta Lead Ads sync is configured for page ${process.env.META_PAGE_ID}.` : 'Add META_ACCESS_TOKEN and META_PAGE_ID to .env to enable Meta Lead Ads sync.';
+  const metaDetail = metaReady ? `Meta Lead Ads sync is configured for the configured page.` : 'Add Meta Lead Ads credentials to enable lead sync.';
   const apolloReady = apolloConfigured();
   const apolloStatus = apolloReady ? 'Connected' : 'Needs credentials';
-  const apolloDetail = apolloReady ? 'Apollo people search is configured with an API key.' : 'Add APOLLO_API_KEY to .env to enable Apollo prospect sync.';
+  const apolloDetail = apolloReady ? 'Apollo people search is configured.' : 'Add Apollo credentials to enable prospect sync.';
   const zoomReady = zoomConfigured();
   const zoomStatus = zoomReady ? 'Connected' : 'Needs credentials';
   const zoomAccountCount = zoomAccounts().length;
-  const zoomDetail = zoomReady ? `Zoom meetings sync is configured for ${zoomSyncAllUsers() ? 'all users' : process.env.ZOOM_USER_ID || 'me'} across ${zoomAccountCount} account${zoomAccountCount === 1 ? '' : 's'}.` : 'Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET to .env to sync Zoom meetings.';
+  const zoomDetail = zoomReady ? `Zoom meetings sync is configured for ${zoomSyncAllUsers() ? 'all users' : 'the configured user'} across ${zoomAccountCount} account${zoomAccountCount === 1 ? '' : 's'}.` : 'Add Zoom credentials to enable meeting sync.';
   db.integrations = [
     { name: 'Gmail', status: gmailStatus, detail: gmailDetail },
     { name: 'Eventbrite', status: eventbriteStatus, detail: eventbriteDetail },
@@ -2390,12 +2673,34 @@ function recalculate(db) {
   return db;
 }
 
+// Credential fields that must never reach a browser payload.
+const INTEGRATION_SECRET_FIELDS = ['access_token', 'refresh_token', 'id_token', 'client_secret', 'private_token', 'api_key', 'token', 'password', 'password_hash', 'temporary_password', 'database_url', 'session_secret'];
+const INTEGRATION_SECRET_FIELD_SET = new Set(INTEGRATION_SECRET_FIELDS);
+
+function withoutIntegrationSecrets(state) {
+  if (!state || typeof state !== 'object') return state;
+  if (Array.isArray(state)) return state.map(item => withoutIntegrationSecrets(item));
+  const safe = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (INTEGRATION_SECRET_FIELD_SET.has(String(key).toLowerCase())) continue;
+    safe[key] = withoutIntegrationSecrets(value);
+  }
+  return safe;
+}
+
 function bootstrap(db, user) {
   const copy = JSON.parse(JSON.stringify(recalculate(db)));
   delete copy.users;
+  delete copy.__partial;
+  delete copy.__partial_load;
   copy.user = publicUser(user);
   copy.permissions = permissionsForUser(user);
   copy.demoUser = user.email;
+  copy.gmail = withoutIntegrationSecrets(copy.gmail);
+  copy.eventbrite = withoutIntegrationSecrets(copy.eventbrite);
+  copy.meta = withoutIntegrationSecrets(copy.meta);
+  copy.apollo = withoutIntegrationSecrets(copy.apollo);
+  copy.zoom = withoutIntegrationSecrets(copy.zoom);
   return copy;
 }
 
@@ -2623,7 +2928,8 @@ function dashboardSummaryFromDb(db) {
     leads: {
       total: leads.length,
       new: leads.filter(lead => /new/.test(String(lead.stage || '').toLowerCase())).length,
-      qualified: leads.filter(lead => /qualified/.test(String(lead.stage || '').toLowerCase())).length
+      qualified: leads.filter(lead => /qualified/.test(String(lead.stage || '').toLowerCase())).length,
+      active: leads.filter(lead => !['Enrolled', 'Lost', 'Not Eligible'].includes(lead.stage)).length
     },
     tasks: {
       open: openTasks.length,
@@ -2641,7 +2947,8 @@ function dashboardSummaryFromDb(db) {
     },
     applications: {
       total: applications.length,
-      new: applications.filter(application => /new|draft|pending|submitted/i.test(String(application.status || ''))).length
+      new: applications.filter(application => /new|draft|pending|submitted/i.test(String(application.status || ''))).length,
+      enrolled: applications.filter(application => application.learner).length
     },
     events: {
       total: events.length,
@@ -2666,7 +2973,8 @@ async function loadDashboardSummaryDb() {
       select
         count(*)::int as total,
         count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%new%')::int as new,
-        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%qualified%')::int as qualified
+        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%qualified%')::int as qualified,
+        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) not in ('enrolled', 'lost', 'not eligible'))::int as active
       from app_leads
     `),
     postgresPool.query(`
@@ -2707,7 +3015,8 @@ async function loadDashboardSummaryDb() {
     postgresPool.query(`
       select
         count(*)::int as total,
-        count(*) filter (where lower(coalesce(status, data->>'status', '')) ~ '(new|draft|pending|submitted)')::int as new
+        count(*) filter (where lower(coalesce(status, data->>'status', '')) ~ '(new|draft|pending|submitted)')::int as new,
+        count(*) filter (where learner is not null)::int as enrolled
       from app_applications
     `),
     postgresPool.query(`
@@ -2730,6 +3039,512 @@ async function loadDashboardSummaryDb() {
     applications: applications.rows[0],
     events: events.rows[0]
   };
+}
+
+const DASHBOARD_STAGE_THRESHOLDS = {
+  'New lead': 2,
+  Contacted: 5,
+  Qualified: 7,
+  'Application Submitted': 7,
+  Eligibility: 5,
+  'Ready for Enrolment': 5,
+  Enrolled: 30,
+  'Not Eligible': 14,
+  Lost: 14,
+  Deferred: 14
+};
+
+function isoDateOnly(value) {
+  const match = String(value || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return '';
+  const parsed = new Date(`${match[1]}-${match[2]}-${match[3]}T00:00:00.000Z`);
+  return Number.isNaN(parsed.getTime()) ? '' : `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function parseDashboardFilters(url, user) {
+  const permissions = permissionsForUser(user);
+  const max = value => String(value || '').trim().slice(0, 160);
+  let from = isoDateOnly(url.searchParams.get('from'));
+  let to = isoDateOnly(url.searchParams.get('to'));
+  if (from && to && from > to) [from, to] = [to, from];
+  const requestedOwner = max(url.searchParams.get('owner_id'));
+  return {
+    from,
+    to,
+    college_id: max(url.searchParams.get('college_id')),
+    programme_id: max(url.searchParams.get('programme_id')),
+    intake_id: max(url.searchParams.get('intake_id')),
+    owner_id: permissions.review || permissions.admin || permissions.developer ? requestedOwner : user.id,
+    lead_source: max(url.searchParams.get('lead_source')),
+    role_scope: permissions.review || permissions.admin || permissions.developer ? 'team' : 'mine',
+    permissions
+  };
+}
+
+function addDashboardFilterClause(clauses, params, expression, value, operator = '=') {
+  if (!expression || value === undefined || value === null || value === '') return;
+  params.push(value);
+  clauses.push(`${expression} ${operator} $${params.length}`);
+}
+
+function addDashboardDateClauses(clauses, params, expression, filters) {
+  if (!expression) return;
+  if (filters.from) {
+    params.push(filters.from);
+    clauses.push(`${expression} >= $${params.length}::date`);
+  }
+  if (filters.to) {
+    params.push(filters.to);
+    clauses.push(`${expression} < ($${params.length}::date + interval '1 day')`);
+  }
+}
+
+function dashboardWhere(filters, fields = {}) {
+  const clauses = [];
+  const params = [];
+  addDashboardDateClauses(clauses, params, fields.date, filters);
+  addDashboardFilterClause(clauses, params, fields.college, filters.college_id);
+  addDashboardFilterClause(clauses, params, fields.programme, filters.programme_id);
+  addDashboardFilterClause(clauses, params, fields.intake, filters.intake_id);
+  addDashboardFilterClause(clauses, params, fields.owner, filters.owner_id);
+  addDashboardFilterClause(clauses, params, fields.source, filters.lead_source);
+  return { sql: clauses.length ? `where ${clauses.join(' and ')}` : '', params };
+}
+
+function mergeWhere(baseSql, extraSql) {
+  if (!extraSql) return baseSql ? `where ${baseSql}` : '';
+  return `where ${[baseSql, extraSql.replace(/^where\s+/i, '')].filter(Boolean).join(' and ')}`;
+}
+
+function appendSqlCondition(whereSql, condition) {
+  return whereSql ? `${whereSql} and ${condition}` : `where ${condition}`;
+}
+
+function leadDashboardWhere(filters, dateExpression = 'l.created_at') {
+  return dashboardWhere(filters, {
+    date: dateExpression,
+    college: "coalesce(l.data->>'college_id', l.data->>'college', '')",
+    programme: 'coalesce(l.programme_id, l.data->>\'programme_id\', \'\')',
+    intake: "coalesce(l.data->>'intake_id', '')",
+    owner: 'coalesce(l.owner_id, l.data->>\'owner_id\', \'\')',
+    source: "coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other')"
+  });
+}
+
+function taskDashboardWhere(filters, dateExpression = 't.due_at') {
+  return dashboardWhere(filters, {
+    date: dateExpression,
+    college: "coalesce(l.data->>'college_id', l.data->>'college', '')",
+    programme: 'coalesce(l.programme_id, l.data->>\'programme_id\', \'\')',
+    intake: "coalesce(l.data->>'intake_id', '')",
+    owner: 'coalesce(t.owner_id, l.owner_id, \'\')',
+    source: "coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other')"
+  });
+}
+
+function applicationDashboardWhere(filters, dateExpression = 'a.created_at') {
+  return dashboardWhere(filters, {
+    date: dateExpression,
+    college: "coalesce(l.data->>'college_id', l.data->>'college', a.data->>'college_id', '')",
+    programme: "coalesce(l.programme_id, a.data->>'programme_id', '')",
+    intake: "coalesce(a.data->>'intake_id', '')",
+    owner: 'coalesce(l.owner_id, \'\')',
+    source: "coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other')"
+  });
+}
+
+function emailDashboardWhere(filters, dateExpression = 'e.received_at') {
+  return dashboardWhere(filters, {
+    date: dateExpression,
+    college: "coalesce(l.data->>'college_id', l.data->>'college', '')",
+    programme: 'coalesce(l.programme_id, l.data->>\'programme_id\', \'\')',
+    intake: "coalesce(l.data->>'intake_id', '')",
+    owner: 'coalesce(l.owner_id, \'\')',
+    source: "coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other')"
+  });
+}
+
+function dashboardEmailNotTrashedSql(alias = 'e') {
+  return `not (
+    coalesce(${alias}.data->'gmail_labels', '[]'::jsonb) ? 'TRASH'
+    or coalesce(${alias}.data->>'dashboard_folder', '') = 'trash'
+    or ${alias}.data ? 'trashed_at'
+  )`;
+}
+
+function dashboardEmailUnreadSql(alias = 'e') {
+  return `(
+    coalesce(${alias}.data->'gmail_labels', '[]'::jsonb) ? 'UNREAD'
+    or coalesce(${alias}.data->'gmail_label_names', '[]'::jsonb) ? 'Unread'
+    or coalesce(${alias}.data->>'is_read', '') = 'false'
+  )`;
+}
+
+function dashboardRole(user) {
+  const role = canonicalWorkspaceRole(user?.role);
+  if (permissionsForUser(user).developer || role === 'admin') return 'admin';
+  if (permissionsForUser(user).review || role === 'manager') return 'manager';
+  return 'sales';
+}
+
+async function loadDashboardCockpitSummaryDb(filters, user) {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) {
+    const summary = dashboardSummaryFromDb(await loadDb());
+    return {
+      generated_at: new Date().toISOString(),
+      role: dashboardRole(user),
+      kpis: [
+        { id: 'new_leads_today', label: 'New Leads Today', value: summary.leads.new, route: 'leads' },
+        { id: 'leads_requiring_follow_up', label: 'Leads Requiring Follow-up', value: summary.tasks.overdue, route: 'leads' },
+        { id: 'open_tasks', label: 'Open Tasks', value: summary.tasks.open, route: 'planner' },
+        { id: 'overdue_tasks', label: 'Overdue Tasks', value: summary.tasks.overdue, route: 'planner' },
+        { id: 'unread_emails', label: 'Unread Emails', value: summary.emails.unread, route: 'inbox' },
+        { id: 'new_applications', label: 'New Applications', value: summary.applications.new, route: 'applications' }
+      ],
+      attention: []
+    };
+  }
+  const leadWhere = leadDashboardWhere(filters);
+  const taskWhere = taskDashboardWhere(filters);
+  const emailWhere = emailDashboardWhere(filters);
+  const appWhere = applicationDashboardWhere(filters);
+  const leadExtra = leadWhere.sql.replace(/^where\s+/i, '');
+  const noFollowWhere = mergeWhere(leadExtra, `lower(coalesce(l.stage, l.data->>'stage', '')) not in ('enrolled','lost','not eligible','deferred') and not exists (select 1 from app_tasks t where t.lead_id = l.id and lower(coalesce(t.status, t.data->>'status', '')) = 'open')`);
+  const [leadStats, taskStats, emailStats, appStats, attentionLeadStats] = await Promise.all([
+    postgresPool.query(`
+      select
+        count(*) filter (where created_at >= current_date and created_at < current_date + interval '1 day')::int as new_today
+      from app_leads l ${leadWhere.sql}
+    `, leadWhere.params),
+    postgresPool.query(`
+      select
+        count(*) filter (where lower(coalesce(t.status, t.data->>'status', '')) = 'open')::int as open,
+        count(*) filter (where lower(coalesce(t.status, t.data->>'status', '')) = 'open' and t.due_at < now())::int as overdue
+      from app_tasks t left join app_leads l on l.id = t.lead_id ${taskWhere.sql}
+    `, taskWhere.params),
+    postgresPool.query(`
+      select
+        count(*) filter (where ${dashboardEmailNotTrashedSql('e')} and ${dashboardEmailUnreadSql('e')})::int as unread
+      from app_emails e left join app_leads l on l.id = e.lead_id ${emailWhere.sql}
+    `, emailWhere.params),
+    postgresPool.query(`
+      select
+        count(*) filter (where lower(coalesce(a.status, a.data->>'status', '')) in ('in review','draft','submitted','pending','new'))::int as new,
+        count(*) filter (where lower(coalesce(a.status, a.data->>'status', '')) in ('in review','submitted','pending','eligible'))::int as needs_review
+      from app_applications a left join app_leads l on l.id = a.lead_id ${appWhere.sql}
+    `, appWhere.params),
+    postgresPool.query(`select count(*)::int as no_follow_up from app_leads l ${noFollowWhere}`, leadWhere.params)
+  ]);
+  const integrationIssues = dashboardIntegrationHealthRows(user).filter(item => ['Warning', 'Error'].includes(item.status)).length;
+  const stats = {
+    new_leads_today: Number(leadStats.rows[0]?.new_today || 0),
+    leads_requiring_follow_up: Number(attentionLeadStats.rows[0]?.no_follow_up || 0),
+    open_tasks: Number(taskStats.rows[0]?.open || 0),
+    overdue_tasks: Number(taskStats.rows[0]?.overdue || 0),
+    unread_emails: Number(emailStats.rows[0]?.unread || 0),
+    new_applications: Number(appStats.rows[0]?.new || 0),
+    applications_need_review: Number(appStats.rows[0]?.needs_review || 0),
+    integration_issues: integrationIssues
+  };
+  return {
+    generated_at: new Date().toISOString(),
+    role: dashboardRole(user),
+    kpis: [
+      { id: 'new_leads_today', label: 'New Leads Today', value: stats.new_leads_today, route: 'leads', icon: 'users' },
+      { id: 'leads_requiring_follow_up', label: 'Leads Requiring Follow-up', value: stats.leads_requiring_follow_up, route: 'leads', icon: 'phone' },
+      { id: 'open_tasks', label: 'Open Tasks', value: stats.open_tasks, route: 'planner', icon: 'calendar' },
+      { id: 'overdue_tasks', label: 'Overdue Tasks', value: stats.overdue_tasks, route: 'planner', icon: 'clock' },
+      { id: 'unread_emails', label: 'Unread Emails', value: stats.unread_emails, route: 'inbox', icon: 'mail' },
+      { id: 'new_applications', label: 'New Applications', value: stats.new_applications, route: 'applications', icon: 'file' }
+    ],
+    attention: [
+      { id: 'no_follow_up', label: `${stats.leads_requiring_follow_up} leads have no follow-up`, value: stats.leads_requiring_follow_up, route: 'leads', kind: stats.leads_requiring_follow_up ? 'amber' : 'green' },
+      { id: 'overdue_tasks', label: `${stats.overdue_tasks} tasks are overdue`, value: stats.overdue_tasks, route: 'planner', kind: stats.overdue_tasks ? 'red' : 'green' },
+      { id: 'apps_review', label: `${stats.applications_need_review} applications need review`, value: stats.applications_need_review, route: 'applications', kind: stats.applications_need_review ? 'amber' : 'green' },
+      { id: 'unread_emails', label: `${stats.unread_emails} unread emails`, value: stats.unread_emails, route: 'inbox', kind: stats.unread_emails ? 'amber' : 'green' },
+      { id: 'integration_issues', label: `${stats.integration_issues} integrations have sync issues`, value: stats.integration_issues, route: 'settings', kind: stats.integration_issues ? 'amber' : 'green' }
+    ]
+  };
+}
+
+async function loadDashboardPipelineDb(filters) {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) return { stages: [], stuck: [] };
+  const workspace = await postgresPool.query(`select stages from app_workspace where id = $1`, ['main']);
+  const stages = Array.isArray(workspace.rows[0]?.stages) ? workspace.rows[0].stages : [];
+  const where = leadDashboardWhere(filters);
+  const thresholdCase = stages.length
+    ? `case ${stages.map((stage, index) => {
+        where.params.push(stage);
+        where.params.push(DASHBOARD_STAGE_THRESHOLDS[stage] || 7);
+        return `when coalesce(l.stage, l.data->>'stage', '') = $${where.params.length - 1} then $${where.params.length}::int`;
+      }).join(' ')} else 7 end`
+    : '7';
+  const result = await postgresPool.query(`
+    select
+      coalesce(l.stage, l.data->>'stage', 'Unstaged') as stage,
+      count(*)::int as count,
+      count(*) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) in ('lost','not eligible','deferred'))::int as lost,
+      round(avg(extract(epoch from (now() - coalesce(l.next_action_at, l.created_at, now()))) / 86400.0)::numeric, 1)::float as avg_time_in_stage_days,
+      count(*) filter (where coalesce(l.created_at, now()) < now() - ((${
+        thresholdCase
+      })::text || ' days')::interval)::int as stuck
+    from app_leads l
+    ${where.sql}
+    group by coalesce(l.stage, l.data->>'stage', 'Unstaged')
+  `, where.params);
+  const byStage = new Map(result.rows.map(row => [row.stage, row]));
+  const orderedStages = [...stages, ...result.rows.map(row => row.stage).filter(stage => !stages.includes(stage))];
+  let previous = null;
+  const rows = orderedStages.map(stage => {
+    const row = byStage.get(stage) || { stage, count: 0, lost: 0, avg_time_in_stage_days: 0, stuck: 0 };
+    const count = Number(row.count || 0);
+    const conversion = previous && previous.count ? Math.round((count / previous.count) * 100) : null;
+    previous = { stage, count };
+    return {
+      stage,
+      count,
+      conversion_from_previous: conversion,
+      lost: Number(row.lost || 0),
+      avg_time_in_stage_days: Number(row.avg_time_in_stage_days || 0),
+      stuck: Number(row.stuck || 0),
+      threshold_days: DASHBOARD_STAGE_THRESHOLDS[stage] || 7
+    };
+  });
+  return {
+    stages: rows,
+    stuck: rows.filter(row => row.stuck > 0).map(row => ({
+      stage: row.stage,
+      count: row.stuck,
+      threshold_days: row.threshold_days,
+      label: `${row.stuck} leads have been in ${row.stage} for more than ${row.threshold_days} days`
+    }))
+  };
+}
+
+async function loadDashboardMyWorkDb(filters, user) {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) return { items: [] };
+  const taskFilters = { ...filters, from: '', to: '' };
+  const where = taskDashboardWhere(taskFilters);
+  const appWhere = applicationDashboardWhere({ ...filters, from: '', to: '' });
+  const params = [...where.params, ...appWhere.params];
+  const appOffset = where.params.length;
+  const appSql = appWhere.sql.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + appOffset}`);
+  const result = await postgresPool.query(`
+    with work as (
+      select
+        t.id,
+        'task' as type,
+        coalesce(t.kind, 'Follow-up') as kind,
+        coalesce(t.title, 'Follow up') as title,
+        t.due_at as due_at,
+        l.id as lead_id,
+        trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) as person,
+        l.programme,
+        case when t.due_at < now() then 0 when t.due_at < current_date + interval '1 day' then 1 else 2 end as rank
+      from app_tasks t
+      left join app_leads l on l.id = t.lead_id
+      ${appendSqlCondition(where.sql, "lower(coalesce(t.status, t.data->>'status', '')) = 'open'")}
+      and (t.due_at is null or t.due_at < current_date + interval '7 days')
+      union all
+      select
+        a.id,
+        'application' as type,
+        'Review' as kind,
+        'Application review' as title,
+        coalesce(a.created_at, now()) as due_at,
+        l.id as lead_id,
+        trim(coalesce(a.first_name, l.first_name, '') || ' ' || coalesce(a.last_name, l.last_name, '')) as person,
+        coalesce(a.programme, l.programme) as programme,
+        1 as rank
+      from app_applications a
+      left join app_leads l on l.id = a.lead_id
+      ${appendSqlCondition(appSql, "lower(coalesce(a.status, a.data->>'status', '')) in ('in review','submitted','pending','eligible')")}
+    )
+    select * from work
+    order by rank, due_at nulls last, id
+    limit 20
+  `, params);
+  return { items: result.rows };
+}
+
+async function loadDashboardPriorityLeadsDb(filters) {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) return { leads: [] };
+  const where = leadDashboardWhere(filters);
+  const result = await postgresPool.query(`
+    with signals as (
+      select
+        l.id,
+        trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) as name,
+        l.programme,
+        l.stage,
+        l.priority,
+        l.owner,
+        max(e.received_at) as recent_email_at,
+        count(distinct e.id) filter (where e.received_at >= now() - interval '7 days' and ${dashboardEmailNotTrashedSql('e')})::int as recent_email_count,
+        count(distinct t.id) filter (where lower(coalesce(t.status, t.data->>'status', '')) = 'open' and t.due_at < now())::int as overdue_tasks,
+        count(distinct a.id) filter (where a.created_at >= now() - interval '14 days')::int as recent_applications,
+        count(distinct ev.id) filter (where ev.start_at >= now() - interval '14 days')::int as recent_events
+      from app_leads l
+      left join app_emails e on e.lead_id = l.id
+      left join app_tasks t on t.lead_id = l.id
+      left join app_applications a on a.lead_id = l.id
+      left join app_events ev on ev.attendees @> jsonb_build_array(jsonb_build_object('lead_id', l.id))
+      ${where.sql}
+      and lower(coalesce(l.stage, l.data->>'stage', '')) not in ('enrolled','lost','not eligible','deferred')
+      group by l.id, l.first_name, l.last_name, l.programme, l.stage, l.priority, l.owner
+    )
+    select *,
+      (recent_email_count * 3 + overdue_tasks * 4 + recent_applications * 5 + recent_events * 2
+       + case when priority in ('P0','P1') then 2 else 0 end) as score
+    from signals
+    where recent_email_count > 0 or overdue_tasks > 0 or recent_applications > 0 or recent_events > 0 or priority in ('P0','P1')
+    order by score desc, recent_email_at desc nulls last, id
+    limit 10
+  `, where.params);
+  return {
+    leads: result.rows.map(row => {
+      const reasons = [];
+      if (Number(row.recent_applications || 0)) reasons.push('Application started');
+      if (Number(row.overdue_tasks || 0)) reasons.push(`${row.overdue_tasks} overdue follow-up${Number(row.overdue_tasks) === 1 ? '' : 's'}`);
+      if (Number(row.recent_email_count || 0)) reasons.push('Recent inbound email');
+      if (Number(row.recent_events || 0)) reasons.push('Recent event activity');
+      if (['P0', 'P1'].includes(row.priority)) reasons.push(`${row.priority} priority`);
+      return { ...row, score: Number(row.score || 0), reasons };
+    })
+  };
+}
+
+async function loadDashboardSourcePerformanceDb(filters) {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) return { sources: [] };
+  const where = leadDashboardWhere(filters);
+  const result = await postgresPool.query(`
+    select
+      coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other') as source,
+      count(distinct l.id)::int as leads,
+      count(distinct l.id) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) in ('qualified','application submitted','eligibility','ready for enrolment','enrolled'))::int as qualified,
+      count(distinct a.id)::int as applications,
+      count(distinct a.id) filter (where a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled')::int as enrolled
+    from app_leads l
+    left join app_applications a on a.lead_id = l.id
+    ${where.sql}
+    group by source
+    order by leads desc, source
+    limit 12
+  `, where.params);
+  return { sources: result.rows };
+}
+
+function dashboardIntegrationRow(name, configured, connected, state, lastSyncAt, retryAction, user) {
+  const lastError = state?.last_error || '';
+  const status = !configured ? 'Disabled' : lastError ? 'Error' : state?.running ? 'Warning' : connected ? 'Healthy' : 'Warning';
+  const permissions = permissionsForUser(user);
+  return {
+    name,
+    status,
+    last_successful_sync: lastSyncAt || state?.last_result?.last_sync_at || null,
+    last_attempted_sync: state?.last_result?.last_sync_at || state?.next_run_at || lastSyncAt || null,
+    message: lastError ? String(lastError).replace(/token|secret|key|password|credential/ig, 'credential').slice(0, 180) : '',
+    retry_action: permissions.developer ? retryAction : '',
+    retry_allowed: Boolean(permissions.developer && retryAction)
+  };
+}
+
+function dashboardIntegrationHealthRows(user, workspace = {}) {
+  return [
+    dashboardIntegrationRow('Gmail', gmailConfigured(), Boolean(workspace.gmail?.connected), gmailAutoSyncState, workspace.gmail?.last_sync_at, 'gmail-sync', user),
+    dashboardIntegrationRow('Zoom', zoomConfigured(), zoomConfigured(), zoomAutoSyncState, workspace.meta?.zoom?.last_sync_at, 'zoom-sync', user),
+    dashboardIntegrationRow('Eventbrite', eventbriteConfigured() || eventbritePrivateTokenConfigured(), Boolean(workspace.eventbrite?.connected || eventbritePrivateTokenConfigured()), eventAutoSyncState, workspace.eventbrite?.last_sync_at, 'eventbrite-sync', user),
+    dashboardIntegrationRow('Meta', metaConfigured(), metaConfigured(), { last_result: { last_sync_at: workspace.meta?.last_sync_at }, last_error: null, running: false }, workspace.meta?.last_sync_at, 'meta-sync', user),
+    dashboardIntegrationRow('Apollo', apolloConfigured(), apolloConfigured(), { last_result: { last_sync_at: workspace.meta?.apollo?.last_sync_at }, last_error: null, running: false }, workspace.meta?.apollo?.last_sync_at, 'apollo-sync', user)
+  ];
+}
+
+async function loadDashboardIntegrationsDb(user) {
+  await ensureStorage();
+  let workspace = {};
+  if (postgresPool && usesPostgresStorage()) {
+    workspace = (await postgresPool.query(`select gmail, eventbrite, meta from app_workspace where id = $1`, ['main'])).rows[0] || {};
+  }
+  return { integrations: dashboardIntegrationHealthRows(user, workspace) };
+}
+
+async function loadDashboardActivityDb(filters, limit = 15) {
+  await ensureStorage();
+  const safeLimit = Math.max(1, Math.min(Number(limit || 15), 20));
+  if (!postgresPool || !usesPostgresStorage()) return { activity: loadAuditList(await loadDb(), safeLimit) };
+  const where = dashboardWhere(filters, {
+    date: 'a.occurred_at'
+  });
+  if (filters.owner_id) {
+    where.params.push(filters.owner_id);
+    where.sql = appendSqlCondition(where.sql, `(a.entity <> 'lead' or exists (select 1 from app_leads l where l.id = a.entity_id and l.owner_id = $${where.params.length}))`);
+  }
+  const result = await postgresPool.query(`
+    select
+      a.id,
+      a.occurred_at,
+      a.actor,
+      a.action,
+      a.entity,
+      a.entity_id,
+      case when a.entity = 'lead' then 'leads/' || a.entity_id else '' end as route
+    from app_audit a
+    ${where.sql}
+    order by a.occurred_at desc nulls last, a.id
+    limit $${where.params.length + 1}
+  `, [...where.params, safeLimit]);
+  return { activity: result.rows };
+}
+
+async function loadDashboardSearchDb(query, user) {
+  await ensureStorage();
+  const q = String(query || '').trim();
+  if (q.length < 2) return { query: q, leads: [], emails: [], applications: [], tasks: [] };
+  const like = `%${q.toLowerCase()}%`;
+  const permissions = permissionsForUser(user);
+  const ownerClause = permissions.review || permissions.admin || permissions.developer ? '' : 'and coalesce(l.owner_id, \'\') = $2';
+  const params = ownerClause ? [like, user.id] : [like];
+  if (!postgresPool || !usesPostgresStorage()) return { query: q, leads: [], emails: [], applications: [], tasks: [] };
+  const [leads, emails, applications, tasks] = await Promise.all([
+    postgresPool.query(`
+      select id, trim(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) as title, email as detail, 'leads/' || id as route
+      from app_leads l
+      where (lower(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) like $1 or lower(coalesce(email, '')) like $1 or lower(coalesce(phone, '')) like $1)
+      ${ownerClause}
+      order by created_at desc nulls last
+      limit 10
+    `, params),
+    postgresPool.query(`
+      select e.id, coalesce(e.subject, 'Email') as title, coalesce(e.email, '') as detail, 'inbox' as route
+      from app_emails e left join app_leads l on l.id = e.lead_id
+      where ${dashboardEmailNotTrashedSql('e')} and (lower(coalesce(e.email, '')) like $1 or lower(coalesce(e.subject, '')) like $1 or lower(coalesce(e.body, '')) like $1)
+      ${ownerClause}
+      order by e.received_at desc nulls last
+      limit 10
+    `, params),
+    postgresPool.query(`
+      select a.id, trim(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '')) as title, coalesce(a.programme, '') || ' · ' || coalesce(a.status, '') as detail, 'applications' as route
+      from app_applications a left join app_leads l on l.id = a.lead_id
+      where lower(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '') || ' ' || coalesce(a.programme, '') || ' ' || coalesce(a.status, '')) like $1
+      ${ownerClause}
+      order by a.created_at desc nulls last
+      limit 10
+    `, params),
+    postgresPool.query(`
+      select t.id, coalesce(t.title, 'Task') as title, coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '') as detail, 'planner' as route
+      from app_tasks t left join app_leads l on l.id = t.lead_id
+      where lower(coalesce(t.title, '') || ' ' || coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) like $1
+      ${ownerClause}
+      order by t.due_at asc nulls last
+      limit 10
+    `, params)
+  ]);
+  return { query: q, leads: leads.rows, emails: emails.rows, applications: applications.rows, tasks: tasks.rows };
 }
 
 async function loadBootstrapDb() {
@@ -2756,6 +3571,9 @@ async function loadBootstrapDb() {
     limit: emailLimit,
     has_more: hasMoreEmails
   };
+  // This workspace only contains the first page of every table. The flag keeps saveDb
+  // from reconciling (and deleting) records that were never loaded.
+  data.__partial_load = true;
   return recalculate(data);
 }
 
@@ -2990,6 +3808,54 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
   addAudit(db, actor, 'Team member password reset', 'user', target.email);
   await saveDb(db);
   return { ok: true, user: publicUser(target), temporary_password: password };
+}
+
+async function resetPasswordWithTokenFastDb(body) {
+  if (!usesPostgresStorage()) throw statusError(500, 'Password reset requires Neon/PostgreSQL storage.');
+  await ensureStorage();
+  const token = String(body.token || '').trim();
+  const password = String(body.password || '');
+  if (!token || !password) throw statusError(400, 'Reset token and new password are required.');
+  if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
+  const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+  const resetsTable = sqlIdentifier(POSTGRES_PASSWORD_RESETS_TABLE, 'app_password_resets');
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(
+      `select r.user_id
+       from ${resetsTable} r
+       join ${usersTable} u on u.id = r.user_id
+       where r.token_hash = $1
+         and r.used_at is null
+         and r.expires_at > now()
+       order by r.created_at desc
+       limit 1
+       for update of r`,
+      [tokenHash(token)]
+    );
+    const userId = result.rows[0]?.user_id;
+    if (!userId) throw statusError(400, 'This reset link is invalid or expired.');
+    await client.query(
+      `update ${usersTable}
+       set password_hash = $2,
+           temporary_password = '',
+           password_changed_at = now(),
+           updated_at = now()
+       where id = $1`,
+      [userId, hashPassword(password)]
+    );
+    await client.query(`update ${resetsTable} set used_at = now() where user_id = $1 and used_at is null`, [userId]);
+    await client.query('commit');
+    await clearUserSessions(userId);
+    dbCache = null;
+    return { ok: true };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function assertUserCanBeManaged(target, actor, action, nextRole = '') {
@@ -3280,6 +4146,970 @@ async function loadApplicationListDb() {
   return loadApplicationList(await loadDb());
 }
 
+async function nextPostgresId(client, table, prefix) {
+  const safeTable = sqlIdentifier(table, table);
+  const result = await client.query(
+    `select coalesce(max((substring(id from $1))::int), 0) + 1 as next from ${safeTable}`,
+    [`^${prefix}-(\\d+)$`]
+  );
+  return `${prefix}-${Number(result.rows[0]?.next || 1)}`;
+}
+
+const APPLICATION_DOCUMENT_TEMPLATES = [
+  ['training_plan', 'Training Plan', 'TrainingPlan-Training Plan v3 (5).pdf'],
+  ['onboarding_ilr', 'OnBoarding ILR', 'OnBoarding-ILR (3).pdf'],
+  ['employer_agreement', 'Employer Agreement Form', 'EmployerAgreementForm - Generic.pdf'],
+  ['written_agreement', 'Apprenticeship Written Agreement', 'Apprenticeship-WrittenAgreement V1.1 (2).pdf'],
+  ['apprenticeship_agreement', 'Apprenticeship Agreement', 'ApprenticeshipAgreement-Apprenticeship Agreement v5 (3).pdf']
+];
+
+async function seedDocumentTemplatesFromDisk() {
+  if (!postgresPool) return;
+  for (const [key, title, filename] of APPLICATION_DOCUMENT_TEMPLATES) {
+    const filePath = path.join(ROOT, filename);
+    let content = null;
+    try {
+      content = await fs.promises.readFile(filePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      continue;
+    }
+    await postgresPool.query(
+      `insert into app_document_templates (key, title, filename, content_type, content, updated_at)
+       values ($1, $2, $3, $4, $5, now())
+       on conflict (key) do update set
+         title = excluded.title,
+         filename = excluded.filename,
+         content_type = excluded.content_type,
+         content = excluded.content,
+         updated_at = now()`,
+      [key, title, filename, 'application/pdf', content]
+    );
+  }
+}
+
+function applicationRequirements(appId, files = [], options = {}) {
+  const byKey = new Map((Array.isArray(files) ? files : []).map(file => [String(file.key || ''), file]));
+  return APPLICATION_DOCUMENT_TEMPLATES.map(([key, title], index) => {
+    const file = byKey.get(key);
+    return {
+      id: `R-${appId}-${index + 1}`,
+      key,
+      title,
+      latest: file?.content_base64 ? {
+        id: `ER-${appId}-${index + 1}-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+        filename: String(file.filename || title),
+        version: 1,
+        status: options.verified ? 'Verified' : 'Pending',
+        reviewer: options.verified ? options.reviewer || null : null,
+        reviewed_at: options.verified ? new Date().toISOString() : null,
+        content_base64: file.content_base64
+      } : null
+    };
+  });
+}
+
+function applicationLearnerFromBody(body) {
+  if (!body.already_enrolled) return null;
+  return {
+    external_reference: body.learner_reference || body.external_reference || 'Already enrolled',
+    enrolled_at: body.enrolled_at || new Date().toISOString(),
+    note: body.enrolment_note || 'Added as an existing enrolled learner.'
+  };
+}
+
+async function createApplicationFastDb(body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [body.lead_id]);
+    const lead = leadResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    const intakeResult = body.intake_id
+      ? await client.query(`select data from app_intakes where id = $1 limit 1`, [body.intake_id])
+      : { rows: [] };
+    const intake = intakeResult.rows[0]?.data || null;
+    const now = new Date().toISOString();
+    const appId = await nextPostgresId(client, 'app_applications', 'A');
+    const learner = applicationLearnerFromBody(body);
+    const alreadyEnrolled = Boolean(learner);
+    const documentsNeedSignature = Boolean(body.documents_need_signature);
+    const evidenceVerified = alreadyEnrolled && !documentsNeedSignature;
+    const app = {
+      id: appId,
+      lead_id: lead.id,
+      first_name: lead.first_name,
+      last_name: lead.last_name,
+      programme: lead.programme,
+      intake: intake?.name || 'Next intake',
+      status: alreadyEnrolled ? 'Enrolled' : 'In review',
+      manager: user.name,
+      member: lead.first_name,
+      created_at: now,
+      contract: evidenceVerified ? { status: 'Verified', note: 'Existing enrolled learner documents uploaded.' } : { status: 'Draft', note: documentsNeedSignature ? 'Documents uploaded for learner signature.' : undefined },
+      requirements: applicationRequirements(appId, body.evidence_files, { verified: evidenceVerified, reviewer: user.name }),
+      learner
+    };
+    lead.stage = alreadyEnrolled ? 'Enrolled' : 'Application Submitted';
+    await client.query(
+      `update app_leads set stage = $2, data = $3::jsonb where id = $1`,
+      [lead.id, lead.stage, jsonValue(lead)]
+    );
+    await client.query(
+      `insert into app_applications (id, lead_id, first_name, last_name, programme, intake, status, manager, member, created_at, contract, requirements, learner, data)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb)`,
+      [app.id, app.lead_id, app.first_name, app.last_name, app.programme, app.intake, app.status, app.manager, app.member, app.created_at, jsonValue(app.contract), jsonValue(app.requirements), jsonValue(app.learner), jsonValue(app)]
+    );
+    let attribution = null;
+    if (alreadyEnrolled) {
+      const snapshot = { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture };
+      attribution = { ...lead, programme: app.programme, snapshot };
+      await client.query(
+        `insert into app_attribution (lead_id, email, programme, data) values ($1, $2, $3, $4::jsonb)`,
+        [lead.id, lead.email, app.programme, jsonValue(attribution)]
+      );
+    }
+    const audit = {
+      id: `AU-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      occurred_at: now,
+      actor: user.name,
+      action: alreadyEnrolled ? 'Existing learner enrolled' : 'Application started',
+      entity: 'lead',
+      entity_id: lead.id
+    };
+    await client.query(
+      `insert into app_audit (id, occurred_at, actor, action, entity, entity_id, data)
+       values ($1, $2::timestamptz, $3, $4, $5, $6, $7::jsonb)`,
+      [audit.id, audit.occurred_at, audit.actor, audit.action, audit.entity, audit.entity_id, jsonValue(audit)]
+    );
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app), lead, attribution };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function appendAuditFast(client, user, action, entity, entityId, detail = '') {
+  const audit = {
+    id: `AU-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    occurred_at: new Date().toISOString(),
+    actor: user.name,
+    action: detail ? `${action}: ${detail}` : action,
+    entity,
+    entity_id: entityId
+  };
+  await client.query(
+    `insert into app_audit (id, occurred_at, actor, action, entity, entity_id, data)
+     values ($1, $2::timestamptz, $3, $4, $5, $6, $7::jsonb)`,
+    [audit.id, audit.occurred_at, audit.actor, audit.action, audit.entity, audit.entity_id, jsonValue(audit)]
+  );
+  return audit;
+}
+
+async function updateLeadFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_leads where id = $1 for update`, [id]);
+    const lead = result.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    if (body.stage !== undefined) lead.stage = body.stage;
+    if (body.owner_id !== undefined) lead.owner_id = body.owner_id;
+    if (body.priority !== undefined) lead.priority = body.priority;
+    await client.query(
+      `update app_leads set stage = $2, owner_id = $3, priority = $4, data = $5::jsonb where id = $1`,
+      [lead.id, lead.stage || null, lead.owner_id || null, lead.priority || null, jsonValue(lead)]
+    );
+    await appendAuditFast(client, user, 'Opportunity updated', 'lead', lead.id, body.reason);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, lead };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function addLeadNoteFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select id from app_leads where id = $1 limit 1`, [id]);
+    if (!result.rows[0]) throw statusError(404, 'Lead not found.');
+    const audit = await appendAuditFast(client, user, 'Note added', 'lead', id, body.note);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, audit };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function createTaskFastDb(body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const leadResult = await client.query(`select data from app_leads where id = $1 limit 1`, [body.lead_id]);
+    const lead = leadResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    const task = {
+      id: `T-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      title: body.title,
+      lead_id: lead.id,
+      kind: body.kind,
+      status: 'Open',
+      created_at: new Date().toISOString(),
+      due_at: body.due_at,
+      priority: body.priority,
+      owner_id: body.owner_id
+    };
+    await client.query(
+      `insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data)
+       values ($1, $2, $3, $4, $5, $6::timestamptz, null, $7, $8, $9::jsonb)`,
+      [task.id, task.title, task.lead_id, task.kind, task.status, task.due_at, task.priority, task.owner_id, jsonValue(task)]
+    );
+    await appendAuditFast(client, user, 'Task created', 'lead', lead.id, body.title);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, task };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function completeTaskFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_tasks where id = $1 for update`, [id]);
+    const task = result.rows[0]?.data;
+    if (!task) throw statusError(404, 'Task not found.');
+    task.status = 'Done';
+    task.completed_at = new Date().toISOString();
+    await client.query(
+      `update app_tasks set status = $2, completed_at = $3::timestamptz, data = $4::jsonb where id = $1`,
+      [task.id, task.status, task.completed_at, jsonValue(task)]
+    );
+    await appendAuditFast(client, user, 'Task completed', 'lead', task.lead_id, task.title);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, task };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function createLeadFastDb(body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const programmeResult = await client.query(`select data from app_programmes where id = $1 limit 1`, [body.programme_id]);
+    const programme = programmeResult.rows[0]?.data;
+    if (!programme) throw statusError(400, 'Choose a programme.');
+    const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const ownerResult = body.owner_id
+      ? await client.query(`select id, name, email, role from ${usersTable} where id = $1 limit 1`, [body.owner_id])
+      : { rows: [] };
+    const owner = ownerResult.rows[0] || user;
+    const email = normalizeEmail(body.email);
+    if (isExcludedLeadSender(email, body.first_name, body.last_name)) throw statusError(400, 'This sender is excluded from lead creation.');
+    const existingResult = email
+      ? await client.query(`select data from app_leads where lower(email) = $1 limit 1 for update`, [email])
+      : { rows: [] };
+    const now = new Date().toISOString();
+    const normalized = {
+      first_name: body.first_name || nameParts('', email).first_name,
+      last_name: body.last_name || nameParts('', email).last_name,
+      full_name: `${body.first_name || nameParts('', email).first_name} ${body.last_name || nameParts('', email).last_name}`,
+      programme: programme.name,
+      programme_id: programme.id,
+      email,
+      employer: body.employer || '',
+      phone: body.phone || '',
+      city: body.city || '',
+      owner: owner?.name || user.name,
+      owner_id: owner?.id || user.id,
+      stage: 'New lead',
+      priority: body.priority || 'P2',
+      source_first_touch: body.source || 'Manual',
+      source_lead_capture: body.source || 'Manual',
+      contact_permission: body.contact_permission || 'Unknown',
+      level: programme.level || 'Needs review',
+      created_at: now,
+      next_action_at: null
+    };
+    let lead = existingResult.rows[0]?.data || null;
+    const created = !lead;
+    if (lead) {
+      lead = mergeLeadData(lead, normalized);
+    } else {
+      const id = leadIdForEmail({ leads: [] }, email || `${body.first_name}-${body.last_name}-${Date.now()}`);
+      lead = { ...normalized, id, person_id: id };
+      addLeadSource(lead, lead.source_lead_capture, { provider_id: '', captured_at: lead.created_at });
+    }
+    await client.query(
+      `insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::timestamptz, $20::timestamptz, $21::jsonb)
+       on conflict (id) do update set
+         person_id = excluded.person_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
+         employer = excluded.employer, phone = excluded.phone, city = excluded.city, programme_id = excluded.programme_id,
+         programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
+         stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
+         source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
+         created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
+      [lead.id, lead.person_id || lead.id, lead.first_name, lead.last_name, lead.email, lead.employer, lead.phone, lead.city, lead.programme_id, lead.programme, lead.level, lead.owner_id, lead.owner, lead.stage, lead.priority, lead.source_first_touch, lead.source_lead_capture, lead.contact_permission, lead.created_at, lead.next_action_at, jsonValue(lead)]
+    );
+    let task = null;
+    if (created) {
+      task = {
+        id: `T-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+        title: `First contact with ${body.first_name} ${body.last_name}`,
+        lead_id: lead.id,
+        kind: 'Call',
+        status: 'Open',
+        created_at: now,
+        due_at: new Date(Date.now() + 86400000).toISOString(),
+        priority: lead.priority,
+        owner_id: lead.owner_id
+      };
+      await client.query(
+        `insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data)
+         values ($1, $2, $3, $4, $5, $6::timestamptz, null, $7, $8, $9::jsonb)`,
+        [task.id, task.title, task.lead_id, task.kind, task.status, task.due_at, task.priority, task.owner_id, jsonValue(task)]
+      );
+    }
+    await appendAuditFast(client, user, created ? 'Lead created' : 'Lead updated from duplicate submission', 'lead', lead.id);
+    await client.query('commit');
+    dbCache = null;
+    return { id: lead.id, lead, task, created };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function addProgrammeOpportunityFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [id]);
+    const programmeResult = await client.query(`select data from app_programmes where id = $1 limit 1`, [body.programme_id]);
+    const lead = leadResult.rows[0]?.data;
+    const programme = programmeResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    if (!programme) throw statusError(400, 'Choose a programme.');
+    lead.programme_history ||= [];
+    if (!lead.programme_history.some(item => item.programme_id === lead.programme_id)) {
+      lead.programme_history.push({ programme_id: lead.programme_id, programme: lead.programme, level: lead.level, added_at: lead.created_at || new Date().toISOString() });
+    }
+    if (!lead.programme_history.some(item => item.programme_id === programme.id)) {
+      lead.programme_history.push({ programme_id: programme.id, programme: programme.name, level: programme.level, added_at: new Date().toISOString() });
+    }
+    lead.programme_id = programme.id;
+    lead.programme = programme.name;
+    lead.level = programme.level;
+    lead.stage = 'New lead';
+    lead.next_action_at = null;
+    await client.query(
+      `update app_leads set programme_id = $2, programme = $3, level = $4, stage = $5, next_action_at = null, data = $6::jsonb where id = $1`,
+      [lead.id, lead.programme_id, lead.programme, lead.level, lead.stage, jsonValue(lead)]
+    );
+    await appendAuditFast(client, user, 'Programme opportunity linked', 'lead', lead.id, programme.name);
+    await client.query('commit');
+    dbCache = null;
+    return { id: lead.id, lead, created: false };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function logCallFastDb(body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const leadResult = await client.query(`select data from app_leads where id = $1 limit 1`, [body.lead_id]);
+    const lead = leadResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    let task = null;
+    if (body.follow_up) {
+      task = {
+        id: `T-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+        title: body.next_action,
+        lead_id: lead.id,
+        kind: 'Follow-up',
+        status: 'Open',
+        created_at: new Date().toISOString(),
+        due_at: body.due_at,
+        priority: lead.priority,
+        owner_id: lead.owner_id
+      };
+      await client.query(
+        `insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data)
+         values ($1, $2, $3, $4, $5, $6::timestamptz, null, $7, $8, $9::jsonb)`,
+        [task.id, task.title, task.lead_id, task.kind, task.status, task.due_at, task.priority, task.owner_id, jsonValue(task)]
+      );
+    }
+    await appendAuditFast(client, user, `Call ${body.outcome}`, 'lead', lead.id, body.note);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, task };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function recordEmailFastDb(body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const leadResult = await client.query(`select data from app_leads where id = $1 limit 1`, [body.lead_id]);
+    const lead = leadResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    const received = new Date(body.received_at);
+    const receivedAt = Number.isNaN(received.getTime()) ? new Date() : received;
+    const email = {
+      id: `E-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      first_name: lead.first_name,
+      last_name: lead.last_name,
+      email: lead.email,
+      lead_id: lead.id,
+      subject: body.subject,
+      body: body.body,
+      owner: lead.owner,
+      direction: 'inbound',
+      response_at: null,
+      due_at: new Date(receivedAt.getTime() + EMAIL_RESPONSE_SLA_MS).toISOString(),
+      received_at: receivedAt.toISOString()
+    };
+    await client.query(
+      `insert into app_emails (id, lead_id, first_name, last_name, email, subject, body, owner, response_at, response_note, due_at, received_at, gmail_message_id, data)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, null, null, $9::timestamptz, $10::timestamptz, null, $11::jsonb)`,
+      [email.id, email.lead_id, email.first_name, email.last_name, email.email, email.subject, email.body, email.owner, email.due_at, email.received_at, jsonValue(email)]
+    );
+    await appendAuditFast(client, user, 'Inbound email recorded', 'lead', lead.id, body.subject);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, email };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function resolveEmailFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_emails where id = $1 for update`, [id]);
+    const email = result.rows[0]?.data;
+    if (!email) throw statusError(404, 'Email not found.');
+    const responseAt = new Date(body.response_at);
+    email.response_at = Number.isNaN(responseAt.getTime()) || responseAt.getFullYear() <= 2000 ? new Date().toISOString() : responseAt.toISOString();
+    email.response_note = body.note;
+    await client.query(
+      `update app_emails set response_at = $2::timestamptz, response_note = $3, data = $4::jsonb where id = $1`,
+      [email.id, email.response_at, email.response_note, jsonValue(email)]
+    );
+    await appendAuditFast(client, user, 'Email response recorded', 'lead', email.lead_id, body.note);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, email };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function updateEmailReadStateFastDb(id, body) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_emails where id = $1 for update`, [id]);
+    const email = result.rows[0]?.data;
+    if (!email) throw statusError(404, 'Email not found.');
+    const isRead = body.is_read !== false;
+    email.is_read = isRead;
+    if (isRead) {
+      email.gmail_labels = (email.gmail_labels || []).filter(label => label !== 'UNREAD');
+      email.gmail_label_names = (email.gmail_label_names || []).filter(label => String(label).toLowerCase() !== 'unread');
+    } else {
+      email.gmail_labels = [...new Set([...(email.gmail_labels || []), 'UNREAD'])];
+      email.gmail_label_names = [...new Set([...(email.gmail_label_names || []), 'Unread'])];
+    }
+    await client.query(`update app_emails set data = $2::jsonb where id = $1`, [email.id, jsonValue(email)]);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, email: publicEmailSummary(email) };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function checkInAttendeeFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const eventResult = await client.query(
+      `select data from app_events where attendees @> $1::jsonb limit 1 for update`,
+      [JSON.stringify([{ id }])]
+    );
+    const event = eventResult.rows[0]?.data;
+    if (!event) throw statusError(404, 'Attendee not found.');
+    const attendee = (event.attendees || []).find(item => item.id === id);
+    if (!attendee) throw statusError(404, 'Attendee not found.');
+    attendee.attended_at = attendee.attended_at || new Date().toISOString();
+    attendee.status = attendee.status || 'Attended';
+    event.attendance = (event.attendees || []).filter(item => item.attended_at).length;
+    let task = null;
+    if (attendee.lead_id) {
+      const leadResult = await client.query(`select data from app_leads where id = $1 limit 1`, [attendee.lead_id]);
+      const lead = leadResult.rows[0]?.data;
+      if (lead) {
+        task = {
+          id: `T-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+          title: 'Follow up after event attendance',
+          lead_id: lead.id,
+          kind: 'Follow-up',
+          status: 'Open',
+          created_at: new Date().toISOString(),
+          due_at: new Date(Date.now() + 86400000).toISOString(),
+          priority: lead.priority,
+          owner_id: lead.owner_id
+        };
+        await client.query(
+          `insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data)
+           values ($1, $2, $3, $4, $5, $6::timestamptz, null, $7, $8, $9::jsonb)`,
+          [task.id, task.title, task.lead_id, task.kind, task.status, task.due_at, task.priority, task.owner_id, jsonValue(task)]
+        );
+        await appendAuditFast(client, user, 'Event attendee checked in', 'lead', lead.id, `${attendee.first_name || ''} ${attendee.last_name || ''}`.trim());
+      }
+    }
+    await client.query(
+      `update app_events set attendance = $2, attendees = $3::jsonb, data = $4::jsonb where id = $1`,
+      [event.id, event.attendance, jsonValue(event.attendees || []), jsonValue(event)]
+    );
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, attendee, event, task };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function uploadEvidenceFastDb(id, body) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_applications where id = $1 for update`, [id]);
+    const app = result.rows[0]?.data;
+    if (!app) throw statusError(404, 'Application not found.');
+    const req = (app.requirements || []).find(item => item.id === body.requirement_id);
+    if (!req) throw statusError(404, 'Requirement not found.');
+    req.latest = {
+      id: `ER-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      filename: body.filename,
+      version: (req.latest?.version || 0) + 1,
+      status: 'Pending',
+      reviewer: null,
+      content_base64: body.content_base64
+    };
+    if (!app.learner) app.status = 'In review';
+    await client.query(
+      `update app_applications set status = $2, requirements = $3::jsonb, data = $4::jsonb where id = $1`,
+      [app.id, app.status, jsonValue(app.requirements || []), jsonValue(app)]
+    );
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app) };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function sendEvidenceFileFastDb(id, res) {
+  if (!postgresPool) return false;
+  await ensureStorage();
+  const result = await postgresPool.query(
+    `select data from app_applications
+     where jsonb_path_exists(requirements, '$[*].latest ? (@.id == $evidence_id)', jsonb_build_object('evidence_id', $1::text))
+     limit 1`,
+    [id]
+  );
+  const app = result.rows[0]?.data;
+  const req = (app?.requirements || []).find(item => item.latest?.id === id);
+  if (!req?.latest?.content_base64) throw statusError(404, 'Evidence not found.');
+  const filename = String(req.latest.filename || 'evidence-file').replace(/[\r\n"]/g, '_');
+  const content = Buffer.from(req.latest.content_base64 || '', 'base64');
+  res.writeHead(200, {
+    'Content-Type': mime[path.extname(filename).toLowerCase()] || 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${filename}"`
+  });
+  res.end(content);
+  return true;
+}
+
+async function sendDocumentTemplateFile(key, res) {
+  const template = APPLICATION_DOCUMENT_TEMPLATES.find(([itemKey]) => itemKey === key);
+  if (!template) throw statusError(404, 'Document template not found.');
+  await ensureStorage();
+  if (postgresPool) {
+    const result = await postgresPool.query(
+      `select title, filename, content_type, content from app_document_templates where key = $1 limit 1`,
+      [key]
+    );
+    const row = result.rows[0];
+    if (!row) throw statusError(404, 'Document template not found.');
+    const filename = String(row.filename || template[2]).replace(/[\r\n"]/g, '_');
+    res.writeHead(200, {
+      'Content-Type': row.content_type || 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Cache-Control': 'private, max-age=300'
+    });
+    res.end(row.content);
+    return true;
+  }
+  const filename = template[2];
+  const filePath = path.resolve(ROOT, filename);
+  const rootPath = path.resolve(ROOT);
+  if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) throw statusError(404, 'Document template not found.');
+  const content = await fs.promises.readFile(filePath).catch(() => null);
+  if (!content) throw statusError(404, 'Document template not found.');
+  res.writeHead(200, {
+    'Content-Type': 'application/pdf',
+    'Content-Disposition': `attachment; filename="${filename.replace(/[\r\n"]/g, '_')}"`,
+    'Cache-Control': 'private, max-age=300'
+  });
+  res.end(content);
+  return true;
+}
+
+async function reviewEvidenceFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(
+      `select data from app_applications
+       where jsonb_path_exists(requirements, '$[*].latest ? (@.id == $evidence_id)', jsonb_build_object('evidence_id', $1::text))
+       limit 1 for update`,
+      [id]
+    );
+    const app = result.rows[0]?.data;
+    if (!app) throw statusError(404, 'Evidence not found.');
+    const req = (app.requirements || []).find(item => item.latest?.id === id);
+    if (!req?.latest) throw statusError(404, 'Evidence not found.');
+    req.latest.status = body.status;
+    req.latest.reviewer = user.name;
+    req.latest.review_note = body.note;
+    await client.query(
+      `update app_applications set requirements = $2::jsonb, data = $3::jsonb where id = $1`,
+      [app.id, jsonValue(app.requirements || []), jsonValue(app)]
+    );
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app), evidence: { ...req.latest, content_base64: undefined } };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function reviewApplicationFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const appResult = await client.query(`select data from app_applications where id = $1 for update`, [id]);
+    const app = appResult.rows[0]?.data;
+    if (!app) throw statusError(404, 'Application not found.');
+    const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [app.lead_id]);
+    const lead = leadResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    app.status = body.status;
+    lead.stage = body.status === 'Eligible' ? 'Ready for Enrolment' : 'Not Eligible';
+    await client.query(`update app_applications set status = $2, data = $3::jsonb where id = $1`, [app.id, app.status, jsonValue(app)]);
+    await client.query(`update app_leads set stage = $2, data = $3::jsonb where id = $1`, [lead.id, lead.stage, jsonValue(lead)]);
+    await appendAuditFast(client, user, 'Eligibility decision', 'lead', lead.id, body.status);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app), lead };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function verifyContractFastDb(id, body) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_applications where id = $1 for update`, [id]);
+    const app = result.rows[0]?.data;
+    if (!app) throw statusError(404, 'Application not found.');
+    app.contract = {
+      status: 'Verified',
+      signatory: body.signatory,
+      signed_at: body.signed_at,
+      note: body.note,
+      consistency_confirmed: body.consistency_confirmed
+    };
+    await client.query(
+      `update app_applications set contract = $2::jsonb, data = $3::jsonb where id = $1`,
+      [app.id, jsonValue(app.contract), jsonValue(app)]
+    );
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app) };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function enrolApplicationFastDb(id, body, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const appResult = await client.query(`select data from app_applications where id = $1 for update`, [id]);
+    const app = appResult.rows[0]?.data;
+    if (!app) throw statusError(404, 'Application not found.');
+    const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [app.lead_id]);
+    const lead = leadResult.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    app.status = 'Enrolled';
+    app.learner = { external_reference: body.external_reference, enrolled_at: new Date().toISOString(), note: body.note };
+    lead.stage = 'Enrolled';
+    const snapshot = { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture };
+    const attribution = { ...lead, programme: app.programme, snapshot };
+    await client.query(`update app_applications set status = $2, learner = $3::jsonb, data = $4::jsonb where id = $1`, [app.id, app.status, jsonValue(app.learner), jsonValue(app)]);
+    await client.query(`update app_leads set stage = $2, data = $3::jsonb where id = $1`, [lead.id, lead.stage, jsonValue(lead)]);
+    await client.query(
+      `insert into app_attribution (lead_id, email, programme, data) values ($1, $2, $3, $4::jsonb)`,
+      [lead.id, lead.email, app.programme, jsonValue(attribution)]
+    );
+    await appendAuditFast(client, user, 'Learner enrolled', 'lead', lead.id, body.external_reference);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app), lead, attribution };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function deleteLeadFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_leads where id = $1 for update`, [id]);
+    const lead = result.rows[0]?.data;
+    if (!lead) throw statusError(404, 'Lead not found.');
+    await client.query(`delete from app_tasks where lead_id = $1`, [id]);
+    await client.query(`delete from app_emails where lead_id = $1`, [id]);
+    await client.query(`delete from app_applications where lead_id = $1`, [id]);
+    await client.query(`delete from app_attribution where lead_id = $1`, [id]);
+    await client.query(`delete from app_leads where id = $1`, [id]);
+    await appendAuditFast(client, user, 'Lead deleted', 'lead', id, fullName(lead));
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, deleted: { leads: [id], tasks_for_lead: id, emails_for_lead: id, applications_for_lead: id } };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function deleteTaskFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_tasks where id = $1 for update`, [id]);
+    const task = result.rows[0]?.data;
+    if (!task) throw statusError(404, 'Task not found.');
+    await client.query(`delete from app_tasks where id = $1`, [id]);
+    await appendAuditFast(client, user, 'Task deleted', 'lead', task.lead_id, task.title);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, deleted: { tasks: [id] } };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function deleteEmailFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_emails where id = $1 for update`, [id]);
+    const email = result.rows[0]?.data;
+    if (!email) throw statusError(404, 'Email not found.');
+    await client.query(`delete from app_emails where id = $1`, [id]);
+    await appendAuditFast(client, user, 'Email deleted', 'lead', email.lead_id, email.subject);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, deleted: { emails: [id] } };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function deleteApplicationFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(`select data from app_applications where id = $1 for update`, [id]);
+    const app = result.rows[0]?.data;
+    if (!app) throw statusError(404, 'Application not found.');
+    let lead = null;
+    if (app.lead_id) {
+      const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [app.lead_id]);
+      lead = leadResult.rows[0]?.data || null;
+      if (lead && ['Application Submitted', 'Eligibility', 'Ready for Enrolment', 'Not Eligible', 'Enrolled'].includes(lead.stage)) {
+        lead.stage = 'Qualified';
+        await client.query(`update app_leads set stage = $2, data = $3::jsonb where id = $1`, [lead.id, lead.stage, jsonValue(lead)]);
+      }
+    }
+    await client.query(`delete from app_attribution where lead_id = $1 and programme = $2`, [app.lead_id, app.programme]);
+    await client.query(`delete from app_applications where id = $1`, [id]);
+    await appendAuditFast(client, user, 'Application deleted', 'lead', app.lead_id || id, app.programme);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, deleted: { applications: [id] }, lead };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function deleteEvidenceFastDb(id, user) {
+  if (!postgresPool) return null;
+  await ensureStorage();
+  const client = await postgresPool.connect();
+  try {
+    await client.query('begin');
+    const result = await client.query(
+      `select data from app_applications
+       where jsonb_path_exists(requirements, '$[*].latest ? (@.id == $evidence_id)', jsonb_build_object('evidence_id', $1::text))
+       limit 1 for update`,
+      [id]
+    );
+    const app = result.rows[0]?.data;
+    if (!app) throw statusError(404, 'Evidence not found.');
+    const req = (app.requirements || []).find(item => item.latest?.id === id);
+    if (!req?.latest) throw statusError(404, 'Evidence not found.');
+    const filename = req.latest.filename;
+    req.latest = null;
+    app.status = (app.requirements || []).some(item => item.latest?.status === 'Pending') ? 'In review' : app.status;
+    await client.query(
+      `update app_applications set status = $2, requirements = $3::jsonb, data = $4::jsonb where id = $1`,
+      [app.id, app.status, jsonValue(app.requirements || []), jsonValue(app)]
+    );
+    await appendAuditFast(client, user, 'Evidence deleted', 'application', app.id, filename);
+    await client.query('commit');
+    dbCache = null;
+    return { ok: true, application: publicApplication(app), deleted: { evidence: [id] } };
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 function isZoomEventRecord(event = {}) {
   return Boolean(
     event.zoom_meeting_id ||
@@ -3310,6 +5140,34 @@ async function loadZoomEventListDb(limit = 2000) {
     .filter(isZoomEventRecord)
     .sort((a, b) => new Date(b.start_at || 0) - new Date(a.start_at || 0))
     .slice(0, safeLimit);
+}
+
+async function loadZoomCallPageDb(limit = 50, offset = 0) {
+  await ensureStorage();
+  const safeLimit = Math.max(1, Math.min(Number(limit || 50), 250));
+  const safeOffset = Math.max(0, Number(offset || 0));
+  let zoomState = dbCache?.zoom?.calls?.length ? dbCache.zoom : {};
+  if (postgresPool && !(zoomState.calls || []).length) {
+    const result = await postgresPool.query(`select meta->'zoom' as zoom from app_workspace where id = $1`, ['main']);
+    zoomState = result.rows[0]?.zoom || {};
+  }
+  if (!(zoomState.calls || []).length) {
+    zoomState = (await loadDb()).zoom || {};
+  }
+  const allCalls = (zoomState.calls || [])
+    .map(call => hydrateZoomStoredCall({ leads: [] }, call))
+    .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
+  const calls = allCalls.slice(safeOffset, safeOffset + safeLimit);
+  return {
+    calls,
+    total: allCalls.length,
+    offset: safeOffset,
+    limit: safeLimit,
+    loaded: safeOffset + calls.length,
+    has_more: safeOffset + calls.length < allCalls.length,
+    next_offset: safeOffset + calls.length,
+    last_sync_at: zoomState.last_call_sync_at || null
+  };
 }
 
 async function loadAuditListDb(limit = 100) {
@@ -4751,8 +6609,9 @@ async function importSpreadsheetEvents(db, user, input = {}) {
   }
   if (!eventMap.size && EVENTS_INCREMENTAL_ONLY) return { imported_events: 0, updated_events: 0, imported_attendees: 0, linked_leads: 0, skipped_old: true };
   if (!eventMap.size) throw statusError(400, 'No event rows were found. Include at least attendee name or email.');
+  const reconciliation = reconcileImportedData(db, user);
   addAudit(db, user, 'Events imported from Excel', 'integration', 'Excel', `${eventMap.size} events, ${importedAttendees} attendees, ${linkedLeads} linked leads`);
-  return { imported_events: importedEvents, updated_events: eventMap.size - importedEvents, imported_attendees: importedAttendees, linked_leads: linkedLeads };
+  return { imported_events: importedEvents, updated_events: eventMap.size - importedEvents, imported_attendees: importedAttendees, linked_leads: linkedLeads + reconciliation.attendees_linked, reconciliation };
 }
 
 async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
@@ -4884,9 +6743,10 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
     if (!(db.eventbrite.imported_event_ids || []).includes(event.id)) db.eventbrite.imported_event_ids = [...(db.eventbrite.imported_event_ids || []), event.id];
   }
   db.eventbrite.last_sync_at = new Date().toISOString();
+  const reconciliation = reconcileImportedData(db, user);
   addAudit(db, user, 'Eventbrite synced', 'integration', 'Eventbrite', `${importedEvents} events, ${importedAttendees} attendees${deletedEventIds.size ? `, ${deletedEventIds.size} removed` : ''}${attendeeErrors ? `, ${attendeeErrors} attendee import warnings` : ''}`);
   if (options.save !== false) await saveDb(db);
-  return { imported_events: importedEvents, imported_attendees: importedAttendees, deleted_events: deletedEventIds.size, deleted_event_ids: [...deletedEventIds], deletion_scan_complete: eventbriteIdScanComplete, scanned: events.length, attendee_errors: attendeeErrors, last_sync_at: db.eventbrite.last_sync_at };
+  return { imported_events: importedEvents, imported_attendees: importedAttendees, deleted_events: deletedEventIds.size, deleted_event_ids: [...deletedEventIds], deletion_scan_complete: eventbriteIdScanComplete, scanned: events.length, attendee_errors: attendeeErrors, reconciliation, last_sync_at: db.eventbrite.last_sync_at };
 }
 
 async function zoomAccessToken(account) {
@@ -5068,6 +6928,14 @@ function leadForZoomCall(db, record = {}) {
   return (db.leads || []).find(lead => numbers.some(number => samePhone(lead.phone, number))) || null;
 }
 
+function zoomCallLeadMatch(db, record = {}) {
+  for (const lead of db.leads || []) {
+    if (samePhone(lead.phone, record.caller_number)) return { lead, side: 'caller', number: record.caller_number };
+    if (samePhone(lead.phone, record.callee_number)) return { lead, side: 'callee', number: record.callee_number };
+  }
+  return { lead: null, side: '', number: '' };
+}
+
 function zoomMeetingPathId(meeting = {}) {
   const value = String(meeting.uuid || meeting.id || '').trim();
   return encodeURIComponent(value);
@@ -5238,6 +7106,48 @@ function zoomCallParticipants(call = {}) {
   return call.call_participants || call.participants || call.users || [];
 }
 
+function zoomCallPartyName(party = {}) {
+  return String(party.name || party.display_name || party.user_name || party.extension_name || party.email || '').trim();
+}
+
+function zoomCallPartyNumber(party = {}) {
+  return String(party.phone_number || party.number || party.extension_number || party.extension || '').trim();
+}
+
+function usableZoomPhone(value = '') {
+  const text = String(value || '').trim();
+  return phoneDigits(text).length >= 7 ? text : '';
+}
+
+function zoomCallPhoneCandidates(call = {}, role = '') {
+  const matches = [];
+  const rolePattern = role === 'caller' ? /caller|from|source/i : role === 'callee' ? /callee|to|target|destination/i : /./;
+  const walk = (value, path = '') => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      const nextPath = path ? `${path}.${key}` : key;
+      if (child && typeof child === 'object') {
+        walk(child, nextPath);
+        continue;
+      }
+      if (!rolePattern.test(nextPath)) continue;
+      if (!/(phone|did|number)$/i.test(key)) continue;
+      if (/country|type|ext|extension|id$/i.test(key)) continue;
+      const phone = usableZoomPhone(child);
+      if (phone) matches.push({ path: nextPath, phone });
+    }
+  };
+  walk(call);
+  return matches;
+}
+
+function zoomCallBestNumber(call = {}, role = 'caller', party = {}) {
+  const direct = role === 'caller'
+    ? zoomCallField(call, 'caller_number', 'caller_did_number', 'caller.phone_number', 'from.phone_number', 'from.did_number', 'source.phone_number', 'source.did_number')
+    : zoomCallField(call, 'callee_number', 'callee_did_number', 'callee.phone_number', 'to.phone_number', 'to.did_number', 'destination.phone_number', 'destination.did_number');
+  return usableZoomPhone(direct) || usableZoomPhone(zoomCallPartyNumber(party)) || zoomCallPhoneCandidates(call, role)[0]?.phone || '';
+}
+
 function zoomCallParty(call = {}, role = 'caller') {
   const regex = role === 'caller' ? /caller|from|source/i : /callee|to|target|destination/i;
   return zoomCallParticipants(call).find(item => regex.test(`${item.role || ''} ${item.type || ''} ${item.direction || ''}`)) || {};
@@ -5246,10 +7156,19 @@ function zoomCallParty(call = {}, role = 'caller') {
 function normalizeZoomCallRecord(db, account, call = {}) {
   const caller = zoomCallParty(call, 'caller');
   const callee = zoomCallParty(call, 'callee');
-  const callerNumber = String(zoomCallField(call, 'caller_number', 'from.phone_number', 'caller.phone_number') || caller.phone_number || caller.number || '').trim();
-  const calleeNumber = String(zoomCallField(call, 'callee_number', 'to.phone_number', 'callee.phone_number') || callee.phone_number || callee.number || '').trim();
+  const callerNumber = zoomCallBestNumber(call, 'caller', caller);
+  const calleeNumber = zoomCallBestNumber(call, 'callee', callee);
   const startedAt = zoomCallField(call, 'start_time', 'date_time', 'startTime', 'call_start_time', 'answer_start_time') || new Date().toISOString();
   const callKey = String(call.call_history_uuid || call.call_history_id || call.call_id || call.id || [startedAt, callerNumber, calleeNumber, call.duration].join('|'));
+  const direction = String(call.direction || call.call_direction || '').toLowerCase() || 'unknown';
+  const ownerName = String(call.owner?.name || call.user_name || call.extension_name || call.user?.name || '').trim();
+  const participants = zoomCallParticipants(call).map(item => ({
+    role: item.role || item.type || item.direction || '',
+    name: zoomCallPartyName(item),
+    number: zoomCallPartyNumber(item),
+    email: normalizeEmail(item.email || item.user_email || ''),
+    extension: String(item.extension_number || item.extension || '').trim()
+  })).filter(item => item.name || item.number || item.email || item.extension);
   const record = {
     id: `ZC-${numericHash(`${account.accountId}|${callKey}`)}`,
     zoom_call_id: String(call.call_id || callKey),
@@ -5257,22 +7176,34 @@ function normalizeZoomCallRecord(db, account, call = {}) {
     zoom_account_id: account.accountId,
     zoom_account_label: account.label,
     started_at: startedAt,
-    direction: String(call.direction || call.call_direction || '').toLowerCase() || 'unknown',
+    direction,
     result: String(call.result || call.call_result || call.disposition || call.status || ''),
     duration: Number(call.duration || call.talk_time || call.total_duration || 0),
-    caller_name: String(zoomCallField(call, 'caller_name', 'from.name', 'caller.name') || caller.name || ''),
+    caller_name: String(zoomCallField(call, 'caller_name', 'from.name', 'caller.name') || zoomCallPartyName(caller) || ''),
     caller_number: callerNumber,
-    callee_name: String(zoomCallField(call, 'callee_name', 'to.name', 'callee.name') || callee.name || ''),
+    caller_digits: phoneDigits(callerNumber),
+    callee_name: String(zoomCallField(call, 'callee_name', 'to.name', 'callee.name') || zoomCallPartyName(callee) || ''),
     callee_number: calleeNumber,
-    owner_name: String(call.owner?.name || call.user_name || call.extension_name || ''),
+    callee_digits: phoneDigits(calleeNumber),
+    owner_name: ownerName,
+    owner_extension: String(call.extension_number || call.extension || call.owner?.extension_number || '').trim(),
     site_name: String(call.site?.name || ''),
-    path: String(call.path || call.connect_type || call.call_type || ''),
+    path: String(call.path || call.connect_type || call.call_type || call.call_path || ''),
+    source: 'Zoom Phone',
+    source_detail: [account.label, ownerName, String(call.site?.name || ''), String(call.path || call.connect_type || call.call_type || '')].filter(Boolean).join(' / '),
+    call_type: String(call.call_type || call.type || call.connect_type || ''),
+    department: String(call.department || call.cost_center || ''),
+    participants,
     raw: call
   };
-  const lead = leadForZoomCall(db, record);
+  const match = zoomCallLeadMatch(db, record);
+  const lead = match.lead;
   if (lead) {
     record.lead_id = lead.id;
     record.lead_name = fullName(lead);
+    record.matched_side = match.side;
+    record.matched_number = match.number;
+    record.matched_source = 'CRM lead phone';
   }
   return record;
 }
@@ -5311,7 +7242,10 @@ async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), option
   db.zoom.calls ||= [];
   const accounts = zoomAccounts();
   if (!accounts.length) throw statusError(400, 'Zoom credentials are not configured. Add ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET to .env.');
-  const existing = new Map((db.zoom.calls || []).map(call => [call.id, call]));
+  const existing = new Map((db.zoom.calls || []).map(call => {
+    const hydrated = hydrateZoomStoredCall(db, call);
+    return [hydrated.id, hydrated];
+  }));
   let scanned = 0, importedCalls = 0, updatedCalls = 0;
   const warnings = [];
   for (const account of accounts) {
@@ -5335,6 +7269,7 @@ async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), option
   }
   db.zoom.calls = [...existing.values()].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0)).slice(0, Math.max(zoomCallMaxRecords(options), existing.size));
   db.zoom.last_call_sync_at = new Date().toISOString();
+  const reconciliation = reconcileImportedData(db, user);
   addAudit(db, user, 'Zoom calls synced', 'integration', 'Zoom Phone', `${importedCalls} created, ${updatedCalls} updated, ${scanned} scanned across ${accounts.length} accounts`);
   if (options.save !== false) await saveDb(db);
   return {
@@ -5344,7 +7279,25 @@ async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), option
     accounts: accounts.length,
     call_history_months: zoomCallHistoryMonths(options),
     warnings: [...new Set(warnings.filter(Boolean))],
+    reconciliation,
     last_sync_at: db.zoom.last_call_sync_at
+  };
+}
+
+function hydrateZoomStoredCall(db, call = {}) {
+  if ((call.caller_number && call.callee_number) || !call.raw) return call;
+  const account = {
+    accountId: call.zoom_account_id || call.raw.zoom_account_id || 'zoom',
+    label: call.zoom_account_label || call.raw.zoom_account_label || 'Zoom'
+  };
+  const normalized = normalizeZoomCallRecord(db, account, call.raw);
+  return {
+    ...call,
+    ...normalized,
+    id: call.id || normalized.id,
+    created_at: call.created_at,
+    updated_at: call.updated_at,
+    raw: call.raw
   };
 }
 
@@ -5533,6 +7486,7 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
   db.zoom.user_id = zoomSyncAllUsers() ? `all users across ${accounts.length} accounts` : (process.env.ZOOM_USER_ID || 'me');
   db.zoom.accounts = accounts.length;
   const reportHistorySkipped = Object.values(db.zoom.sync_state || {}).filter(item => item?.report_history_unavailable).length;
+  const reconciliation = reconcileImportedData(db, user);
   addAudit(db, user, 'Zoom meetings synced', 'integration', 'Zoom', `${importedEvents} created, ${updatedEvents} updated, ${meetings.length} scanned from ${hostCount} users across ${accounts.length} accounts, ${importedAttendees} attendees, ${importedPhones} phones (${meetingTypes.join(', ')}${zoomIncludeHistory() ? ', report_history' : ''})`);
   if (options.save !== false) await saveDb(db);
   return {
@@ -5550,6 +7504,7 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
     history_warnings: [...new Set(historyWarnings)],
     report_history_skipped: reportHistorySkipped,
     all_users: zoomSyncAllUsers(),
+    reconciliation,
     last_sync_at: db.zoom.last_sync_at
   };
 }
@@ -5631,9 +7586,10 @@ async function importMetaLeads(db, user, maxLeads = 50) {
     if (!(db.meta.imported_form_ids || []).includes(form.id)) db.meta.imported_form_ids = [...(db.meta.imported_form_ids || []), form.id];
   }
   db.meta.last_sync_at = new Date().toISOString();
+  const reconciliation = reconcileImportedData(db, user);
   addAudit(db, user, 'Meta leads synced', 'integration', 'Meta', `${imported} new leads from ${forms.length} forms`);
   await saveDb(db);
-  return { imported, scanned, forms: forms.length, last_sync_at: db.meta.last_sync_at };
+  return { imported, scanned, forms: forms.length, reconciliation, last_sync_at: db.meta.last_sync_at };
 }
 
 function apolloOrgName(person = {}) {
@@ -5692,9 +7648,10 @@ async function importApolloPeople(db, user, maxPeople = 25) {
     else if (result.lead) updated += 1;
   }
   db.apollo.last_sync_at = new Date().toISOString();
+  const reconciliation = reconcileImportedData(db, user);
   addAudit(db, user, 'Apollo prospects synced', 'integration', 'Apollo', `${imported} created, ${updated} updated, ${scanned} scanned`);
   await saveDb(db);
-  return { imported, updated, scanned, last_sync_at: db.apollo.last_sync_at };
+  return { imported, updated, scanned, reconciliation, last_sync_at: db.apollo.last_sync_at };
 }
 
 function statusError(status, message) {
@@ -5733,6 +7690,11 @@ function sendJson(res, value, status = 200, headers = {}) {
   res.end(JSON.stringify(value));
 }
 
+function requestPath(req) {
+  try { return new URL(req.url, `http://${req.headers.host}`).pathname; }
+  catch { return req.url || ''; }
+}
+
 function sessionCookie(req, sid, maxAge = SESSION_TTL / 1000) {
   const secure = requestIsSecure(req) ? '; Secure' : '';
   return `sid=${sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`;
@@ -5742,10 +7704,7 @@ function recordApiError(req, error) {
   const status = error.status || 500;
   monitoringState.api_errors.unshift({
     occurred_at: new Date().toISOString(),
-    route: (() => {
-      try { return new URL(req.url, `http://${req.headers.host}`).pathname; }
-      catch { return req.url || ''; }
-    })(),
+    route: requestPath(req),
     method: req.method,
     status,
     message: error.message || 'Server error.'
@@ -5753,14 +7712,60 @@ function recordApiError(req, error) {
   monitoringState.api_errors = monitoringState.api_errors.slice(0, 25);
 }
 
+function recordApiTiming(req, status, startedAt) {
+  const durationMs = performance.now() - startedAt;
+  const route = requestPath(req);
+  const timing = {
+    occurred_at: new Date().toISOString(),
+    route,
+    method: req.method,
+    status,
+    duration_ms: Number(durationMs.toFixed(1))
+  };
+  monitoringState.api_timings.unshift(timing);
+  monitoringState.api_timings = monitoringState.api_timings.slice(0, 50);
+  if (durationMs >= API_TIMING_WARN_MS) {
+    console.warn(`[timing] ${req.method} ${route} ${status} ${durationMs.toFixed(1)}ms`);
+  }
+}
+
+// Only browser assets that live in the web root are public.
+// Secrets and internal files (.env, .env.hostinger), data/scripts/sql/src/dist folders,
+// deploy snapshots, backups and archives are never served, even though they sit next to
+// the frontend files on disk.
+const PUBLIC_STATIC_EXTENSIONS = new Set(['.html', '.js', '.css', '.webmanifest', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2']);
+const PUBLIC_STATIC_BLOCKED_NAMES = new Set(['server.js']);
+const PUBLIC_STATIC_DEFAULT_FILE = 'index.html';
+
+function publicStaticFile(pathname) {
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(String(pathname || ''));
+  } catch {
+    return null;
+  }
+  if (!decoded || decoded === '/') return PUBLIC_STATIC_DEFAULT_FILE;
+  if (!decoded.startsWith('/')) return null;
+  const segments = decoded.slice(1).split('/');
+  if (segments.length !== 1) return null;
+  const name = segments[0];
+  if (!name || name.startsWith('.') || PUBLIC_STATIC_BLOCKED_NAMES.has(name.toLowerCase())) return null;
+  const ext = path.extname(name).toLowerCase();
+  if (!PUBLIC_STATIC_EXTENSIONS.has(ext)) return null;
+  return name;
+}
+
 function serveStatic(req, res) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, { error: 'Not found.' }, 404);
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const pathname = url.pathname === '/' ? '/index.html' : decodeURIComponent(url.pathname);
-  const filePath = path.normalize(path.join(ROOT, pathname));
-  if (!filePath.startsWith(ROOT)) return sendJson(res, { error: 'Not found.' }, 404);
+  const name = publicStaticFile(url.pathname);
+  if (!name) return sendJson(res, { error: 'Not found.' }, 404);
+  const filePath = path.resolve(ROOT, name);
+  const rootPath = path.resolve(ROOT);
+  if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) return sendJson(res, { error: 'Not found.' }, 404);
   fs.readFile(filePath, (error, content) => {
     if (error) return sendJson(res, { error: 'Not found.' }, 404);
-    res.writeHead(200, { 'Content-Type': mime[path.extname(filePath)] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': mime[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
     res.end(content);
   });
 }
@@ -5799,12 +7804,41 @@ async function handleApi(req, res) {
     const user = await currentSessionUser(req);
     const db = await loadBootstrapDb();
     const payload = bootstrap(db, user);
-    payload.marketing = null;
+    payload.marketing = await loadMarketingSummary();
+    payload.dashboard = await loadDashboardSummaryDb();
     return sendJson(res, payload);
   }
   if (route === '/api/dashboard/summary' && method === 'GET') {
-    await currentSessionUser(req);
-    return sendJson(res, await loadDashboardSummaryDb());
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardCockpitSummaryDb(parseDashboardFilters(url, user), user));
+  }
+  if (route === '/api/dashboard/pipeline' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardPipelineDb(parseDashboardFilters(url, user)));
+  }
+  if (route === '/api/dashboard/my-work' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardMyWorkDb(parseDashboardFilters(url, user), user));
+  }
+  if (route === '/api/dashboard/priority-leads' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardPriorityLeadsDb(parseDashboardFilters(url, user)));
+  }
+  if (route === '/api/dashboard/source-performance' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardSourcePerformanceDb(parseDashboardFilters(url, user)));
+  }
+  if (route === '/api/dashboard/integrations' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardIntegrationsDb(user));
+  }
+  if (route === '/api/dashboard/activity' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardActivityDb(parseDashboardFilters(url, user), url.searchParams.get('limit')));
+  }
+  if (route === '/api/dashboard/search' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardSearchDb(url.searchParams.get('q'), user));
   }
   if (route === '/api/leads' && method === 'GET') {
     await currentSessionUser(req);
@@ -5867,9 +7901,133 @@ async function handleApi(req, res) {
     await currentSessionUser(req);
     return sendJson(res, { applications: await loadApplicationListDb() });
   }
+  if (route === '/api/applications' && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await createApplicationFastDb(body, user), 201);
+  }
+  if (route === '/api/leads' && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    const result = await createLeadFastDb(body, user);
+    return sendJson(res, result, result.created ? 201 : 200);
+  }
+  lightweightMatch = route.match(/^\/api\/leads\/([^/]+)$/);
+  if (lightweightMatch && method === 'PATCH' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await updateLeadFastDb(lightweightMatch[1], body, user));
+  }
+  if (lightweightMatch && method === 'DELETE' && postgresPool) {
+    const user = await currentSessionUser(req);
+    if (!permissionsForUser(user).sales) throw statusError(403, 'You do not have permission to delete leads.');
+    return sendJson(res, await deleteLeadFastDb(lightweightMatch[1], user));
+  }
+  lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/opportunities$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await addProgrammeOpportunityFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/notes$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await addLeadNoteFastDb(lightweightMatch[1], body, user), 201);
+  }
+  if (route === '/api/tasks' && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await createTaskFastDb(body, user), 201);
+  }
+  lightweightMatch = route.match(/^\/api\/tasks\/([^/]+)\/complete$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await completeTaskFastDb(lightweightMatch[1], user));
+  }
+  lightweightMatch = route.match(/^\/api\/tasks\/([^/]+)$/);
+  if (lightweightMatch && method === 'DELETE' && postgresPool) {
+    const user = await currentSessionUser(req);
+    if (!permissionsForUser(user).sales) throw statusError(403, 'You do not have permission to delete tasks.');
+    return sendJson(res, await deleteTaskFastDb(lightweightMatch[1], user));
+  }
+  lightweightMatch = route.match(/^\/api\/attendees\/([^/]+)\/checkin$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await checkInAttendeeFastDb(lightweightMatch[1], user));
+  }
+  if (route === '/api/calls' && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await logCallFastDb(body, user));
+  }
+  if (route === '/api/emails' && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await recordEmailFastDb(body, user), 201);
+  }
+  lightweightMatch = route.match(/^\/api\/emails\/([^/]+)\/resolve$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await resolveEmailFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/emails\/([^/]+)\/read$/);
+  if (lightweightMatch && method === 'PATCH' && postgresPool) {
+    await currentSessionUser(req);
+    return sendJson(res, await updateEmailReadStateFastDb(lightweightMatch[1], body));
+  }
+  lightweightMatch = route.match(/^\/api\/emails\/([^/]+)$/);
+  if (lightweightMatch && method === 'DELETE' && postgresPool) {
+    const user = await currentSessionUser(req);
+    if (!permissionsForUser(user).sales) throw statusError(403, 'You do not have permission to delete emails.');
+    return sendJson(res, await deleteEmailFastDb(lightweightMatch[1], user));
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/evidence$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    await currentSessionUser(req);
+    return sendJson(res, await uploadEvidenceFastDb(lightweightMatch[1], body), 201);
+  }
+  lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)\/review$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await reviewEvidenceFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)$/);
+  if (lightweightMatch && method === 'DELETE' && postgresPool) {
+    const user = await currentSessionUser(req);
+    if (!permissionsForUser(user).review && !permissionsForUser(user).sales) throw statusError(403, 'You do not have permission to delete evidence.');
+    return sendJson(res, await deleteEvidenceFastDb(lightweightMatch[1], user));
+  }
+  lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)\/file$/);
+  if (lightweightMatch && method === 'GET' && postgresPool) {
+    await currentSessionUser(req);
+    return sendEvidenceFileFastDb(lightweightMatch[1], res);
+  }
+  lightweightMatch = route.match(/^\/api\/document-templates\/([^/]+)\/file$/);
+  if (lightweightMatch && method === 'GET') {
+    await currentSessionUser(req);
+    return sendDocumentTemplateFile(decodeURIComponent(lightweightMatch[1]), res);
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/review$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await reviewApplicationFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/contract$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    await currentSessionUser(req);
+    return sendJson(res, await verifyContractFastDb(lightweightMatch[1], body));
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/enrol$/);
+  if (lightweightMatch && method === 'POST' && postgresPool) {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await enrolApplicationFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)$/);
+  if (lightweightMatch && method === 'DELETE' && postgresPool) {
+    const user = await currentSessionUser(req);
+    if (!permissionsForUser(user).review && !permissionsForUser(user).sales) throw statusError(403, 'You do not have permission to delete applications.');
+    return sendJson(res, await deleteApplicationFastDb(lightweightMatch[1], user));
+  }
   if (route === '/api/zoom/events' && method === 'GET') {
     await currentSessionUser(req);
     return sendJson(res, { events: await loadZoomEventListDb(url.searchParams.get('limit')) });
+  }
+  if (route === '/api/zoom/calls' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadZoomCallPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
   }
   if (route === '/api/audit' && method === 'GET') {
     await currentSessionUser(req);
@@ -5879,7 +8037,21 @@ async function handleApi(req, res) {
     await currentSessionUser(req);
     return sendJson(res, { attribution: await loadAttributionListDb(url.searchParams.get('limit')) });
   }
+  if (route === '/api/password/reset' && method === 'POST') {
+    return sendJson(res, await resetPasswordWithTokenFastDb(body));
+  }
+  if (route === '/api/logout' && method === 'POST') {
+    await currentSessionUser(req);
+    const sid = parseCookies(req).sid;
+    await deleteSession(sid);
+    return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
+  }
+  const loadDbStart = performance.now();
   const db = await loadDb();
+  const loadDbMs = performance.now() - loadDbStart;
+  if (/^\/api\/(?:leads|tasks|applications|attendees|calls|emails|evidence)/.test(route) && ['POST', 'PATCH', 'DELETE'].includes(method)) {
+    console.warn(`[perf] ${method} ${route} used legacy loadDb path in ${loadDbMs.toFixed(1)}ms`);
+  }
   if (route === '/api/password/forgot' && method === 'POST') {
     if (!postgresPool) throw statusError(500, 'Password reset requires Neon/PostgreSQL storage.');
     const email = normalizeEmail(body.email);
@@ -5907,38 +8079,11 @@ async function handleApi(req, res) {
     }
     return sendJson(res, { ok: true, message: 'If this email is registered, a reset link has been sent.' });
   }
-  if (route === '/api/password/reset' && method === 'POST') {
-    if (!postgresPool) throw statusError(500, 'Password reset requires Neon/PostgreSQL storage.');
-    const token = String(body.token || '').trim();
-    const password = String(body.password || '');
-    if (!token || !password) throw statusError(400, 'Reset token and new password are required.');
-    if (password.length < 8) throw statusError(400, 'Password must be at least 8 characters.');
-    const resetsTable = sqlIdentifier(POSTGRES_PASSWORD_RESETS_TABLE, 'app_password_resets');
-    const result = await postgresPool.query(
-      `select * from ${resetsTable} where token_hash = $1 and used_at is null and expires_at > now() order by created_at desc limit 1`,
-      [tokenHash(token)]
-    );
-    const reset = result.rows[0];
-    if (!reset) throw statusError(400, 'This reset link is invalid or expired.');
-    const user = db.users.find(item => item.id === reset.user_id);
-    if (!user) throw statusError(400, 'This reset link is invalid or expired.');
-    user.password_hash = hashPassword(password);
-    user.temporary_password = '';
-    user.password_changed_at = new Date().toISOString();
-    await saveDb(db);
-    await postgresPool.query(`update ${resetsTable} set used_at = now() where user_id = $1 and used_at is null`, [user.id]);
-    await clearUserSessions(user.id);
-    return sendJson(res, { ok: true });
-  }
   const user = await currentSessionUser(req);
-  if (route === '/api/logout' && method === 'POST') {
-    const sid = parseCookies(req).sid;
-    await deleteSession(sid);
-    return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
-  }
-  if (route === '/api/developer/config' && method === 'GET') {
-    requireDeveloperAccess(req, user);
-    return sendJson(res, developerConfig(req, recalculate(db)));
+  if (route === '/api/leads/reconcile' && method === 'POST') {
+    const summary = reconcileImportedData(db, user);
+    await saveDb(db);
+    return sendJson(res, { ok: true, summary });
   }
   if (route === '/api/monitoring/system' && method === 'GET') {
     const now = Date.now();
@@ -5950,6 +8095,7 @@ async function handleApi(req, res) {
       last_save_at: monitoringState.last_save_at,
       api_errors: monitoringState.api_errors,
       api_error_count: monitoringState.api_errors.length,
+      api_timings: monitoringState.api_timings,
       background_jobs: {
         gmail: gmailAutoSyncState,
         events: eventAutoSyncState,
@@ -5958,14 +8104,9 @@ async function handleApi(req, res) {
       audit_24h: (db.audit || []).filter(item => new Date(item.occurred_at || 0) >= since).length
     });
   }
-  if (route === '/api/bootstrap' && method === 'GET') {
-    const changed = runIdentityCleanupInMemory(db, user);
-    const payload = bootstrap(db, user);
-    payload.marketing = await loadMarketingSummary();
-    sendJson(res, payload);
-    if (!changed) scheduleIdentityCleanup(db, user);
-    return;
-  }
+  // GET /api/bootstrap and GET /api/developer/config are handled by the lightweight
+  // handlers earlier in this function. They intentionally return before this point so a
+  // full workspace is never loaded for a page refresh.
   if (route === '/api/integrations/gmail/status' && method === 'GET') {
     return sendJson(res, {
       configured: gmailConfigured(),
@@ -6103,7 +8244,7 @@ async function handleApi(req, res) {
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 250));
     const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
     const allCalls = (db.zoom?.calls || [])
-      .slice()
+      .map(call => hydrateZoomStoredCall(db, call))
       .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
     const calls = allCalls.slice(offset, offset + limit);
     return sendJson(res, {
@@ -6332,11 +8473,22 @@ async function handleApi(req, res) {
   if (route === '/api/applications' && method === 'POST') {
     const lead = leadFor(db, body.lead_id);
     const intake = db.intakes.find(item => item.id === body.intake_id);
-    lead.stage = 'Application Submitted';
-    db.applications.push({ id: nextId('A', [db.applications]), lead_id: lead.id, first_name: lead.first_name, last_name: lead.last_name, programme: lead.programme, intake: intake?.name || 'Next intake', status: 'In review', manager: user.name, member: lead.first_name, created_at: new Date().toISOString(), contract: { status: 'Draft' }, requirements: [{ id: nextId('R', [db.applications.flatMap(app => app.requirements)]), title: 'Proof of right to work', latest: null }, { id: nextId('R', [db.applications.flatMap(app => app.requirements), ['R-99']]), title: 'Employer sponsorship form', latest: null }], learner: null });
-    addAudit(db, user, 'Application started', 'lead', lead.id);
+    const alreadyEnrolled = Boolean(body.already_enrolled);
+    const learner = applicationLearnerFromBody(body);
+    const appId = nextId('A', [db.applications]);
+    lead.stage = alreadyEnrolled ? 'Enrolled' : 'Application Submitted';
+    const documentsNeedSignature = Boolean(body.documents_need_signature);
+    const evidenceVerified = alreadyEnrolled && !documentsNeedSignature;
+    const app = { id: appId, lead_id: lead.id, first_name: lead.first_name, last_name: lead.last_name, programme: lead.programme, intake: intake?.name || 'Next intake', status: alreadyEnrolled ? 'Enrolled' : 'In review', manager: user.name, member: lead.first_name, created_at: new Date().toISOString(), contract: evidenceVerified ? { status: 'Verified', note: 'Existing enrolled learner documents uploaded.' } : { status: 'Draft', note: documentsNeedSignature ? 'Documents uploaded for learner signature.' : undefined }, requirements: applicationRequirements(appId, body.evidence_files, { verified: evidenceVerified, reviewer: user.name }), learner };
+    db.applications.push(app);
+    let attribution = null;
+    if (alreadyEnrolled) {
+      attribution = { ...lead, programme: app.programme, snapshot: { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture } };
+      db.attribution.unshift(attribution);
+    }
+    addAudit(db, user, alreadyEnrolled ? 'Existing learner enrolled' : 'Application started', 'lead', lead.id);
     await saveDb(db);
-    return sendJson(res, { ok: true }, 201);
+    return sendJson(res, { ok: true, application: publicApplication(app), lead, attribution }, 201);
   }
 
   match = route.match(/^\/api\/applications\/([^/]+)\/evidence$/);
@@ -6345,7 +8497,7 @@ async function handleApi(req, res) {
     const req = app.requirements.find(item => item.id === body.requirement_id);
     if (!req) throw statusError(404, 'Requirement not found.');
     req.latest = { id: nextId('ER', [db.applications.flatMap(a => a.requirements.map(r => r.latest).filter(Boolean))]), filename: body.filename, version: (req.latest?.version || 0) + 1, status: 'Pending', reviewer: null, content_base64: body.content_base64 };
-    app.status = 'In review';
+    if (!app.learner) app.status = 'In review';
     await saveDb(db);
     return sendJson(res, { ok: true }, 201);
   }
@@ -6415,11 +8567,14 @@ async function handleApi(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const startedAt = performance.now();
+  const apiRequest = requestPath(req).startsWith('/api/');
+  if (apiRequest) res.once('finish', () => recordApiTiming(req, res.statusCode, startedAt));
   try {
-    if (new URL(req.url, `http://${req.headers.host}`).pathname.startsWith('/api/')) return await handleApi(req, res);
+    if (apiRequest) return await handleApi(req, res);
     return serveStatic(req, res);
   } catch (error) {
-    if (new URL(req.url, `http://${req.headers.host}`).pathname.startsWith('/api/')) recordApiError(req, error);
+    if (apiRequest) recordApiError(req, error);
     sendJson(res, { error: error.message || 'Server error.' }, error.status || 500);
   }
 });
@@ -6434,8 +8589,11 @@ if (process.env.NEST_COMPAT_MODE !== 'true') {
 module.exports = {
   handleApi,
   serveStatic,
+  publicStaticFile,
+  withoutIntegrationSecrets,
   startAutoSync,
   server,
+  bootstrap,
   loadDb,
   saveDb,
   saveEventImportTables,
