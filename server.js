@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const tls = require('node:tls');
+const zlib = require('node:zlib');
+const { monitorEventLoopDelay, performance: perfHooksPerformance } = require('node:perf_hooks');
 const XLSX = require('xlsx');
 
 const ROOT = __dirname;
@@ -24,18 +26,46 @@ const POSTGRES_PASSWORD_RESETS_TABLE = process.env.POSTGRES_PASSWORD_RESETS_TABL
 const POSTGRES_SESSIONS_TABLE = process.env.POSTGRES_SESSIONS_TABLE || 'app_sessions';
 const SESSION_TTL = 8 * 60 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 10 * 60 * 1000;
+const SESSION_AUTH_CACHE_MS = Math.max(0, Math.min(Number(process.env.SESSION_AUTH_CACHE_MS || 60000), 120000));
+const LEAD_SOFT_DELETE_CONFIG = String(process.env.LEAD_SOFT_DELETE_ENABLED || '').trim().toLowerCase();
 const memorySessions = new Map();
+const postgresSessionUserLookups = new Map();
+const postgresSessionUserCache = new Map();
+let sessionAuthCacheEpoch = 0;
 let mongoClient = null;
 let mongoStateCollection = null;
 let postgresPool = null;
+let postgresPoolWarmup = null;
 let postgresUserSchemaReady = false;
 let postgresSchemaReady = false;
 let storageReady = null;
 let dbCache = null;
+// When the cache was last filled from storage. Other processes (background workers,
+// a second server sharing the same DATABASE_URL) write straight to the tables, so the
+// cache must expire or those rows never become visible here.
+let dbCacheLoadedAt = 0;
+// Row ids present in the last full Postgres load, per table. Saves only delete rows
+// that were loaded and then removed, never rows another writer inserted meanwhile.
+const postgresLoadedIds = new Map();
 let identityCleanupRunning = false;
+const DB_CACHE_TTL_MS = Math.max(0, Math.min(Number(process.env.DB_CACHE_TTL_MS ?? 5 * 60 * 1000), 30 * 60 * 1000));
 
 const GMAIL_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'];
+const DEFAULT_ZOHO_MODULES = ['Leads', 'Contacts', 'Accounts', 'Deals', 'Tasks', 'Calls', 'Events', 'Campaigns', 'Notes'];
+const DEFAULT_ZOHO_SCOPES = [
+  'ZohoCRM.modules.leads.READ',
+  'ZohoCRM.modules.contacts.READ',
+  'ZohoCRM.modules.accounts.READ',
+  'ZohoCRM.modules.deals.READ',
+  'ZohoCRM.modules.tasks.READ',
+  'ZohoCRM.modules.calls.READ',
+  'ZohoCRM.modules.events.READ',
+  'ZohoCRM.modules.campaigns.READ',
+  'ZohoCRM.modules.notes.READ',
+  'ZohoCRM.users.READ'
+];
 const EMAIL_RESPONSE_SLA_MS = 48 * 60 * 60 * 1000;
+const EMAIL_LIST_STATEMENT_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.EMAIL_LIST_STATEMENT_TIMEOUT_MS || 5000), 30000));
 const DEFAULT_DEVELOPER_EMAIL = 'mohamedmashalyeng@gmail.com';
 const LEGACY_DEVELOPER_EMAILS = ['alteam.kbc@gmail.com'];
 const GMAIL_IMPORT_ENABLED = String(process.env.GMAIL_IMPORT || 'true').toLowerCase() !== 'false';
@@ -64,6 +94,23 @@ const ZOOM_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.ZO
 const ZOOM_AUTO_SYNC_MAX_MEETINGS = Math.max(1, Math.min(Number(process.env.ZOOM_AUTO_SYNC_MAX_MEETINGS || process.env.ZOOM_MAX_MEETINGS || 500), 5000));
 const ZOOM_AUTO_SYNC_MAX_CALLS = Math.max(1, Math.min(Number(process.env.ZOOM_AUTO_SYNC_MAX_CALLS || 250), 1000));
 const ZOOM_REQUEST_DELAY_MS = Math.max(0, Number(process.env.ZOOM_REQUEST_DELAY_MS || 350));
+const ZOHO_SYNC_BATCH_SIZE = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_BATCH_SIZE || 200), 200));
+const ZOHO_SYNC_CONCURRENCY = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_CONCURRENCY || 2), 3));
+const ZOHO_SYNC_POLL_INTERVAL_MS = Math.max(1000, Math.min(Number(process.env.ZOHO_SYNC_POLL_INTERVAL_MS || 2500), 10000));
+const ZOHO_SYNC_WORKER_YIELD_MS = Math.max(50, Math.min(Number(process.env.ZOHO_SYNC_WORKER_YIELD_MS || 150), 10000));
+const ZOHO_SYNC_MAX_PAGES_PER_MODULE = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_MAX_PAGES_PER_MODULE || 1000), 10000));
+const ZOHO_SYNC_MODULE_CONCURRENCY = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_MODULE_CONCURRENCY || 3), 5));
+const ZOHO_FETCH_ATTEMPTS = 5;
+const ZOHO_JOB_LEASE_MS = 3 * 60 * 1000;
+const ZOHO_WORKER_ID = `${require('os').hostname()}:${process.pid}:${crypto.randomBytes(3).toString('hex')}`;
+// ZOHO_SYNC_WORKER=false keeps this process from pulling Zoho jobs (for example a local
+// server sharing the production database); jobs are still created and read normally.
+const ZOHO_SYNC_WORKER_ENABLED = String(process.env.ZOHO_SYNC_WORKER || 'true').toLowerCase() !== 'false';
+const ZOHO_AUTO_SYNC_ENABLED = ZOHO_SYNC_WORKER_ENABLED && String(process.env.ZOHO_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const ZOHO_AUTO_SYNC_INTERVAL_MS = Math.max(5 * 60 * 1000, Math.min(Number(process.env.ZOHO_AUTO_SYNC_INTERVAL_MS || 15 * 60 * 1000), 24 * 60 * 60 * 1000));
+// Incremental runs re-read a small overlap before the last mark so edits made while that
+// sync was running are not missed.
+const ZOHO_INCREMENTAL_OVERLAP_MS = 10 * 60 * 1000;
 const PROGRAMME_CATALOG = [
   { id: 'pr-cim-l4', name: 'CIM Certificate in Professional and Digital Marketing', level: 'Level 4' },
   { id: 'pr-cim-l6', name: 'CIM Diploma in Professional and Digital Marketing', level: 'Level 6' },
@@ -89,9 +136,33 @@ let eventAutoSyncState = { enabled: EVENT_AUTO_SYNC_ENABLED, running: false, las
 let zoomAutoSyncTimer = null;
 let zoomAutoSyncRunning = false;
 let zoomAutoSyncState = { enabled: ZOOM_AUTO_SYNC_ENABLED, meetings: ZOOM_AUTO_SYNC_MEETINGS, calls: ZOOM_AUTO_SYNC_CALLS, running: false, last_result: null, last_error: null, next_run_at: null };
+const activeZohoSyncWorkers = new Set();
 const serverStartedAt = new Date();
 const API_TIMING_WARN_MS = Math.max(100, Number(process.env.API_TIMING_WARN_MS || 1000));
+const API_PERF_TRACE_ENABLED = String(process.env.API_PERF_TRACE || '').toLowerCase() === 'true';
+const API_DEBUG_ENDPOINTS_ENABLED = String(process.env.API_DEBUG_ENDPOINTS || '').toLowerCase() === 'true' || process.env.NODE_ENV !== 'production';
+const POSTGRES_POOL_MAX = Math.max(1, Math.min(Number(process.env.POSTGRES_POOL_MAX || 10), 50));
+const POSTGRES_POOL_WARM_CONNECTIONS = Math.max(0, Math.min(Number(process.env.POSTGRES_POOL_WARM_CONNECTIONS || 2), POSTGRES_POOL_MAX));
+const POSTGRES_POOL_IDLE_TIMEOUT_MS = Math.max(30000, Math.min(Number(process.env.POSTGRES_POOL_IDLE_TIMEOUT_MS || 10 * 60 * 1000), 60 * 60 * 1000));
+const POSTGRES_POOL_CONNECTION_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.POSTGRES_POOL_CONNECTION_TIMEOUT_MS || 10000), 60000));
+const MONITORING_STATEMENT_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.MONITORING_STATEMENT_TIMEOUT_MS || 5000), 30000));
+const MONITORING_SNAPSHOT_TTL_MS = Math.max(5000, Math.min(Number(process.env.MONITORING_SNAPSHOT_TTL_MS || 120000), 5 * 60 * 1000));
+const MONITORING_SNAPSHOT_ENABLED = String(process.env.MONITORING_SNAPSHOT_ENABLED || 'true').toLowerCase() !== 'false';
+const MONITORING_SNAPSHOT_PROACTIVE_ENABLED = String(process.env.MONITORING_SNAPSHOT_PROACTIVE_ENABLED || 'true').toLowerCase() !== 'false';
+const MONITORING_SNAPSHOT_REFRESH_INTERVAL_MS = Math.max(30000, Math.min(Number(process.env.MONITORING_SNAPSHOT_REFRESH_INTERVAL_MS || 60000), 5 * 60 * 1000));
+const MONITORING_SNAPSHOT_REFRESH_LOCK_MS = Math.max(30000, Math.min(Number(process.env.MONITORING_SNAPSHOT_REFRESH_LOCK_MS || 2 * 60 * 1000), 10 * 60 * 1000));
+const MONITORING_SNAPSHOT_MEMORY_CACHE_MS = Math.max(0, Math.min(Number(process.env.MONITORING_SNAPSHOT_MEMORY_CACHE_MS || 1000), 5000));
 const monitoringState = { last_save_at: null, api_errors: [], api_timings: [] };
+let monitoringSnapshotTimer = null;
+const activeMonitoringSnapshotRefreshKeys = new Set();
+const monitoringSnapshotMemoryCache = new Map();
+const monitoringSnapshotReadPromises = new Map();
+const externalFetchCounters = { gmail: 0, google: 0, zoho: 0, zoom: 0, eventbrite: 0, meta: 0, apollo: 0 };
+const eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelayMonitor.enable();
+let eventLoopUtilizationBaseline = perfHooksPerformance.eventLoopUtilization
+  ? perfHooksPerformance.eventLoopUtilization()
+  : null;
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -129,11 +200,44 @@ function verifyPassword(password, stored) {
 }
 
 function loadEnv() {
-  const envFile = ['.env', '.env.hostinger']
+  const envFile = ['.env', '.env.hostinger', 'hostinger.env', 'env.hostinger']
     .map(name => path.join(ROOT, name))
     .find(file => fs.existsSync(file));
   if (!envFile) return;
-  const fileWins = new Set(['DEV_PANEL_PASSWORD', 'INITIAL_ADMIN_PASSWORD']);
+  const fileWins = new Set([
+    'INITIAL_ADMIN_EMAIL',
+    'INITIAL_ADMIN_PASSWORD',
+    'INITIAL_ADMIN_NAME',
+    'INITIAL_ADMIN_ROLE',
+    'DEV_PANEL_EMAIL',
+    'DEV_PANEL_PASSWORD',
+    'DEV_PANEL_NAME',
+    'DEV_PANEL_ROLE',
+    'DEV_PANEL_FORCE_PASSWORD',
+    'GMAIL_CLIENT_ID',
+    'GMAIL_CLIENT_SECRET',
+    'GMAIL_REDIRECT_URI',
+    'EVENTBRITE_CLIENT_ID',
+    'EVENTBRITE_CLIENT_SECRET',
+    'EVENTBRITE_REDIRECT_URI',
+    'EVENTBRITE_PRIVATE_TOKEN',
+    'ZOHO_CLIENT_ID',
+    'ZOHO_CLIENT_SECRET',
+    'ZOHO_REDIRECT_URI',
+    'ZOHO_AUTH_ACCOUNTS_URL',
+    'ZOHO_ACCOUNTS_URL',
+    'ZOHO_API_BASE_URL',
+    'ZOHO_SCOPES',
+    'INITIAL_ADMIN_EMAIL',
+    'INITIAL_ADMIN_PASSWORD',
+    'INITIAL_ADMIN_NAME',
+    'INITIAL_ADMIN_ROLE',
+    'DEV_PANEL_EMAIL',
+    'DEV_PANEL_PASSWORD',
+    'DEV_PANEL_NAME',
+    'DEV_PANEL_ROLE',
+    'DEV_PANEL_FORCE_PASSWORD'
+  ]);
   for (const line of fs.readFileSync(envFile, 'utf8').split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -145,15 +249,18 @@ function loadEnv() {
   }
 }
 
+// The seeded admin is hashed once per process: pbkdf2 (120,000 rounds) is synchronous and used
+// to block the event loop for ~60 ms on every recalculate()/seedDatabase() call.
+let initialUsersCache = null;
 function initialUsers() {
-  const password_hash = hashPassword(process.env.INITIAL_ADMIN_PASSWORD || 'ChangeMeNow!2026');
-  return [{
+  initialUsersCache ||= [{
     id: 'local-user',
     name: process.env.INITIAL_ADMIN_NAME || 'Kent Alteam',
     email: process.env.INITIAL_ADMIN_EMAIL || 'alteam.kbc@gmail.com',
     role: process.env.INITIAL_ADMIN_ROLE || 'admin',
-    password_hash
+    password_hash: hashPassword(process.env.INITIAL_ADMIN_PASSWORD || 'ChangeMeNow!2026')
   }];
+  return initialUsersCache.map(user => ({ ...user }));
 }
 
 function developerBootstrapConfig() {
@@ -248,14 +355,17 @@ function temporaryPassword() {
   return crypto.randomBytes(9).toString('base64url') + '#KBC1';
 }
 
+const DEFAULT_STAGES = ['New lead', 'Qualified', 'Application Submitted', 'Eligibility', 'Ready for Enrolment', 'Enrolled', 'Not Eligible', 'Lost'];
+const DEFAULT_SOURCES = ['Website', 'Referral', 'Event', 'Meta', 'LinkedIn', 'Cold outreach'];
+
 function seedDatabase() {
   const users = initialUsers();
   return recalculate({
     demo: false,
     users,
     programmes: PROGRAMME_CATALOG.map(item => ({ ...item })),
-    stages: ['New lead', 'Qualified', 'Application Submitted', 'Eligibility', 'Ready for Enrolment', 'Enrolled', 'Not Eligible', 'Lost'],
-    sources: ['Website', 'Referral', 'Event', 'Meta', 'LinkedIn', 'Cold outreach'],
+    stages: DEFAULT_STAGES.slice(),
+    sources: DEFAULT_SOURCES.slice(),
     leads: [],
     tasks: [],
     emails: [],
@@ -285,6 +395,64 @@ function usesPostgresStorage() {
 function storageMode() {
   if (usesPostgresStorage()) return 'postgres';
   return usesMongoStorage() ? 'mongodb' : 'json-file';
+}
+
+function databaseSafeMetadata() {
+  const meta = {
+    storage: storageMode(),
+    ssl_configured: false,
+    pooled_endpoint: false,
+    pool_max: null,
+    idle_timeout_ms: null,
+    connection_timeout_ms: null,
+    host_kind: '',
+    host_region_hint: ''
+  };
+  if (!DATABASE_URL || !usesPostgresStorage()) return meta;
+  try {
+    const parsed = new URL(DATABASE_URL);
+    const host = parsed.hostname;
+    meta.host_kind = /neon\.tech$/i.test(host) ? 'neon' : host ? 'other' : '';
+    meta.ssl_configured = DATABASE_URL.includes('sslmode=require') || parsed.searchParams.get('sslmode') === 'require';
+    meta.pooled_endpoint = /pooler|pool|pooled/i.test(host);
+    const region = host.match(/\b([a-z]+-[a-z]+-\d)\b/i);
+    meta.host_region_hint = region ? region[1] : '';
+  } catch {}
+  meta.pool_max = postgresPool?.options?.max || 10;
+  meta.idle_timeout_ms = postgresPool?.options?.idleTimeoutMillis || POSTGRES_POOL_IDLE_TIMEOUT_MS;
+  meta.connection_timeout_ms = postgresPool?.options?.connectionTimeoutMillis || POSTGRES_POOL_CONNECTION_TIMEOUT_MS;
+  return meta;
+}
+
+function postgresPoolStats() {
+  if (!postgresPool) return { max: POSTGRES_POOL_MAX, totalCount: 0, idleCount: 0, waitingCount: 0 };
+  return {
+    max: postgresPool.options?.max || POSTGRES_POOL_MAX,
+    totalCount: postgresPool.totalCount,
+    idleCount: postgresPool.idleCount,
+    waitingCount: postgresPool.waitingCount
+  };
+}
+
+function warmPostgresPool(target = POSTGRES_POOL_WARM_CONNECTIONS) {
+  if (!postgresPool || target <= 0) return Promise.resolve();
+  if (postgresPoolWarmup) return postgresPoolWarmup;
+  postgresPoolWarmup = (async () => {
+    const clients = [];
+    try {
+      await Promise.all(Array.from({ length: target }, async () => {
+        const client = await postgresPool.connect();
+        clients.push(client);
+        await client.query('select 1');
+      }));
+    } catch (error) {
+      console.warn(`Postgres pool warm-up skipped: ${error.message || error}`);
+    } finally {
+      while (clients.length) clients.pop().release();
+      postgresPoolWarmup = null;
+    }
+  })();
+  return postgresPoolWarmup;
 }
 
 function sqlIdentifier(value, fallback) {
@@ -317,8 +485,14 @@ async function getPostgresPool() {
   }
   postgresPool = new Pool({
     connectionString: DATABASE_URL,
-    ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined
+    ssl: DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
+    max: POSTGRES_POOL_MAX,
+    idleTimeoutMillis: POSTGRES_POOL_IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis: POSTGRES_POOL_CONNECTION_TIMEOUT_MS,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 30000
   });
+  wrapPostgresPoolQuery(postgresPool);
   postgresPool.on('error', error => {
     console.error(`Postgres idle connection error: ${error.message || error}`);
   });
@@ -327,16 +501,44 @@ async function getPostgresPool() {
       console.error(`Postgres client connection error: ${error.message || error}`);
     });
   });
+  warmPostgresPool().catch(() => null);
   return postgresPool;
 }
 
 function postgresConnectionLost(error) {
-  return /Connection terminated unexpectedly|ECONNRESET|Connection ended unexpectedly|Client has encountered a connection error/i.test(String(error?.message || error || ''));
+  const code = String(error?.code || '');
+  if (['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND', '57P01', '08000', '08003', '08006'].includes(code)) return true;
+  return /Connection terminated unexpectedly|ECONNRESET|Connection ended unexpectedly|Client has encountered a connection error|read ECONNRESET|socket hang up|connection timeout/i.test(String(error?.message || error || ''));
+}
+
+function wrapPostgresPoolQuery(pool) {
+  if (!pool || pool.__kbcQueryWrapped) return pool;
+  const rawQuery = pool.query.bind(pool);
+  pool.__kbcQueryWrapped = true;
+  pool.query = async function queryWithReconnect(sql, params, callback) {
+    if (typeof params === 'function' || typeof callback === 'function') return rawQuery(sql, params, callback);
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await rawQuery(sql, params);
+      } catch (error) {
+        lastError = error;
+        if (!postgresConnectionLost(error) || attempt > 0 || pool !== postgresPool) throw error;
+        console.error(`Postgres pool query connection lost; reconnecting: ${error.message || error}`);
+        await resetPostgresPool();
+        await getPostgresPool();
+        return postgresPool.query(sql, params);
+      }
+    }
+    throw lastError;
+  };
+  return pool;
 }
 
 async function resetPostgresPool() {
   const pool = postgresPool;
   postgresPool = null;
+  postgresPoolWarmup = null;
   postgresSchemaReady = false;
   postgresUserSchemaReady = false;
   if (pool) {
@@ -362,10 +564,15 @@ async function postgresQuery(sql, params = [], attempts = 2) {
   throw lastError;
 }
 
-async function connectPostgresStorage() {
+async function connectPostgresStorage(trace = null) {
   await getPostgresPool();
-  await ensurePostgresUserSchema();
-  if (postgresSchemaReady || String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') {
+  if (String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') {
+    postgresSchemaReady = true;
+    postgresUserSchemaReady = true;
+    return postgresPool;
+  }
+  await ensurePostgresUserSchema(trace);
+  if (postgresSchemaReady) {
     postgresSchemaReady = true;
     return postgresPool;
   }
@@ -373,7 +580,7 @@ async function connectPostgresStorage() {
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const loginEventsTable = sqlIdentifier(POSTGRES_LOGIN_EVENTS_TABLE, 'app_login_events');
   const passwordResetsTable = sqlIdentifier(POSTGRES_PASSWORD_RESETS_TABLE, 'app_password_resets');
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_app_state_table', `
     create table if not exists ${table} (
       id text primary key,
       data jsonb not null,
@@ -381,7 +588,7 @@ async function connectPostgresStorage() {
       updated_at timestamptz not null default now()
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_users_table_duplicate', `
     create table if not exists ${usersTable} (
       id text primary key,
       name text not null,
@@ -396,7 +603,7 @@ async function connectPostgresStorage() {
       last_login_at timestamptz
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_login_events_table', `
     create table if not exists ${loginEventsTable} (
       id bigserial primary key,
       user_id text references ${usersTable}(id) on delete set null,
@@ -407,7 +614,7 @@ async function connectPostgresStorage() {
       logged_in_at timestamptz not null default now()
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_password_resets_table', `
     create table if not exists ${passwordResetsTable} (
       id bigserial primary key,
       user_id text references ${usersTable}(id) on delete cascade,
@@ -418,17 +625,18 @@ async function connectPostgresStorage() {
       created_at timestamptz not null default now()
     )
   `);
-  await createPostgresAppTables();
+  await createPostgresAppTables(trace);
+  await refreshLeadSoftDelete(trace, { force: true });
   postgresSchemaReady = true;
   return postgresPool;
 }
 
-async function ensurePostgresUserSchema() {
+async function ensurePostgresUserSchema(trace = null) {
   if (!postgresPool) return;
   if (postgresUserSchemaReady) return;
   const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const sessionsTable = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_users_table', `
     create table if not exists ${usersTable} (
       id text primary key,
       name text not null,
@@ -440,32 +648,63 @@ async function ensurePostgresUserSchema() {
       last_login_at timestamptz
     )
   `);
-  await postgresPool.query(`alter table ${usersTable} add column if not exists temporary_password text`);
-  await postgresPool.query(`alter table ${usersTable} add column if not exists invited_at timestamptz`);
-  await postgresPool.query(`alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_users_temporary_password_column', `alter table ${usersTable} add column if not exists temporary_password text`);
+  await tracedPostgresPoolQuery(trace, 'schema_users_invited_at_column', `alter table ${usersTable} add column if not exists invited_at timestamptz`);
+  await tracedPostgresPoolQuery(trace, 'schema_users_password_changed_at_column', `alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
+  await tracedPostgresPoolQuery(trace, 'schema_sessions_table', `
     create table if not exists ${sessionsTable} (
       id text primary key,
       user_id text not null,
       token_hash text,
       gmail_state text,
       eventbrite_state text,
+      zoho_state text,
       expires_at timestamptz not null,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now()
     )
   `);
-  await postgresPool.query(`alter table ${sessionsTable} add column if not exists token_hash text`);
-  await postgresPool.query(`create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_user_id_idx`, 'app_sessions_user_id_idx')} on ${sessionsTable} (user_id)`);
-  await postgresPool.query(`create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_expires_at_idx`, 'app_sessions_expires_at_idx')} on ${sessionsTable} (expires_at)`);
-  await postgresPool.query(`create unique index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_token_hash_idx`, 'app_sessions_token_hash_idx')} on ${sessionsTable} (token_hash) where token_hash is not null`);
+  await tracedPostgresPoolQuery(trace, 'schema_sessions_token_hash_column', `alter table ${sessionsTable} add column if not exists token_hash text`);
+  await tracedPostgresPoolQuery(trace, 'schema_sessions_zoho_state_column', `alter table ${sessionsTable} add column if not exists zoho_state text`);
+  await tracedPostgresPoolQuery(trace, 'schema_sessions_user_id_index', `create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_user_id_idx`, 'app_sessions_user_id_idx')} on ${sessionsTable} (user_id)`);
+  await tracedPostgresPoolQuery(trace, 'schema_sessions_expires_at_index', `create index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_expires_at_idx`, 'app_sessions_expires_at_idx')} on ${sessionsTable} (expires_at)`);
+  await tracedPostgresPoolQuery(trace, 'schema_sessions_token_hash_index', `create unique index if not exists ${sqlIdentifier(`${POSTGRES_SESSIONS_TABLE}_token_hash_idx`, 'app_sessions_token_hash_idx')} on ${sessionsTable} (token_hash) where token_hash is not null`);
   postgresUserSchemaReady = true;
 }
 
-async function ensureStorage() {
+// Leads merged by the de-duplication tool keep their row with deleted_at set. Production should
+// set LEAD_SOFT_DELETE_ENABLED=true after the migration, so normal requests never query
+// information_schema. When schema setup is explicitly enabled, the capability is detected once.
+let leadSoftDelete = {
+  enabled: LEAD_SOFT_DELETE_CONFIG === 'true',
+  checkedAt: ['true', 'false'].includes(LEAD_SOFT_DELETE_CONFIG) ? Number.POSITIVE_INFINITY : 0,
+  pending: null
+};
+function refreshLeadSoftDelete(trace = null, { force = false } = {}) {
+  if (!postgresPool) return leadSoftDelete.enabled;
+  if (['true', 'false'].includes(LEAD_SOFT_DELETE_CONFIG)) return leadSoftDelete.enabled;
+  if (!force && String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') return leadSoftDelete.enabled;
+  if (!force && leadSoftDelete.checkedAt) return leadSoftDelete.enabled;
+  leadSoftDelete.pending ||= tracedPostgresPoolQuery(trace, 'storage_lead_soft_delete_column',
+    `select exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'app_leads' and column_name = 'deleted_at') as enabled`
+  ).then(result => {
+    leadSoftDelete = { enabled: Boolean(result.rows?.[0]?.enabled), checkedAt: Date.now(), pending: null };
+    return leadSoftDelete.enabled;
+  }).catch(() => {
+    leadSoftDelete = { ...leadSoftDelete, checkedAt: Date.now(), pending: null };
+    return leadSoftDelete.enabled;
+  });
+  return leadSoftDelete.pending;
+}
+
+function activeLeadCondition(alias = '') {
+  return leadSoftDelete.enabled ? `${alias ? `${alias}.` : ''}deleted_at is null` : 'true';
+}
+
+async function ensureStorage(trace = null) {
   if (!DATABASE_URL) return null;
   if (usesPostgresStorage()) {
-    storageReady ||= connectPostgresStorage();
+    storageReady ||= connectPostgresStorage(trace);
     return storageReady;
   }
   if (!usesMongoStorage()) throw statusError(500, 'Unsupported DATABASE_URL. Use a PostgreSQL/Neon URL that starts with postgresql:// or a MongoDB URL that starts with mongodb:// or mongodb+srv://.');
@@ -473,18 +712,22 @@ async function ensureStorage() {
   return storageReady;
 }
 
-async function ensureUserStorage() {
+async function ensureUserStorage(trace = null) {
   if (!DATABASE_URL) return null;
   if (usesPostgresStorage()) {
     await getPostgresPool();
-    await ensurePostgresUserSchema();
+    if (String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') {
+      postgresUserSchemaReady = true;
+      return postgresPool;
+    }
+    await ensurePostgresUserSchema(trace);
     return postgresPool;
   }
-  return ensureStorage();
+  return ensureStorage(trace);
 }
 
-async function createPostgresAppTables() {
-  await postgresPool.query(`
+async function createPostgresAppTables(trace = null) {
+  await tracedPostgresPoolQuery(trace, 'schema_workspace_table', `
     create table if not exists app_workspace (
       id text primary key,
       demo boolean not null default false,
@@ -496,9 +739,9 @@ async function createPostgresAppTables() {
       updated_at timestamptz not null default now()
     )
   `);
-  await postgresPool.query(`create table if not exists app_programmes (id text primary key, name text not null, level text, data jsonb not null default '{}'::jsonb)`);
-  await postgresPool.query(`create table if not exists app_intakes (id text primary key, programme_id text, name text not null, data jsonb not null default '{}'::jsonb)`);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_programmes_table', `create table if not exists app_programmes (id text primary key, name text not null, level text, data jsonb not null default '{}'::jsonb)`);
+  await tracedPostgresPoolQuery(trace, 'schema_intakes_table', `create table if not exists app_intakes (id text primary key, programme_id text, name text not null, data jsonb not null default '{}'::jsonb)`);
+  await tracedPostgresPoolQuery(trace, 'schema_leads_table', `
     create table if not exists app_leads (
       id text primary key,
       person_id text,
@@ -523,7 +766,7 @@ async function createPostgresAppTables() {
       data jsonb not null default '{}'::jsonb
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_table', `
     create table if not exists app_tasks (
       id text primary key,
       title text,
@@ -537,7 +780,7 @@ async function createPostgresAppTables() {
       data jsonb not null default '{}'::jsonb
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_emails_table', `
     create table if not exists app_emails (
       id text primary key,
       lead_id text,
@@ -555,7 +798,7 @@ async function createPostgresAppTables() {
       data jsonb not null default '{}'::jsonb
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_applications_table', `
     create table if not exists app_applications (
       id text primary key,
       lead_id text,
@@ -573,7 +816,7 @@ async function createPostgresAppTables() {
       data jsonb not null default '{}'::jsonb
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_events_table', `
     create table if not exists app_events (
       id text primary key,
       name text,
@@ -587,7 +830,7 @@ async function createPostgresAppTables() {
       data jsonb not null default '{}'::jsonb
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_audit_table', `
     create table if not exists app_audit (
       id text primary key,
       occurred_at timestamptz,
@@ -598,7 +841,7 @@ async function createPostgresAppTables() {
       data jsonb not null default '{}'::jsonb
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_attribution_table', `
     create table if not exists app_attribution (
       id bigserial primary key,
       lead_id text,
@@ -608,7 +851,7 @@ async function createPostgresAppTables() {
       created_at timestamptz not null default now()
     )
   `);
-  await postgresPool.query(`
+  await tracedPostgresPoolQuery(trace, 'schema_document_templates_table', `
     create table if not exists app_document_templates (
       key text primary key,
       title text not null,
@@ -618,29 +861,134 @@ async function createPostgresAppTables() {
       updated_at timestamptz not null default now()
     )
   `);
-  await postgresPool.query(`create index if not exists app_leads_stage_idx on app_leads(stage)`);
-  await postgresPool.query(`create index if not exists app_leads_owner_id_idx on app_leads(owner_id)`);
-  await postgresPool.query(`create index if not exists app_leads_created_at_idx on app_leads(created_at)`);
-  await postgresPool.query(`create index if not exists app_tasks_lead_id_idx on app_tasks(lead_id)`);
-  await postgresPool.query(`create index if not exists app_tasks_status_idx on app_tasks(status)`);
-  await postgresPool.query(`create index if not exists app_tasks_due_at_idx on app_tasks(due_at)`);
-  await postgresPool.query(`create index if not exists app_tasks_owner_status_due_idx on app_tasks(owner_id, status, due_at)`);
-  await postgresPool.query(`create index if not exists app_applications_lead_id_idx on app_applications(lead_id)`);
-  await postgresPool.query(`create index if not exists app_applications_status_idx on app_applications(status)`);
-  await postgresPool.query(`create index if not exists app_applications_created_at_idx on app_applications(created_at)`);
-  await postgresPool.query(`create index if not exists app_emails_received_at_idx on app_emails(received_at)`);
-  await postgresPool.query(`create index if not exists app_leads_programme_id_idx on app_leads(programme_id)`);
-  await postgresPool.query(`create index if not exists app_leads_source_capture_idx on app_leads(source_lead_capture)`);
-  await postgresPool.query(`create index if not exists app_audit_occurred_at_idx on app_audit(occurred_at)`);
+  await tracedPostgresPoolQuery(trace, 'schema_monitoring_snapshot_table', monitoringSnapshotSchemaSql());
+  await tracedPostgresPoolQuery(trace, 'schema_monitoring_snapshot_expires_index', monitoringSnapshotExpiresIndexSql());
+  await ensureZohoRecordsTable(postgresPool, trace);
+  await tracedPostgresPoolQuery(trace, 'schema_leads_stage_index', `create index if not exists app_leads_stage_idx on app_leads(stage)`);
+  await tracedPostgresPoolQuery(trace, 'schema_leads_owner_id_index', `create index if not exists app_leads_owner_id_idx on app_leads(owner_id)`);
+  await tracedPostgresPoolQuery(trace, 'schema_leads_created_at_index', `create index if not exists app_leads_created_at_idx on app_leads(created_at)`);
+  // Serves the Leads list keyset pagination (ORDER BY created_at DESC, id DESC).
+  await tracedPostgresPoolQuery(trace, 'schema_leads_cursor_index', `create index if not exists idx_app_leads_cursor on app_leads(created_at desc, id desc)`);
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_lead_id_index', `create index if not exists app_tasks_lead_id_idx on app_tasks(lead_id)`);
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_status_index', `create index if not exists app_tasks_status_idx on app_tasks(status)`);
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_due_at_index', `create index if not exists app_tasks_due_at_idx on app_tasks(due_at)`);
+  // Planner lists open tasks by due date and done tasks by completion (GET /api/tasks).
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_status_due_index', `create index if not exists app_tasks_status_due_idx on app_tasks(status, due_at, id)`);
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_owner_status_due_index', `create index if not exists app_tasks_owner_status_due_idx on app_tasks(owner_id, status, due_at)`);
+  await tracedPostgresPoolQuery(trace, 'schema_applications_lead_id_index', `create index if not exists app_applications_lead_id_idx on app_applications(lead_id)`);
+  await tracedPostgresPoolQuery(trace, 'schema_applications_status_index', `create index if not exists app_applications_status_idx on app_applications(status)`);
+  await tracedPostgresPoolQuery(trace, 'schema_applications_created_at_index', `create index if not exists app_applications_created_at_idx on app_applications(created_at)`);
+  await tracedPostgresPoolQuery(trace, 'schema_emails_received_at_index', `create index if not exists app_emails_received_at_idx on app_emails(received_at)`);
+  await tracedPostgresPoolQuery(trace, 'schema_events_start_cursor_index', `create index if not exists app_events_start_cursor_idx on app_events(start_at desc nulls last, id desc)`);
+  await tracedPostgresPoolQuery(trace, 'schema_leads_programme_id_index', `create index if not exists app_leads_programme_id_idx on app_leads(programme_id)`);
+  await tracedPostgresPoolQuery(trace, 'schema_leads_source_capture_index', `create index if not exists app_leads_source_capture_idx on app_leads(source_lead_capture)`);
+  await tracedPostgresPoolQuery(trace, 'schema_audit_occurred_at_index', `create index if not exists app_audit_occurred_at_idx on app_audit(occurred_at)`);
+  await tracedPostgresPoolQuery(trace, 'schema_audit_entity_id_index', `create index if not exists app_audit_entity_id_idx on app_audit(entity_id)`);
+  await ensureIntegrationJobsTable(postgresPool, trace);
   await seedDocumentTemplatesFromDisk();
 }
 
+// Schema DDL only needs to run once per process; the Zoho worker and status polls call
+// these helpers on every page, so repeat calls reuse the first run.
+let zohoRecordsTableReady = null;
+let integrationJobsTableReady = null;
+
+function ensureZohoRecordsTable(client = postgresPool, trace = null) {
+  if (!client) return Promise.resolve();
+  zohoRecordsTableReady ||= createZohoRecordsTable(client, trace).catch(error => {
+    zohoRecordsTableReady = null;
+    throw error;
+  });
+  return zohoRecordsTableReady;
+}
+
+async function createZohoRecordsTable(client, trace = null) {
+  const q = client === postgresPool
+    ? (label, sql, params = []) => tracedPostgresPoolQuery(trace, label, sql, params)
+    : (label, sql, params = []) => client.query(sql, params);
+  await q('schema_zoho_records_table', `
+    create table if not exists app_zoho_records (
+      key text primary key,
+      module text not null,
+      zoho_id text not null,
+      title text,
+      email text,
+      phone text,
+      company text,
+      owner_name text,
+      status text,
+      created_time timestamptz,
+      modified_time timestamptz,
+      data jsonb not null default '{}'::jsonb,
+      synced_at timestamptz not null default now()
+    )
+  `);
+  await q('schema_zoho_records_module_index', `create index if not exists app_zoho_records_module_idx on app_zoho_records(module)`);
+  await q('schema_zoho_records_modified_index', `create index if not exists app_zoho_records_modified_idx on app_zoho_records(modified_time desc nulls last)`);
+  await q('schema_zoho_records_module_modified_index', `create index if not exists app_zoho_records_module_modified_idx on app_zoho_records(module, modified_time desc nulls last, key)`);
+  // Zoho lead matching looks up existing leads by Zoho record id and email on every page.
+  await q('schema_leads_zoho_record_id_index', `create index if not exists app_leads_zoho_record_id_idx on app_leads((data->>'zoho_record_id'))`).catch(() => null);
+  await q('schema_leads_email_lower_index', `create index if not exists app_leads_email_lower_idx on app_leads(lower(email))`).catch(() => null);
+}
+
+function ensureIntegrationJobsTable(client = postgresPool, trace = null) {
+  if (!client) return Promise.resolve();
+  integrationJobsTableReady ||= createIntegrationJobsTable(client, trace).catch(error => {
+    integrationJobsTableReady = null;
+    throw error;
+  });
+  return integrationJobsTableReady;
+}
+
+async function createIntegrationJobsTable(client, trace = null) {
+  const q = client === postgresPool
+    ? (label, sql, params = []) => tracedPostgresPoolQuery(trace, label, sql, params)
+    : (label, sql, params = []) => client.query(sql, params);
+  await q('schema_integration_jobs_table', `
+    create table if not exists integration_jobs (
+      id text primary key,
+      provider text not null,
+      connection_id text not null,
+      type text not null,
+      status text not null default 'queued',
+      current_module text,
+      current_page integer not null default 1,
+      next_page_token text,
+      cursor text,
+      records_scanned integer not null default 0,
+      records_added integer not null default 0,
+      records_updated integer not null default 0,
+      records_failed integer not null default 0,
+      modules_total integer not null default 0,
+      modules_completed integer not null default 0,
+      started_at timestamptz,
+      last_progress_at timestamptz,
+      completed_at timestamptz,
+      attempts integer not null default 0,
+      last_error text,
+      retry_after_at timestamptz,
+      created_by text,
+      state jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    )
+  `);
+  await q('schema_integration_jobs_locked_by_column', `alter table integration_jobs add column if not exists locked_by text`);
+  await q('schema_integration_jobs_locked_until_column', `alter table integration_jobs add column if not exists locked_until timestamptz`);
+  await q('schema_integration_jobs_provider_status_index', `create index if not exists integration_jobs_provider_status_idx on integration_jobs(provider, type, status, updated_at desc)`);
+  await q('schema_integration_jobs_retry_index', `create index if not exists integration_jobs_retry_idx on integration_jobs(provider, retry_after_at) where status in ('queued', 'running')`);
+  await q('schema_integration_jobs_active_zoho_index', `create unique index if not exists integration_jobs_active_zoho_idx on integration_jobs(provider, type, connection_id) where provider = 'zoho' and status in ('queued', 'running')`);
+}
+
 async function loadDb() {
-  if (dbCache) return recalculate(cloneDb(dbCache));
+  if (dbCache && Date.now() - dbCacheLoadedAt < DB_CACHE_TTL_MS) return recalculate(cloneDb(dbCache));
+  dbCache = null;
+  dbCacheLoadedAt = Date.now();
   await ensureStorage();
   if (postgresPool) {
     const normalized = await loadPostgresTables();
     if (normalized) {
+      rememberPostgresLoadedIds(normalized);
       await removeLegacyPostgresDeveloperUsers();
       const data = recalculate(await hydratePostgresUsers(normalized));
       if (ensureConfiguredDeveloperUser(data)) await persistDeveloperBootstrap(data);
@@ -732,8 +1080,117 @@ function workspaceMetaState(db = {}) {
   return {
     ...(db.meta || {}),
     apollo: db.apollo || db.meta?.apollo || { imported_person_ids: [] },
-    zoom: db.zoom || db.meta?.zoom || { imported_meeting_ids: [] }
+    zoom: db.zoom || db.meta?.zoom || { imported_meeting_ids: [] },
+    zoho: db.zoho || db.meta?.zoho || { imported_record_ids: [] }
   };
+}
+
+function zohoHasToken(state = {}) {
+  return Boolean(state.refresh_token || state.access_token);
+}
+
+function zohoAccessTokenValid(state = {}) {
+  return Boolean(state.access_token && (!state.expires_at || state.expires_at > Date.now()));
+}
+
+function zohoTokenUsable(state = {}) {
+  return Boolean(state.refresh_token);
+}
+
+function zohoReconnectError(message = '') {
+  return /invalid oauth|invalid_token|invalid code|invalid_client|invalid_grant|refresh token|oauth token|not connected|reauthorization/i.test(String(message || ''));
+}
+
+function zohoReconnectRequiredMessage() {
+  return 'Zoho authorization is incomplete or expired. Reconnect Zoho CRM, approve access, then run Sync Zoho data again.';
+}
+
+function zohoStoredConnection(db = {}) {
+  return db.zoho || db.meta?.zoho || {};
+}
+
+function zohoConnectionDiagnostics(req, db = {}) {
+  const issues = zohoConfigIssues(req);
+  const state = zohoStoredConnection(db);
+  const connectionRecordExists = Boolean(state && Object.keys(state).length);
+  const refreshTokenStored = Boolean(state.refresh_token);
+  const accessTokenStored = Boolean(state.access_token);
+  const accessTokenExpired = accessTokenStored && !zohoAccessTokenValid(state);
+  const accountsServerStored = Boolean(state.accounts_url && safeUrl(state.accounts_url));
+  const apiDomainStored = Boolean(state.api_domain && safeUrl(state.api_domain));
+  const permanentReauthorizationFailure = Boolean(
+    (state.reauthorization_required || state.reconnect_required) &&
+    /invalid_grant|invalid refresh|revoked|invalid_token|oauth token/i.test(String(state.last_error || ''))
+  );
+  const reauthorizationRequired = Boolean(
+    permanentReauthorizationFailure ||
+    (connectionRecordExists && (state.connected || state.connected_at || accessTokenStored) && !refreshTokenStored)
+  );
+  const connected = Boolean(
+    !issues.length &&
+    connectionRecordExists &&
+    refreshTokenStored &&
+    accountsServerStored &&
+    apiDomainStored &&
+    !reauthorizationRequired
+  );
+  const status = issues.length
+    ? 'not_configured'
+    : connected
+      ? 'connected'
+      : reauthorizationRequired
+        ? 'reauthorization_required'
+        : connectionRecordExists
+          ? 'error'
+          : 'not_connected';
+  return {
+    clientConfigured: issues.length === 0,
+    configured: issues.length === 0,
+    connectionRecordExists,
+    refreshTokenStored,
+    hasRefreshToken: refreshTokenStored,
+    accessTokenStored,
+    accessTokenExpired,
+    accessTokenExpiresAt: state.expires_at ? new Date(state.expires_at).toISOString() : null,
+    accountsServerStored,
+    apiDomainStored,
+    accountsServer: accountsServerStored ? state.accounts_url : null,
+    apiDomain: apiDomainStored ? state.api_domain : null,
+    dataCenter: state.location || null,
+    connected,
+    status,
+    reauthorizationRequired,
+    reauthorization_required: reauthorizationRequired,
+    lastSuccessfulSyncAt: state.last_sync_at || null,
+    last_sync_at: state.last_sync_at || null,
+    last_error: state.last_error || null,
+    config_issues: issues
+  };
+}
+
+function mergeZohoState(currentZoho = {}, nextZoho = {}) {
+  const merged = {
+    ...(currentZoho || {}),
+    ...(nextZoho || {}),
+    records: {
+      ...(currentZoho?.records || {}),
+      ...(nextZoho?.records || {})
+    },
+    imported_record_ids: [
+      ...new Set([
+        ...(currentZoho?.imported_record_ids || []),
+        ...(nextZoho?.imported_record_ids || [])
+      ])
+    ]
+  };
+  if (!zohoHasToken(nextZoho) && zohoHasToken(currentZoho)) {
+    for (const key of ['access_token', 'refresh_token', 'expires_at', 'accounts_url', 'api_domain', 'location', 'scope', 'email', 'connected_at', 'reauthorization_required']) {
+      if (currentZoho[key] !== undefined) merged[key] = currentZoho[key];
+    }
+    if (currentZoho.connected !== undefined && nextZoho.connected === undefined) merged.connected = currentZoho.connected;
+    if (currentZoho.last_error && nextZoho.last_error === undefined) merged.last_error = currentZoho.last_error;
+  }
+  return merged;
 }
 
 function mergeZoomState(currentZoom = {}, nextZoom = {}) {
@@ -759,16 +1216,30 @@ function mergeZoomState(currentZoom = {}, nextZoom = {}) {
 
 async function workspaceMetaForSave(client, db = {}, options = {}) {
   let meta = workspaceMetaState(db);
-  const shouldReadCurrentMeta = options.preserveMeta || options.preserveApollo || options.preserveZoom || Array.isArray(meta.zoom?.calls);
+  const shouldReadCurrentMeta = options.preserveMeta || options.preserveApollo || options.preserveZoom || options.preserveZoho || Array.isArray(meta.zoom?.calls);
   if (shouldReadCurrentMeta) {
     const current = await client.query(`select meta from app_workspace where id = $1`, ['main']);
     const currentMeta = current.rows[0]?.meta || {};
-    if (options.preserveMeta) meta = { ...currentMeta, ...meta };
+    if (options.preserveMeta) meta = { ...meta, ...currentMeta };
     if (options.preserveApollo) meta.apollo = currentMeta.apollo || meta.apollo || { imported_person_ids: [] };
+    meta.zoho = options.preserveZoho
+      ? mergeZohoState(meta.zoho || {}, currentMeta.zoho || {})
+      : mergeZohoState(currentMeta.zoho || {}, meta.zoho || {});
     if (options.preserveZoom) meta.zoom = currentMeta.zoom || meta.zoom || { imported_meeting_ids: [] };
     else meta.zoom = mergeZoomState(currentMeta.zoom || {}, meta.zoom || {});
   }
   return meta;
+}
+
+function dbWithSavedMeta(db = {}, metaState = {}, overrides = {}) {
+  return {
+    ...db,
+    ...overrides,
+    meta: metaState,
+    apollo: metaState.apollo || db.apollo || { imported_person_ids: [] },
+    zoho: metaState.zoho || db.zoho || { imported_record_ids: [] },
+    zoom: metaState.zoom || db.zoom || { imported_meeting_ids: [] }
+  };
 }
 
 function gmailQueryDate(value) {
@@ -783,6 +1254,7 @@ function ensureIncrementalStart(container, key) {
 }
 
 async function loadPostgresTables(options = {}) {
+  await ensureZohoRecordsTable();
   const workspace = await postgresPool.query(`select * from app_workspace where id = $1`, ['main']);
   if (!workspace.rows[0]) return null;
   const seeded = seedDatabase();
@@ -801,12 +1273,14 @@ async function loadPostgresTables(options = {}) {
     events,
     intakes,
     audit,
-    attribution
+    attribution,
+    zohoRecords
   ] = await Promise.all([
     postgresPool.query(`select data from app_programmes order by id`),
+    // Merged leads never enter the in-memory workspace, so legacy dedupe/save paths cannot touch them.
     leadLimit > 0
-      ? postgresPool.query(`select data from app_leads order by created_at desc nulls last, id limit $1`, [leadLimit])
-      : postgresPool.query(`select data from app_leads order by created_at nulls last, id`),
+      ? postgresPool.query(`select data from app_leads where ${activeLeadCondition()} order by created_at desc nulls last, id limit $1`, [leadLimit])
+      : postgresPool.query(`select data from app_leads where ${activeLeadCondition()} order by created_at nulls last, id`),
     taskLimit > 0
       ? postgresPool.query(`select data from app_tasks order by case when status = 'Open' then 0 else 1 end, due_at nulls last, completed_at desc nulls last, id limit $1`, [taskLimit])
       : postgresPool.query(`select data from app_tasks order by due_at nulls last, id`),
@@ -827,8 +1301,31 @@ async function loadPostgresTables(options = {}) {
       : postgresPool.query(`select data from app_audit order by occurred_at desc nulls last, id`),
     options.skipAttribution
       ? Promise.resolve({ rows: [] })
-      : postgresPool.query(`select data from app_attribution order by id desc`)
+      : postgresPool.query(`select data from app_attribution order by id desc`),
+    postgresPool.query(`
+      select data from (
+        select data, module, modified_time, synced_at, key, row_number() over (
+          partition by module
+          order by modified_time desc nulls last, synced_at desc nulls last, key
+        ) as rn
+        from app_zoho_records
+      ) ranked
+      where rn <= 500
+      order by data->>'module', modified_time desc nulls last
+    `)
   ]);
+  const zohoState = row.meta?.zoho || { imported_record_ids: [] };
+  zohoState.records ||= {};
+  for (const item of zohoRecords.rows.map(row => row.data).filter(Boolean)) {
+    const moduleName = item.module || 'Zoho CRM';
+    zohoState.records[moduleName] ||= [];
+    zohoState.records[moduleName].push(item);
+    const recordKey = item.key || `${moduleName}:${item.id || ''}`;
+    if (recordKey && !recordKey.endsWith(':')) {
+      zohoState.imported_record_ids ||= [];
+      if (!zohoState.imported_record_ids.includes(recordKey)) zohoState.imported_record_ids.push(recordKey);
+    }
+  }
   const db = {
     demo: row.demo,
     users: seeded.users,
@@ -847,18 +1344,46 @@ async function loadPostgresTables(options = {}) {
     gmail: row.gmail || { connected: false, imported_message_ids: [] },
     eventbrite: row.eventbrite || { connected: false, imported_event_ids: [], imported_attendee_ids: [] },
     apollo: row.meta?.apollo || { imported_person_ids: [] },
+    zoho: zohoState,
     zoom: row.meta?.zoom || { imported_meeting_ids: [] },
     meta: row.meta || { imported_lead_ids: [], imported_form_ids: [] }
   };
   return db;
 }
 
+const POSTGRES_ID_TABLES = {
+  app_programmes: 'programmes',
+  app_intakes: 'intakes',
+  app_leads: 'leads',
+  app_tasks: 'tasks',
+  app_emails: 'emails',
+  app_applications: 'applications',
+  app_events: 'events',
+  app_audit: 'audit'
+};
+
+function rememberPostgresLoadedIds(db) {
+  for (const [table, key] of Object.entries(POSTGRES_ID_TABLES)) {
+    postgresLoadedIds.set(table, new Set((db[key] || []).map(item => item?.id).filter(Boolean)));
+  }
+}
+
 async function deleteMissingIds(client, table, ids) {
   const wanted = [...new Set((ids || []).filter(Boolean))];
+  const loaded = postgresLoadedIds.get(table);
+  // A full sync never hard-deletes a merged (soft-deleted) lead: it is not in memory by design.
+  const keepMerged = table === 'app_leads' ? ` and ${activeLeadCondition()}` : '';
+  if (loaded) {
+    const wantedSet = new Set(wanted);
+    const removed = [...loaded].filter(id => !wantedSet.has(id));
+    if (removed.length) await client.query(`delete from ${table} where id = any($1::text[])${keepMerged}`, [removed]);
+    postgresLoadedIds.set(table, new Set(wanted));
+    return;
+  }
   if (wanted.length) {
-    await client.query(`delete from ${table} where not (id = any($1::text[]))`, [wanted]);
+    await client.query(`delete from ${table} where not (id = any($1::text[]))${keepMerged}`, [wanted]);
   } else {
-    await client.query(`delete from ${table}`);
+    await client.query(`delete from ${table} where true${keepMerged}`);
   }
 }
 
@@ -1099,6 +1624,7 @@ async function savePostgresTables(db) {
     } else {
       await client.query(`delete from app_attribution`);
     }
+    await upsertZohoRecordRows(client, zohoRecordRows(db));
     await client.query('commit');
   } catch (error) {
     await client.query('rollback');
@@ -1225,6 +1751,58 @@ function importAuditRows(db) {
   }));
 }
 
+function zohoRecordRows(db = {}) {
+  const records = db.zoho?.records || {};
+  return Object.entries(records).flatMap(([moduleName, rows]) => (Array.isArray(rows) ? rows : []).map(row => ({
+    key: row.key || `${moduleName}:${row.id || ''}`,
+    module: row.module || moduleName,
+    zoho_id: row.id || String(row.key || '').split(':').slice(1).join(':') || '',
+    title: row.title || row.name || '',
+    email: row.email || '',
+    phone: row.phone || '',
+    company: row.company || '',
+    owner_name: row.owner || '',
+    status: row.status || '',
+    created_time: row.created_time || null,
+    modified_time: row.modified_time || null,
+    data: row
+  }))).filter(row => row.key && !row.key.endsWith(':'));
+}
+
+async function upsertZohoRecordRows(client, rows = []) {
+  if (!rows.length) return;
+  await ensureZohoRecordsTable(client);
+  await client.query(
+    `with rows as (
+       select * from jsonb_to_recordset($1::jsonb) as x(
+         key text, module text, zoho_id text, title text, email text, phone text, company text,
+         owner_name text, status text, created_time text, modified_time text, data jsonb
+       )
+     )
+     insert into app_zoho_records (key, module, zoho_id, title, email, phone, company, owner_name, status, created_time, modified_time, data, synced_at)
+     select key, module, zoho_id, title, email, phone, company, owner_name, status,
+       nullif(created_time, '')::timestamptz,
+       nullif(modified_time, '')::timestamptz,
+       data,
+       now()
+     from rows
+     on conflict (key) do update set
+       module = excluded.module,
+       zoho_id = excluded.zoho_id,
+       title = excluded.title,
+       email = excluded.email,
+       phone = excluded.phone,
+       company = excluded.company,
+       owner_name = excluded.owner_name,
+       status = excluded.status,
+       created_time = excluded.created_time,
+       modified_time = excluded.modified_time,
+       data = excluded.data,
+       synced_at = now()`,
+    [jsonValue(rows)]
+  );
+}
+
 async function saveEventImportTables(db, options = {}) {
   if (!postgresPool) return saveDb(db);
   const client = await postgresPool.connect();
@@ -1322,8 +1900,9 @@ async function saveEventImportTables(db, options = {}) {
          entity = excluded.entity, entity_id = excluded.entity_id, data = excluded.data`,
       [jsonValue(importAuditRows(db))]
     );
+    await upsertZohoRecordRows(client, zohoRecordRows(db));
     await client.query('commit');
-    dbCache = cloneDb(recalculate(db));
+    dbCache = cloneDb(recalculate(dbWithSavedMeta(db, metaState, { gmail: gmailState })));
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -1469,7 +2048,7 @@ async function saveGmailImportTables(db, options = {}) {
       [jsonValue(auditRows)]
     );
     await client.query('commit');
-    dbCache = cloneDb(recalculate(db));
+    dbCache = cloneDb(recalculate(dbWithSavedMeta(db, metaState, { eventbrite: eventbriteState })));
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -1603,7 +2182,7 @@ async function getSession(sid) {
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
     const result = await postgresQuery(
-      `select id, user_id, gmail_state, eventbrite_state, expires_at, updated_at from ${table} where id = $1 or token_hash = $2 limit 1`,
+      `select id, user_id, gmail_state, eventbrite_state, zoho_state, expires_at, updated_at from ${table} where id = $1 or token_hash = $2 limit 1`,
       [sid, tokenHash(sid)]
     );
     const session = result.rows[0];
@@ -1645,9 +2224,10 @@ async function patchSession(sid, fields = {}) {
       `update ${table}
        set gmail_state = coalesce($2, gmail_state),
            eventbrite_state = coalesce($3, eventbrite_state),
+           zoho_state = coalesce($4, zoho_state),
            updated_at = now()
        where id = $1`,
-      [sid, fields.gmail_state ?? null, fields.eventbrite_state ?? null]
+      [sid, fields.gmail_state ?? null, fields.eventbrite_state ?? null, fields.zoho_state ?? null]
     );
   } else {
     const session = memorySessions.get(sid);
@@ -1658,6 +2238,9 @@ async function patchSession(sid, fields = {}) {
 
 async function deleteSession(sid) {
   if (!sid) return;
+  sessionAuthCacheEpoch += 1;
+  postgresSessionUserCache.delete(tokenHash(sid));
+  postgresSessionUserLookups.delete(tokenHash(sid));
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
     await postgresQuery(`delete from ${table} where id = $1`, [sid]);
@@ -1666,45 +2249,101 @@ async function deleteSession(sid) {
   memorySessions.delete(sid);
 }
 
-async function currentSessionUser(req) {
+function clearCachedSessionUserForUser(userId) {
+  if (!userId) return;
+  sessionAuthCacheEpoch += 1;
+  for (const [key, entry] of postgresSessionUserCache.entries()) {
+    if (entry.userId === userId) postgresSessionUserCache.delete(key);
+  }
+  for (const [key, lookup] of postgresSessionUserLookups.entries()) {
+    if (lookup?.userId === userId) postgresSessionUserLookups.delete(key);
+  }
+}
+
+async function currentSessionUser(req, trace = null) {
+  const cookieStarted = performance.now();
   const sid = parseCookies(req).sid;
+  perfAdd(trace, 'cookie_parse', performance.now() - cookieStarted);
   if (!sid) throw statusError(401, 'Sign in to continue.');
-  await ensureUserStorage();
+  await perfPhase(trace, 'auth_storage', () => ensureUserStorage(trace));
   if (postgresPool) {
     const sessionsTable = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
     const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
-    const authStart = performance.now();
-    const result = await postgresQuery(
-      `select
-         s.id as session_id,
-         s.expires_at,
-         s.updated_at as session_updated_at,
-         u.id, u.name, u.email, u.role, u.password_hash, u.temporary_password, u.invited_at, u.password_changed_at
-       from ${sessionsTable} s
-       join ${usersTable} u on u.id = s.user_id
-       where (s.id = $1 or s.token_hash = $2)
-         and s.expires_at > now()
-       limit 1`,
-      [sid, tokenHash(sid)]
-    );
-    const row = result.rows[0];
-    if (!row) throw statusError(401, 'Sign in to continue.');
-    const updatedAt = new Date(row.session_updated_at || 0).getTime();
-    if (!updatedAt || Date.now() - updatedAt > SESSION_TOUCH_INTERVAL_MS) {
-      await postgresQuery(
-        `update ${sessionsTable} set expires_at = $2, updated_at = now(), token_hash = coalesce(token_hash, $3) where id = $1`,
-        [row.session_id, new Date(Date.now() + SESSION_TTL).toISOString(), tokenHash(sid)]
+    const sidHash = tokenHash(sid);
+    const cached = postgresSessionUserCache.get(sidHash);
+    if (cached && cached.expiresAt > Date.now()) {
+      perfCount(trace, 'session_cache_hits');
+      perfAdd(trace, 'auth_session_cache', 0);
+      return { ...cached.user };
+    }
+    if (cached) postgresSessionUserCache.delete(sidHash);
+    let joined = true;
+    let lookup = postgresSessionUserLookups.get(sidHash);
+    if (!lookup) {
+      joined = false;
+      perfCount(trace, 'session_cache_misses');
+      perfCount(trace, 'session_lookup_started');
+      const cacheEpoch = sessionAuthCacheEpoch;
+      lookup = (async () => {
+        const authStart = performance.now();
+        const result = await timedPostgresQuery(
+          trace,
+          'auth_session_lookup',
+          `select
+             s.id as session_id,
+             s.expires_at,
+             s.updated_at as session_updated_at,
+             u.id, u.name, u.email, u.role, u.password_hash, u.temporary_password, u.invited_at, u.password_changed_at
+           from ${sessionsTable} s
+           join ${usersTable} u on u.id = s.user_id
+           where (s.id = $1 or s.token_hash = $2)
+             and s.expires_at > now()
+           limit 1`,
+          [sid, sidHash]
+        );
+        const row = result.rows[0];
+        if (!row) throw statusError(401, 'Sign in to continue.');
+        const updatedAt = new Date(row.session_updated_at || 0).getTime();
+        if (!updatedAt || Date.now() - updatedAt > SESSION_TOUCH_INTERVAL_MS) {
+          await timedPostgresQuery(
+            trace,
+            'auth_session_touch',
+            `update ${sessionsTable} set expires_at = $2, updated_at = now(), token_hash = coalesce(token_hash, $3) where id = $1`,
+            [row.session_id, new Date(Date.now() + SESSION_TTL).toISOString(), sidHash]
+          );
+        }
+        const { session_id, expires_at, session_updated_at, ...user } = row;
+        user.__auth_ms = performance.now() - authStart;
+        if (SESSION_AUTH_CACHE_MS > 0 && cacheEpoch === sessionAuthCacheEpoch) {
+          const sessionExpiry = new Date(expires_at || 0).getTime() || 0;
+          postgresSessionUserCache.set(sidHash, {
+            user: { ...user },
+            userId: user.id,
+            expiresAt: Math.min(Date.now() + SESSION_AUTH_CACHE_MS, sessionExpiry)
+          });
+        }
+        return user;
+      })();
+      postgresSessionUserLookups.set(sidHash, lookup);
+      lookup.then(
+        () => postgresSessionUserLookups.delete(sidHash),
+        () => postgresSessionUserLookups.delete(sidHash)
       );
     }
-    const { session_id, expires_at, session_updated_at, ...user } = row;
-    user.__auth_ms = performance.now() - authStart;
-    return user;
+    if (joined) {
+      perfCount(trace, 'auth_session_joined');
+      perfCount(trace, 'session_lookup_joined');
+    }
+    const user = joined
+      ? await perfPhase(trace, 'auth_session_join', () => lookup)
+      : await lookup;
+    return { ...user };
   }
-  const session = await getSession(sid);
+  const session = await perfPhase(trace, 'auth_session_lookup', () => getSession(sid));
   if (!session) throw statusError(401, 'Sign in to continue.');
-  const user = await findUserById(session.user_id);
+  const user = await perfPhase(trace, 'auth_user_lookup', () => findUserById(session.user_id));
   if (!user) throw statusError(401, 'Sign in to continue.');
-  if (!session.updated_at || Date.now() - Number(session.updated_at || 0) > SESSION_TOUCH_INTERVAL_MS) await touchSession(sid);
+  if (!session.updated_at || Date.now() - Number(session.updated_at || 0) > SESSION_TOUCH_INTERVAL_MS) await perfPhase(trace, 'auth_session_touch', () => touchSession(sid));
   return user;
 }
 
@@ -1723,6 +2362,7 @@ async function recordPostgresLogin(user, req) {
 }
 
 async function clearUserSessions(userId) {
+  clearCachedSessionUserForUser(userId);
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_SESSIONS_TABLE, 'app_sessions');
     await postgresQuery(`delete from ${table} where user_id = $1`, [userId]);
@@ -2164,7 +2804,7 @@ function mergeLeadData(target, incoming) {
   for (const key of ['first_name', 'last_name', 'email', 'employer', 'phone', 'city', 'owner_id', 'owner', 'priority', 'contact_permission']) {
     if (!target[key] && incoming[key]) target[key] = incoming[key];
   }
-  for (const key of ['eventbrite_attendee_id', 'meta_lead_id', 'meta_form_id', 'meta_form_name', 'apollo_person_id']) {
+  for (const key of ['eventbrite_attendee_id', 'meta_lead_id', 'meta_form_id', 'meta_form_name', 'apollo_person_id', 'zoho_record_id', 'zoho_module']) {
     if (incoming[key] && !target[key]) target[key] = incoming[key];
   }
   if (incoming.created_at && (!target.created_at || new Date(incoming.created_at) < new Date(target.created_at))) {
@@ -2173,7 +2813,7 @@ function mergeLeadData(target, incoming) {
   }
   if (incoming.source_lead_capture) target.source_lead_capture = incoming.source_lead_capture;
   addLeadSource(target, incoming.source_lead_capture || incoming.source_first_touch, {
-    provider_id: incoming.gmail_message_id || incoming.eventbrite_attendee_id || incoming.meta_lead_id || incoming.apollo_person_id || '',
+    provider_id: incoming.gmail_message_id || incoming.eventbrite_attendee_id || incoming.meta_lead_id || incoming.apollo_person_id || incoming.zoho_record_id || '',
     captured_at: incoming.created_at
   });
   target.full_name = fullName(target);
@@ -2197,6 +2837,10 @@ function findMatchingLead(db, incoming) {
   if (incoming.apollo_person_id) {
     const byApollo = db.leads.find(item => item.apollo_person_id === incoming.apollo_person_id);
     if (byApollo) return byApollo;
+  }
+  if (incoming.zoho_record_id) {
+    const byZoho = db.leads.find(item => item.zoho_record_id === incoming.zoho_record_id);
+    if (byZoho) return byZoho;
   }
   if (email) return db.leads.find(item => normalizeEmail(item.email) === email) || null;
   return null;
@@ -2244,6 +2888,8 @@ function ensureLeadRecord(db, user, incoming, options = {}) {
     meta_form_id: incoming.meta_form_id,
     meta_form_name: incoming.meta_form_name,
     apollo_person_id: incoming.apollo_person_id,
+    zoho_record_id: incoming.zoho_record_id,
+    zoho_module: incoming.zoho_module,
     gmail_message_id: incoming.gmail_message_id
   };
   const existing = findMatchingLead(db, normalized);
@@ -2255,7 +2901,7 @@ function ensureLeadRecord(db, user, incoming, options = {}) {
     person_id: id
   };
   addLeadSource(lead, lead.source_lead_capture, {
-    provider_id: lead.gmail_message_id || lead.eventbrite_attendee_id || lead.meta_lead_id || lead.apollo_person_id || '',
+    provider_id: lead.gmail_message_id || lead.eventbrite_attendee_id || lead.meta_lead_id || lead.apollo_person_id || lead.zoho_record_id || '',
     captured_at: lead.created_at
   });
   delete lead.gmail_message_id;
@@ -2588,12 +3234,15 @@ function recalculate(db) {
   db.eventbrite ||= { connected: false, imported_event_ids: [], imported_attendee_ids: [] };
   db.meta ||= { imported_lead_ids: [], imported_form_ids: [] };
   db.apollo ||= { imported_person_ids: [] };
+  db.zoho ||= db.meta.zoho || { imported_record_ids: [] };
   db.zoom ||= db.meta.zoom || { imported_meeting_ids: [] };
   db.meta.apollo = db.apollo;
+  db.meta.zoho = db.zoho;
   db.meta.zoom = db.zoom;
   if (!db.sources.includes('Meta')) db.sources.push('Meta');
   if (!db.sources.includes('Email')) db.sources.push('Email');
   if (!db.sources.includes('Apollo')) db.sources.push('Apollo');
+  if (!db.sources.includes('Zoho CRM')) db.sources.push('Zoho CRM');
   const programmeById = new Map(db.programmes.map(item => [item.id, item]));
   const ownerById = new Map(db.users.map(item => [item.id, item]));
   const leadById = new Map(db.leads.map(lead => [lead.id, lead]));
@@ -2623,7 +3272,7 @@ function recalculate(db) {
   const inactiveStages = new Set(['Enrolled', 'Lost', 'Not Eligible']);
   const sourceStats = new Map();
   let active = 0;
-  for (const lead of db.leads) {
+  for (const lead of uniqueLeadsByIdentity(db.leads)) {
     if (!inactiveStages.has(lead.stage)) active += 1;
     const source = lead.source_first_touch;
     if (!source) continue;
@@ -2645,9 +3294,19 @@ function recalculate(db) {
   db.source_counts = [...new Set([...db.sources, ...sourceStats.keys()])]
     .map(source => sourceStats.get(source) || { source, leads: 0, enrolled: 0 })
     .filter(row => row.leads || row.enrolled);
+  db.integrations = integrationStatuses(db);
+  return db;
+}
+
+// Connection status per provider, from configuration and the stored integration state.
+function integrationStatuses(db) {
+  db.gmail ||= {};
+  db.eventbrite ||= {};
+  db.zoho ||= {};
   const gmailReady = gmailConfigured();
-  const gmailStatus = db.gmail.connected ? 'Connected' : gmailReady ? 'Ready to connect' : 'Needs credentials';
-  const gmailDetail = db.gmail.connected ? `Mailbox sync connected${db.gmail.email ? ` for ${db.gmail.email}` : ''}.` : gmailReady ? 'OAuth credentials are configured. Connect a mailbox from Settings.' : 'Add Gmail OAuth credentials to enable mailbox sync.';
+  const gmailNeedsReconnect = Boolean(db.gmail.reconnect_required || db.gmail.last_error);
+  const gmailStatus = db.gmail.connected && !gmailNeedsReconnect ? 'Connected' : gmailReady ? 'Ready to connect' : 'Needs credentials';
+  const gmailDetail = gmailNeedsReconnect ? 'Gmail access expired. Reconnect the mailbox from Settings.' : db.gmail.connected ? `Mailbox sync connected${db.gmail.email ? ` for ${db.gmail.email}` : ''}.` : gmailReady ? 'OAuth credentials are configured. Connect a mailbox from Settings.' : 'Add Gmail OAuth credentials to enable mailbox sync.';
   const eventbriteReady = eventbriteConfigured();
   const eventbriteTokenReady = eventbritePrivateTokenConfigured();
   const eventbriteConnected = db.eventbrite.connected || eventbriteTokenReady;
@@ -2659,18 +3318,23 @@ function recalculate(db) {
   const apolloReady = apolloConfigured();
   const apolloStatus = apolloReady ? 'Connected' : 'Needs credentials';
   const apolloDetail = apolloReady ? 'Apollo people search is configured.' : 'Add Apollo credentials to enable prospect sync.';
+  const zohoStatusState = zohoConnectionDiagnostics({ headers: {}, socket: {} }, db);
+  const zohoReady = zohoStatusState.configured;
+  const zohoConnected = zohoStatusState.connected;
+  const zohoStatus = zohoConnected ? 'Connected' : zohoStatusState.reauthorizationRequired ? 'Reconnect required' : zohoReady ? 'Ready to connect' : 'Needs credentials';
+  const zohoDetail = zohoConnected ? `Zoho CRM sync connected${db.zoho.email ? ` for ${db.zoho.email}` : ''}.` : zohoStatusState.reauthorizationRequired ? 'Zoho authorization is not durable. Reconnect Zoho and approve offline access.' : zohoReady ? 'OAuth credentials are configured. Connect Zoho CRM from Settings.' : 'Add Zoho CRM OAuth credentials to enable module sync.';
   const zoomReady = zoomConfigured();
   const zoomStatus = zoomReady ? 'Connected' : 'Needs credentials';
   const zoomAccountCount = zoomAccounts().length;
   const zoomDetail = zoomReady ? `Zoom meetings sync is configured for ${zoomSyncAllUsers() ? 'all users' : 'the configured user'} across ${zoomAccountCount} account${zoomAccountCount === 1 ? '' : 's'}.` : 'Add Zoom credentials to enable meeting sync.';
-  db.integrations = [
+  return [
     { name: 'Gmail', status: gmailStatus, detail: gmailDetail },
     { name: 'Eventbrite', status: eventbriteStatus, detail: eventbriteDetail },
     { name: 'Zoom', status: zoomStatus, detail: zoomDetail },
     { name: 'Meta', status: metaStatus, detail: metaDetail },
-    { name: 'Apollo', status: apolloStatus, detail: apolloDetail }
+    { name: 'Apollo', status: apolloStatus, detail: apolloDetail },
+    { name: 'Zoho CRM', status: zohoStatus, detail: zohoDetail }
   ];
-  return db;
 }
 
 // Credential fields that must never reach a browser payload.
@@ -2700,7 +3364,27 @@ function bootstrap(db, user) {
   copy.eventbrite = withoutIntegrationSecrets(copy.eventbrite);
   copy.meta = withoutIntegrationSecrets(copy.meta);
   copy.apollo = withoutIntegrationSecrets(copy.apollo);
+  copy.zoho = withoutIntegrationSecrets(copy.zoho);
   copy.zoom = withoutIntegrationSecrets(copy.zoom);
+  if (copy.zoom?.calls) {
+    copy.zoom.call_total = copy.zoom.calls.length;
+    copy.zoom.calls = [];
+    copy.zoom.call_paging = {
+      loaded: 0,
+      total: copy.zoom.call_total,
+      limit: 50,
+      has_more: copy.zoom.call_total > 0,
+      next_offset: 0
+    };
+    copy.zoom.numbers = [];
+    copy.zoom.number_paging = {
+      loaded: 0,
+      total: 0,
+      limit: 50,
+      has_more: copy.zoom.call_total > 0,
+      next_offset: 0
+    };
+  }
   return copy;
 }
 
@@ -2751,8 +3435,7 @@ function publicEmailDetail(email) {
 
 function emailSummaryDataSql() {
   return `
-    data - 'body' - 'html' - 'html_body' - 'body_html' - 'attachments'
-    || jsonb_build_object(
+    jsonb_build_object(
       'id', id,
       'lead_id', coalesce(lead_id, ''),
       'first_name', coalesce(first_name, ''),
@@ -2763,11 +3446,20 @@ function emailSummaryDataSql() {
       'owner', coalesce(owner, ''),
       'date', received_at,
       'received_at', received_at,
+      'created_at', received_at,
+      'direction', coalesce(data->>'direction', 'inbound'),
       'response_at', response_at,
       'response_note', coalesce(response_note, ''),
       'due_at', due_at,
       'gmail_message_id', coalesce(gmail_message_id, ''),
-      'snippet', left(regexp_replace(coalesce(body, data->>'snippet', ''), '\\s+', ' ', 'g'), 260)
+      'gmail_thread_id', coalesce(data->>'gmail_thread_id', ''),
+      'gmail_labels', coalesce(data->'gmail_labels', '[]'::jsonb),
+      'gmail_label_names', coalesce(data->'gmail_label_names', '[]'::jsonb),
+      'dashboard_folder', coalesce(data->>'dashboard_folder', ''),
+      'trashed_at', coalesce(data->>'trashed_at', ''),
+      'trash_reason', coalesce(data->>'trash_reason', ''),
+      'is_read', coalesce(data->'is_read', 'true'::jsonb),
+      'snippet', left(coalesce(data->>'snippet', ''), 260)
     )
   `;
 }
@@ -2784,6 +3476,8 @@ function decodeEmailCursor(cursor) {
   if (!cursor) return null;
   try {
     const value = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+    // Filtered inbox pages (SQL path) use an offset cursor.
+    if (Number.isInteger(value?.offset) && value.offset >= 0) return { offset: value.offset };
     if (!value?.id) return null;
     return {
       id: String(value.id),
@@ -2794,26 +3488,31 @@ function decodeEmailCursor(cursor) {
   }
 }
 
-function encodeLeadCursor(lead) {
-  if (!lead?.id) return '';
-  return Buffer.from(JSON.stringify({
-    created_at: lead.created_at || null,
-    id: lead.id
-  })).toString('base64url');
+function encodePageCursor(value) {
+  if (!value || typeof value !== 'object') return '';
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
 
-function decodeLeadCursor(cursor) {
+function decodePageCursor(cursor, label = 'cursor') {
   if (!cursor) return null;
   try {
     const value = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
-    if (!value?.id) return null;
-    return {
-      id: String(value.id),
-      created_at: value.created_at ? new Date(value.created_at) : null
-    };
+    return value && typeof value === 'object' ? value : null;
   } catch {
-    throw statusError(400, 'Invalid lead cursor.');
+    throw statusError(400, `Invalid ${label}.`);
   }
+}
+
+function escapeSqlLike(value) {
+  return String(value || '').replace(/[\\%_]/g, char => `\\${char}`);
+}
+
+function parseOptionalIsoDate(value, label) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const time = Date.parse(text);
+  if (!Number.isFinite(time)) throw statusError(400, `Invalid ${label}.`);
+  return new Date(time).toISOString();
 }
 
 function filterLocalLeads(leads = [], filters = {}) {
@@ -2840,83 +3539,629 @@ function filterLocalLeads(leads = [], filters = {}) {
   });
 }
 
-async function loadLeadPage(options = {}) {
-  const limit = Math.max(1, Math.min(Number(options.limit || 50), 100));
-  const cursor = decodeLeadCursor(options.cursor);
-  const filters = {
-    search: String(options.search || '').trim(),
-    stage: String(options.stage || '').trim(),
-    owner_id: String(options.owner_id || options.ownerId || '').trim(),
-    programme_id: String(options.programme_id || options.programmeId || '').trim()
+const LEAD_PAGE_DEFAULT_LIMIT = 100;
+const LEAD_PAGE_MAX_LIMIT = 200;
+
+// Sorts the Leads list accepts. Column names cannot be bound as $n parameters, so only
+// these fixed expressions ever reach the SQL text. created_at DESC, id DESC is served by
+// idx_app_leads_cursor. app_leads has no updated_at or last-activity column to sort on.
+const LEAD_SORTS = {
+  created_at: { sql: 'created_at', cast: 'timestamptz' },
+  name: { sql: `lower(coalesce(first_name, '') || ' ' || coalesce(last_name, ''))`, cast: 'text' }
+};
+
+// Only what the Leads table and board render. The full record (notes, source history
+// details, integration payloads) comes from GET /api/leads/:id.
+const LEAD_LIST_COLUMNS = `
+  id, person_id, first_name, last_name, email, employer, phone, city,
+  programme_id, programme, level, owner_id, owner, stage, priority,
+  source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at,
+  data->>'zoho_record_id' as zoho_record_id,
+  data->>'zoho_module' as zoho_module,
+  (
+    select coalesce(jsonb_agg(jsonb_build_object('source', s.source)), '[]'::jsonb)
+    from (
+      select distinct e->>'source' as source
+      from jsonb_array_elements(case when jsonb_typeof(data->'source_history') = 'array' then data->'source_history' else '[]'::jsonb end) e
+      where e->>'source' is not null
+    ) s
+  ) as source_history`;
+
+function leadListRow(row) {
+  const { sort_key: sortKey, ...lead } = row;
+  return {
+    ...lead,
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    next_action_at: row.next_action_at ? new Date(row.next_action_at).toISOString() : null,
+    full_name: [row.first_name, row.last_name].filter(Boolean).join(' ')
   };
+}
+
+// Cursors are opaque base64url JSON: { sort, dir, value, id }. value is the last row's
+// sort key exactly as Postgres returned it as text (created_at keeps its microseconds),
+// so the next page starts precisely after that row.
+function encodeLeadCursor(sortKey, id, sort = 'created_at', dir = 'desc') {
+  if (!id) return '';
+  return Buffer.from(JSON.stringify({ sort, dir, value: sortKey ?? null, id: String(id) })).toString('base64url');
+}
+
+const LEAD_CURSOR_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)?$/;
+
+function decodeLeadCursor(cursor, sort = 'created_at', dir = 'desc') {
+  if (!cursor) return null;
+  let value;
+  try {
+    value = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8'));
+  } catch {
+    throw statusError(400, 'Invalid lead cursor.');
+  }
+  if (!value || typeof value !== 'object' || typeof value.id !== 'string' || !value.id || value.id.length > 200) {
+    throw statusError(400, 'Invalid lead cursor.');
+  }
+  // Cursors issued before sorting existed carry only { created_at, id }.
+  const cursorSort = value.sort || 'created_at';
+  const cursorDir = value.dir || 'desc';
+  const cursorValue = value.sort ? value.value : value.created_at;
+  if (cursorSort !== sort || cursorDir !== dir) throw statusError(400, 'Lead cursor does not match the requested sort.');
+  if (cursorValue !== null && cursorValue !== undefined && typeof cursorValue !== 'string') throw statusError(400, 'Invalid lead cursor.');
+  if (sort === 'created_at' && cursorValue && !LEAD_CURSOR_TIMESTAMP.test(cursorValue)) throw statusError(400, 'Invalid lead cursor.');
+  if (typeof cursorValue === 'string' && cursorValue.length > 400) throw statusError(400, 'Invalid lead cursor.');
+  return { id: value.id, value: cursorValue ?? null };
+}
+
+function leadPageOptions(options = {}) {
+  const rawLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, LEAD_PAGE_MAX_LIMIT)) : LEAD_PAGE_DEFAULT_LIMIT;
+  const sort = String(options.sort || 'created_at').trim();
+  if (!LEAD_SORTS[sort]) throw statusError(400, `Unsupported lead sort. Use one of: ${Object.keys(LEAD_SORTS).join(', ')}.`);
+  const dir = String(options.dir || (sort === 'name' ? 'asc' : 'desc')).trim().toLowerCase();
+  if (!['asc', 'desc'].includes(dir)) throw statusError(400, 'Lead sort direction must be asc or desc.');
+  const parseDate = (input, label) => {
+    const text = String(input || '').trim();
+    if (!text) return null;
+    const time = Date.parse(text);
+    if (!Number.isFinite(time)) throw statusError(400, `Invalid ${label} date.`);
+    return new Date(time).toISOString();
+  };
+  const all = value => {
+    const text = String(value || '').trim();
+    return /^all( \w+)?$/i.test(text) ? '' : text.slice(0, 200);
+  };
+  return {
+    limit,
+    sort,
+    dir,
+    cursor: decodeLeadCursor(options.cursor, sort, dir),
+    includeTotal: !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase()),
+    filters: {
+      search: String(options.search || '').trim().slice(0, 200),
+      stage: all(options.stage),
+      owner_id: all(options.owner_id || options.ownerId),
+      programme_id: all(options.programme_id || options.programmeId),
+      lead_source: all(options.lead_source || options.source),
+      created_from: parseDate(options.created_from, 'created_from'),
+      created_to: parseDate(options.created_to, 'created_to')
+    }
+  };
+}
+
+// WHERE conditions for the filters, appended to a shared values array so the $n numbers
+// always line up with whichever optional filters are present.
+function leadFilterConditions(filters, values) {
+  const conditions = [];
+  const bind = value => {
+    values.push(value);
+    return `$${values.length}`;
+  };
+  if (filters.search) {
+    // Every word must match one of the searchable fields. User-typed % and _ are escaped
+    // so they match literally.
+    const terms = filters.search.split(/\s+/).filter(Boolean).slice(0, 5);
+    for (const term of terms) {
+      const p = bind(`%${term.replace(/[\\%_]/g, char => `\\${char}`)}%`);
+      conditions.push(`(first_name ilike ${p} or last_name ilike ${p} or email ilike ${p} or phone ilike ${p} or employer ilike ${p})`);
+    }
+  }
+  if (filters.stage) conditions.push(`stage = ${bind(filters.stage)}`);
+  if (filters.owner_id) conditions.push(`owner_id = ${bind(filters.owner_id)}`);
+  if (filters.programme_id) conditions.push(`programme_id = ${bind(filters.programme_id)}`);
+  if (filters.lead_source) {
+    const p = bind(filters.lead_source);
+    conditions.push(`(source_first_touch = ${p} or source_lead_capture = ${p} or data->'source_history' @> jsonb_build_array(jsonb_build_object('source', ${p}::text)))`);
+  }
+  if (filters.created_from) conditions.push(`created_at >= ${bind(filters.created_from)}::timestamptz`);
+  if (filters.created_to) conditions.push(`created_at < ${bind(filters.created_to)}::timestamptz`);
+  return conditions;
+}
+
+// Keyset condition for "rows after the cursor" in ORDER BY <key> <dir>, id <dir>.
+// Postgres puts NULLs first for DESC and last for ASC, so a NULL key is handled explicitly.
+function leadCursorCondition(sortDef, dir, cursor, values) {
+  const bind = value => {
+    values.push(value);
+    return `$${values.length}`;
+  };
+  const key = sortDef.sql;
+  const id = bind(cursor.id);
+  if (cursor.value === null) {
+    return dir === 'desc'
+      ? `((${key} is null and id < ${id}) or ${key} is not null)`
+      : `(${key} is null and id > ${id})`;
+  }
+  const value = `${bind(cursor.value)}::${sortDef.cast}`;
+  return dir === 'desc'
+    ? `((${key}, id) < (${value}, ${id}))`
+    : `((${key}, id) > (${value}, ${id}) or ${key} is null)`;
+}
+
+function buildLeadPageQuery(options = {}) {
+  const { limit, sort, dir, cursor, includeTotal, filters } = leadPageOptions(options);
+  const sortDef = LEAD_SORTS[sort];
+  const filterValues = [];
+  const filterConditions = leadFilterConditions(filters, filterValues);
+  if (leadSoftDelete.enabled) filterConditions.push(activeLeadCondition());
+  const values = filterValues.slice();
+  const conditions = filterConditions.slice();
+  if (cursor) conditions.push(leadCursorCondition(sortDef, dir, cursor, values));
+  values.push(limit + 1);
+  const filterWhere = filterConditions.length ? `where ${filterConditions.join(' and ')}` : '';
+  const listSql = `
+    select ${LEAD_LIST_COLUMNS}, (${sortDef.sql})::text as sort_key
+    from app_leads
+    ${conditions.length ? `where ${conditions.join(' and ')}` : ''}
+    order by ${sortDef.sql} ${dir}, id ${dir}
+    limit $${values.length}`;
+  const combinedSql = includeTotal ? `
+    with
+    stage_counts as (
+      select coalesce(jsonb_object_agg(coalesce(stage, ''), total), '{}'::jsonb) as counts
+      from (select stage, count(*)::int as total from app_leads ${filterWhere} group by stage) s
+    ),
+    page as (
+      select ${LEAD_LIST_COLUMNS}, (${sortDef.sql})::text as sort_key, ${sortDef.sql} as sort_value
+      from app_leads
+      ${conditions.length ? `where ${conditions.join(' and ')}` : ''}
+      order by ${sortDef.sql} ${dir}, id ${dir}
+      limit $${values.length}
+    )
+    select page.*, (select counts from stage_counts) as stage_counts
+    from page
+    order by sort_value ${dir}, id ${dir}` : listSql;
+  return {
+    limit,
+    sort,
+    dir,
+    cursor,
+    includeTotal,
+    filters,
+    label: includeTotal ? 'leads_page_with_counts' : 'leads_page',
+    sql: combinedSql,
+    values
+  };
+}
+
+function explainPlanSummary(planJson) {
+  const root = Array.isArray(planJson) ? planJson[0] : planJson;
+  const plan = root?.Plan || {};
+  return {
+    planning_time_ms: Number(root?.['Planning Time'] || 0),
+    execution_time_ms: Number(root?.['Execution Time'] || 0),
+    node_type: plan['Node Type'] || '',
+    relation_name: plan['Relation Name'] || '',
+    index_name: plan['Index Name'] || '',
+    actual_rows: Number(plan['Actual Rows'] || 0),
+    shared_hit_blocks: Number(plan['Shared Hit Blocks'] || 0),
+    shared_read_blocks: Number(plan['Shared Read Blocks'] || 0)
+  };
+}
+
+async function explainPostgresQuery(label, sql, values = []) {
   await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) throw statusError(400, 'PostgreSQL storage is not configured.');
+  const started = performance.now();
+  const result = await postgresPool.query(`explain (analyze, buffers, format json) ${sql}`, values);
+  const observedMs = performance.now() - started;
+  const planJson = result.rows[0]?.['QUERY PLAN'];
+  return {
+    label,
+    observed_ms: Number(observedMs.toFixed(1)),
+    ...explainPlanSummary(planJson),
+    sql: sqlSummary(sql)
+  };
+}
+
+async function explainBootstrapAndLeads(options = {}) {
+  await ensureStorage();
+  const bootstrap = bootstrapPayloadQuery();
+  const leads = buildLeadPageQuery({ limit: options.limit || 100, include_total: options.include_total || 'false' });
+  const [bootstrapExplain, leadsExplain] = await Promise.all([
+    explainPostgresQuery(bootstrap.label, bootstrap.sql, bootstrap.values),
+    explainPostgresQuery(leads.label, leads.sql, leads.values)
+  ]);
+  return { bootstrap: bootstrapExplain, leads: leadsExplain };
+}
+
+async function explainTracedPage(label, run) {
+  const trace = createPerfTrace(label);
+  const started = performance.now();
+  const payload = await run(trace);
+  const appMs = performance.now() - started;
+  const queryStages = trace.stages.filter(stage => stage.name.endsWith('_query') && stage.sql_full);
+  const explains = [];
+  for (const stage of queryStages) {
+    explains.push(await explainPostgresQuery(stage.query_name || stage.name.replace(/_query$/, ''), stage.sql_full, stage.params || []));
+  }
+  return {
+    app_duration_ms: Number(appMs.toFixed(1)),
+    returned_rows: Array.isArray(payload?.items) ? payload.items.length : Array.isArray(payload?.emails) ? payload.emails.length : Array.isArray(payload?.applications) ? payload.applications.length : 0,
+    postgres_query_count: queryStages.length,
+    queries: explains
+  };
+}
+
+async function explainRemainingPageQueries(options = {}) {
+  await ensureStorage();
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const bounds = {
+    today_start: start.toISOString(),
+    tomorrow_start: new Date(start.getTime() + 86400000).toISOString()
+  };
+  return {
+    leads_reference: await explainPostgresQuery('leads_page', buildLeadPageQuery({ limit: options.leads_limit || 100 }).sql, buildLeadPageQuery({ limit: options.leads_limit || 100 }).values),
+    emails: await explainTracedPage('/api/emails?status=Unanswered&limit=50', trace => loadEmailPage({ status: 'Unanswered', limit: '50' }, trace)),
+    tasks: await explainTracedPage('/api/tasks?status=open&bucket=overdue&limit=80&include_counts=true', trace => loadTaskPage({ status: 'open', bucket: 'overdue', limit: '80', include_counts: 'true', ...bounds }, trace)),
+    applications: await explainTracedPage('/api/applications?limit=50', trace => loadApplicationListDb({ limit: '50' }, trace)),
+    meetings: await explainTracedPage('/api/meetings?limit=50', trace => loadZoomEventPageDb({ limit: '50' }, trace)),
+    contacts: await explainTracedPage('/api/contacts?limit=100', trace => loadContactPage({ limit: '100' }, trace))
+  };
+}
+
+async function loadLeadPage(options = {}, trace = null) {
+  const parsed = leadPageOptions(options);
+  await perfPhase(trace, 'leads_storage', () => ensureStorage());
   if (!postgresPool || !usesPostgresStorage()) {
+    const { limit, sort, dir, cursor, filters } = parsed;
     const db = await loadDb();
     const rows = filterLocalLeads(db.leads || [], filters)
       .sort((a, b) => {
         const timeDiff = new Date(b.created_at || 0) - new Date(a.created_at || 0);
-        return timeDiff || String(a.id).localeCompare(String(b.id));
+        return timeDiff || String(b.id).localeCompare(String(a.id));
       });
     const cursorIndex = cursor ? rows.findIndex(item => item.id === cursor.id) : -1;
     const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
     const items = rows.slice(startIndex, startIndex + limit);
-    const next = rows[startIndex + limit];
+    const hasMore = startIndex + limit < rows.length;
+    const last = items[items.length - 1];
+    const nextCursor = hasMore ? encodeLeadCursor(last?.created_at || null, last?.id, sort, dir) : '';
+    return { items, nextCursor, hasMore, total: rows.length, stage_counts: null, limit, sort, dir };
+  }
+  const query = buildLeadPageQuery(options);
+  const list = await perfPhase(trace, 'leads_sql', () => timedPostgresQuery(trace, query.label, query.sql, query.values));
+  return perfPhase(trace, 'mapping', async () => {
+    const pageRows = list.rows.slice(0, query.limit);
+    const items = pageRows.map(leadListRow);
+    const hasMore = list.rows.length > query.limit;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor = hasMore ? encodeLeadCursor(last.sort_key, last.id, query.sort, query.dir) : '';
+    const stageCounts = query.includeTotal ? (list.rows[0]?.stage_counts || {}) : null;
+    const total = stageCounts ? Object.values(stageCounts).reduce((sum, value) => sum + value, 0) : null;
+    return { items, nextCursor, hasMore, total, stage_counts: stageCounts, limit: query.limit, sort: query.sort, dir: query.dir };
+  });
+}
+
+// Lead detail reads only this lead and the rows linked to it.
+async function loadLeadDetailDb(leadId, mergedFrom = null) {
+  await refreshLeadSoftDelete();
+  const row = (await postgresPool.query(`select data${leadSoftDelete.enabled ? ', merged_into_id' : ''} from app_leads where id = $1`, [leadId])).rows[0];
+  // A merged duplicate opens its master (old links and bookmarks keep working).
+  if (row?.merged_into_id && !mergedFrom) return { ...(await loadLeadDetailDb(row.merged_into_id, leadId)), merged_from: leadId };
+  const lead = row?.data;
+  if (!lead) throw statusError(404, 'Lead not found.');
+  const [tasks, emails, applications, audit] = await Promise.all([
+    postgresPool.query(`select data from app_tasks where lead_id = $1 order by coalesce(completed_at, due_at) desc nulls last limit 200`, [leadId]),
+    postgresPool.query(
+      `select jsonb_build_object(
+         'lead_id', lead_id, 'subject', data->'subject', 'received_at', received_at, 'owner', data->'owner',
+         'direction', data->'direction', 'response_at', response_at, 'gmail_labels', data->'gmail_labels',
+         'dashboard_folder', data->'dashboard_folder', 'trashed_at', data->'trashed_at'
+       ) as data
+       from app_emails where lead_id = $1 order by received_at desc nulls last limit 200`,
+      [leadId]
+    ),
+    postgresPool.query(`select data from app_applications where lead_id = $1`, [leadId]),
+    postgresPool.query(`select data from app_audit where entity_id = $1 order by occurred_at desc nulls last limit 200`, [leadId])
+  ]);
+  const related = {
+    tasks: tasks.rows.map(row => row.data).filter(Boolean),
+    emails: emails.rows.map(row => row.data).filter(Boolean),
+    applications: applications.rows.map(row => row.data).filter(Boolean),
+    audit: audit.rows.map(row => row.data).filter(Boolean)
+  };
+  return { lead, timeline: timeline(related, lead), tasks: related.tasks };
+}
+
+// Planner data straight from app_tasks. Open tasks come oldest-due first, done tasks newest
+// first. Bucket counts cover every task; the browser passes its own local day boundaries so
+// "today" matches what the planner shows.
+const TASK_PAGE_DEFAULT_LIMIT = 50;
+const TASK_PAGE_MAX_LIMIT = 200;
+
+async function loadTaskPage(options = {}, trace = null) {
+  const rawLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, TASK_PAGE_MAX_LIMIT)) : TASK_PAGE_DEFAULT_LIMIT;
+  const status = String(options.status || 'open').trim().toLowerCase();
+  if (!['open', 'done', 'all'].includes(status)) throw statusError(400, 'Task status must be open, done or all.');
+  const offset = Math.max(0, Number.parseInt(options.offset, 10) || 0);
+  const cursor = decodePageCursor(options.cursor, 'task cursor');
+  const bucket = String(options.bucket || '').trim().toLowerCase();
+  if (bucket && (status !== 'open' || !['overdue', 'today', 'upcoming'].includes(bucket))) throw statusError(400, 'Task bucket must be overdue, today or upcoming (open tasks only).');
+  const search = String(options.search || '').trim().slice(0, 200);
+  const ownerId = String(options.owner_id || '').trim();
+  const leadId = String(options.lead_id || '').trim();
+  const dueBefore = parseOptionalIsoDate(options.due_before, 'due_before');
+  const dueAfter = parseOptionalIsoDate(options.due_after, 'due_after');
+  const bounds = parseDayBounds(options);
+  const includeCounts = !options.cursor && ['1', 'true'].includes(String(options.include_counts || '').toLowerCase());
+  if (bucket && !bounds.provided) throw statusError(400, 'A task bucket needs today_start and tomorrow_start.');
+  const { todayStart, tomorrowStart } = bounds.provided ? bounds : {};
+  await perfPhase(trace, 'tasks_storage', () => ensureStorage());
+  if (!postgresPool || !usesPostgresStorage()) {
+    const db = await loadDb();
+    const rows = (db.tasks || [])
+      .filter(task => status === 'all' || (status === 'open' ? task.status === 'Open' : task.status === 'Done'))
+      .filter(task => !ownerId || String(task.owner_id || '') === ownerId)
+      .filter(task => !leadId || String(task.lead_id || '') === leadId)
+      .filter(task => !dueBefore || new Date(task.due_at || 0) < new Date(dueBefore))
+      .filter(task => !dueAfter || new Date(task.due_at || 0) >= new Date(dueAfter))
+      .filter(task => !search || JSON.stringify(task).toLowerCase().includes(search.toLowerCase()))
+      .sort((a, b) => status === 'open'
+        ? new Date(a.due_at || 0) - new Date(b.due_at || 0)
+        : new Date(b.completed_at || b.due_at || 0) - new Date(a.completed_at || a.due_at || 0));
+    const cursorIndex = cursor?.id ? rows.findIndex(item => item.id === cursor.id) + 1 : offset;
+    const start = Math.max(0, cursorIndex || 0);
+    const items = rows.slice(start, start + limit);
+    const nextCursor = start + items.length < rows.length ? encodePageCursor({ id: items[items.length - 1]?.id || '' }) : '';
+    return { items, leads: [], counts: null, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, nextOffset: start + items.length, limit, status };
+  }
+  const sortSql = status === 'open' ? 't.due_at' : 'coalesce(t.completed_at, t.due_at)';
+  const order = status === 'open'
+    ? `${sortSql} asc nulls last, t.id asc`
+    : `${sortSql} desc nulls last, t.id desc`;
+  // Buckets and search run in SQL, so each planner column gets its own page of every task.
+  const values = [];
+  const conditions = [];
+  const bind = value => { values.push(value); return `$${values.length}`; };
+  if (status !== 'all') conditions.push(`t.status = ${bind(status === 'open' ? 'Open' : 'Done')}`);
+  if (bucket === 'overdue') conditions.push(`t.due_at < ${bind(todayStart)}::timestamptz`);
+  if (bucket === 'today') conditions.push(`t.due_at >= ${bind(todayStart)}::timestamptz and t.due_at < ${bind(tomorrowStart)}::timestamptz`);
+  if (bucket === 'upcoming') conditions.push(`(t.due_at >= ${bind(tomorrowStart)}::timestamptz or t.due_at is null)`);
+  if (ownerId) conditions.push(`t.owner_id = ${bind(ownerId)}`);
+  if (leadId) conditions.push(`t.lead_id = ${bind(leadId)}`);
+  if (dueBefore) conditions.push(`t.due_at < ${bind(dueBefore)}::timestamptz`);
+  if (dueAfter) conditions.push(`t.due_at >= ${bind(dueAfter)}::timestamptz`);
+  if (search) {
+    const term = bind(`%${escapeSqlLike(search)}%`);
+    conditions.push(`(t.title ilike ${term} or l.first_name ilike ${term} or l.last_name ilike ${term} or l.email ilike ${term})`);
+  }
+  if (cursor?.id) {
+    const cursorSort = cursor.sort_at || null;
+    const cursorId = String(cursor.id || '');
+    if (status === 'open') {
+      if (cursorSort) {
+        const sortParam = bind(cursorSort);
+        const idParam = bind(cursorId);
+        conditions.push(`(${sortSql} > ${sortParam}::timestamptz or (${sortSql} = ${sortParam}::timestamptz and t.id > ${idParam}) or ${sortSql} is null)`);
+      } else {
+        conditions.push(`(${sortSql} is null and t.id > ${bind(cursorId)})`);
+      }
+    } else if (cursorSort) {
+      const sortParam = bind(cursorSort);
+      const idParam = bind(cursorId);
+      conditions.push(`(${sortSql} < ${sortParam}::timestamptz or (${sortSql} = ${sortParam}::timestamptz and t.id < ${idParam}) or ${sortSql} is null)`);
+    } else {
+      conditions.push(`(${sortSql} is null and t.id < ${bind(cursorId)})`);
+    }
+  }
+  const whereSql = conditions.length ? conditions.join(' and ') : 'true';
+  const listValues = cursor ? [...values, limit + 1] : [...values, limit + 1, offset];
+  const [list, counts] = await Promise.all([
+    timedPostgresQuery(trace, 'tasks_page',
+      `select jsonb_build_object(
+         'id', t.id,
+         'title', t.title,
+         'lead_id', t.lead_id,
+         'kind', coalesce(t.data->>'kind', 'Follow-up'),
+         'status', t.status,
+         'created_at', t.data->>'created_at',
+         'due_at', t.due_at,
+         'completed_at', t.completed_at,
+         'priority', coalesce(t.priority, t.data->>'priority', ''),
+         'owner_id', coalesce(t.owner_id, t.data->>'owner_id', '')
+       ) as task,
+         ${sortSql} as sort_at,
+         case when l.id is null then null else jsonb_build_object(
+           'id', l.id, 'first_name', l.first_name, 'last_name', l.last_name, 'email', l.email, 'phone', l.phone,
+           'employer', l.employer, 'programme_id', l.programme_id, 'programme', l.programme, 'level', l.level,
+           'owner_id', l.owner_id, 'owner', l.owner, 'stage', l.stage, 'priority', l.priority,
+           'source_first_touch', l.source_first_touch, 'source_lead_capture', l.source_lead_capture, 'created_at', l.created_at
+         ) end as lead
+       from app_tasks t
+       left join app_leads l on l.id = t.lead_id
+       where ${whereSql}
+       order by ${order}
+       limit $${cursor ? listValues.length : listValues.length - 1}${cursor ? '' : ` offset $${listValues.length}`}`,
+      listValues
+    ),
+    includeCounts && bounds.provided ? loadTaskBucketCounts(postgresPool, bounds, trace) : Promise.resolve(null)
+  ]);
+  return perfPhase(trace, 'mapping', async () => {
+    const rows = list.rows.slice(0, limit);
+    const leads = new Map();
+    for (const row of rows) if (row.lead?.id) leads.set(row.lead.id, row.lead);
+    const last = rows[rows.length - 1];
+    const nextCursor = list.rows.length > limit && last?.task?.id ? encodePageCursor({ sort_at: last.sort_at || null, id: last.task.id }) : '';
     return {
-      items,
-      leads: items,
-      total: rows.length,
-      loaded: startIndex + items.length,
-      next_cursor: next ? encodeLeadCursor(items[items.length - 1]) : '',
+      items: rows.map(row => row.task).filter(Boolean),
+      leads: [...leads.values()],
+      counts: counts || null,
+      hasMore: Boolean(nextCursor),
+      has_more: Boolean(nextCursor),
+      nextCursor,
+      next_cursor: nextCursor,
+      nextOffset: offset + rows.length,
       limit,
-      has_more: Boolean(next)
+      status,
+      bucket: bucket || null
     };
+  });
+}
+
+function eventListDataSql() {
+  return `
+    jsonb_build_object(
+      'id', e.id,
+      'name', coalesce(e.name, e.data->>'name', 'Event'),
+      'title', coalesce(e.name, e.data->>'title', e.data->>'name', 'Event'),
+      'start_at', e.start_at,
+      'location', coalesce(e.location, e.data->>'location', ''),
+      'campaign', coalesce(e.campaign, e.data->>'campaign', ''),
+      'capacity', coalesce(e.capacity, nullif(e.data->>'capacity', '')::int, 0),
+      'registrations', greatest(coalesce(e.registrations, 0), coalesce(a.attendee_count, 0)),
+      'attendance', coalesce(e.attendance, a.attended, 0),
+      'attendee_count', coalesce(a.attendee_count, 0),
+      'description', coalesce(e.data->>'description', ''),
+      'status', coalesce(e.data->>'status', 'live'),
+      'meeting_link', coalesce(e.data->>'meeting_link', e.data->>'zoom_link', ''),
+      'zoom_link', coalesce(e.data->>'zoom_link', e.data->>'meeting_link', ''),
+      'zoom_meeting_id', coalesce(e.data->>'zoom_meeting_id', ''),
+      'zoom_meeting_uuid', coalesce(e.data->>'zoom_meeting_uuid', ''),
+      'zoom_host_id', coalesce(e.data->>'zoom_host_id', ''),
+      'zoom_host_label', coalesce(e.data->>'zoom_host_label', ''),
+      'zoom_account_id', coalesce(e.data->>'zoom_account_id', ''),
+      'zoom_account_label', coalesce(e.data->>'zoom_account_label', ''),
+      'zoom_list_type', coalesce(e.data->>'zoom_list_type', e.data->>'status', ''),
+      'metrics', jsonb_build_object(
+        'booked', greatest(coalesce(e.registrations, 0), coalesce(a.attendee_count, 0)),
+        'confirmed', coalesce(a.confirmed, 0),
+        'attended', coalesce(a.attended, 0),
+        'declined', coalesce(a.declined, 0),
+        'noAnswer', coalesce(a.no_answer, 0),
+        'pending', greatest(0, greatest(coalesce(e.registrations, 0), coalesce(a.attendee_count, 0)) - coalesce(a.confirmed, 0) - coalesce(a.attended, 0) - coalesce(a.declined, 0)),
+        'capacity', coalesce(e.capacity, nullif(e.data->>'capacity', '')::int, greatest(coalesce(e.registrations, 0), coalesce(a.attendee_count, 0)))
+      )
+    )
+  `;
+}
+
+const EVENT_ATTENDEE_STATS_SQL = `
+  left join lateral (
+    select
+      count(*)::int as attendee_count,
+      count(*) filter (where coalesce(x.value->>'attended_at', '') <> '' or lower(coalesce(x.value->>'status', '')) ~ 'attended|present|checked')::int as attended,
+      count(*) filter (where coalesce(x.value->>'attended_at', '') = '' and lower(coalesce(x.value->>'status', '')) ~ 'confirm|confirmed')::int as confirmed,
+      count(*) filter (where lower(coalesce(x.value->>'status', '')) ~ 'declined|cancel|no show|absent')::int as declined,
+      count(*) filter (where lower(coalesce(x.value->>'status', '')) ~ 'no answer|not reached')::int as no_answer
+    from jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) x
+  ) a on true`;
+
+async function loadEventDetailDb(id, trace = null) {
+  await perfPhase(trace, 'events_storage', () => ensureStorage());
+  if (!postgresPool || !usesPostgresStorage()) {
+    const event = (await loadDb()).events.find(item => String(item.id) === String(id));
+    if (!event) throw statusError(404, 'Event not found.');
+    return { event };
   }
-  const where = [];
-  const params = [];
-  const addParam = value => {
-    params.push(value);
-    return `$${params.length}`;
-  };
-  if (filters.stage) where.push(`coalesce(stage, data->>'stage', '') = ${addParam(filters.stage)}`);
-  if (filters.owner_id) where.push(`coalesce(owner_id, data->>'owner_id', '') = ${addParam(filters.owner_id)}`);
-  if (filters.programme_id) where.push(`coalesce(programme_id, data->>'programme_id', '') = ${addParam(filters.programme_id)}`);
-  if (filters.search) {
-    const term = `%${filters.search.toLowerCase()}%`;
-    where.push(`lower(concat_ws(' ', first_name, last_name, email, phone, employer, programme, stage, owner, data->>'full_name')) like ${addParam(term)}`);
+  const result = await timedPostgresQuery(trace, 'event_detail', `select data from app_events where id = $1 limit 1`, [String(id)]);
+  const event = result.rows[0]?.data;
+  if (!event) throw statusError(404, 'Event not found.');
+  return { event };
+}
+
+// Events are loaded as bounded summaries. Attendees stay off the hot list path and are fetched
+// only for a single event detail dialog.
+async function loadEventPage(options = {}, trace = null) {
+  const rawLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 100)) : 50;
+  const upcomingOnly = ['1', 'true'].includes(String(options.upcoming || '').toLowerCase());
+  const includeTotal = !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
+  const cursor = decodePageCursor(options.cursor, 'event cursor');
+  await perfPhase(trace, 'events_storage', () => ensureStorage());
+  if (!postgresPool || !usesPostgresStorage()) {
+    const db = await loadDb();
+    const events = (db.events || [])
+      .filter(event => !upcomingOnly || new Date(event.start_at || 0) >= new Date())
+      .sort((a, b) => new Date(b.start_at || 0) - new Date(a.start_at || 0));
+    const start = cursor?.id ? Math.max(0, events.findIndex(item => item.id === cursor.id) + 1) : 0;
+    const page = events.slice(start, start + limit);
+    const nextCursor = start + page.length < events.length ? encodePageCursor({ start_at: page[page.length - 1]?.start_at || null, id: page[page.length - 1]?.id || '' }) : '';
+    return { items: page, total: includeTotal ? events.length : null, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, limit };
   }
-  const baseWhere = where.length ? `where ${where.join(' and ')}` : '';
-  const totalParams = params.slice();
-  const total = Number((await postgresPool.query(`select count(*)::int as total from app_leads ${baseWhere}`, totalParams)).rows[0]?.total || 0);
-  if (cursor) {
-    const cursorDateParam = addParam(cursor.created_at ? cursor.created_at.toISOString() : null);
-    const cursorIdParam = addParam(cursor.id);
-    where.push(`(
-      (${cursorDateParam}::timestamptz is not null and (created_at < ${cursorDateParam}::timestamptz or (created_at = ${cursorDateParam}::timestamptz and id > ${cursorIdParam}) or created_at is null))
-      or (${cursorDateParam}::timestamptz is null and created_at is null and id > ${cursorIdParam})
-    )`);
+  const conditions = [];
+  const values = [];
+  const bind = value => { values.push(value); return `$${values.length}`; };
+  if (upcomingOnly) conditions.push(`start_at >= now()`);
+  if (cursor?.id) {
+    const idParam = bind(String(cursor.id || ''));
+    if (cursor.start_at) {
+      const startParam = bind(cursor.start_at);
+      conditions.push(upcomingOnly
+        ? `(start_at > ${startParam}::timestamptz or (start_at = ${startParam}::timestamptz and id > ${idParam}) or start_at is null)`
+        : `(start_at < ${startParam}::timestamptz or (start_at = ${startParam}::timestamptz and id < ${idParam}) or start_at is null)`);
+    } else {
+      conditions.push(upcomingOnly ? `(start_at is null and id > ${idParam})` : `(start_at is null and id < ${idParam})`);
+    }
   }
-  const result = await postgresPool.query(
-    `select data from app_leads
-     ${where.length ? `where ${where.join(' and ')}` : ''}
-     order by created_at desc nulls last, id
-     limit ${addParam(limit + 1)}`,
-    params
-  );
-  const rows = result.rows.map(item => item.data);
-  const items = rows.slice(0, limit);
-  return {
-    items,
-    leads: items,
-    total,
-    loaded: items.length,
-    next_cursor: rows.length > limit ? encodeLeadCursor(items[items.length - 1]) : '',
-    limit,
-    has_more: rows.length > limit
-  };
+  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
+  const order = upcomingOnly ? `start_at asc nulls last, id` : `start_at desc nulls last, id`;
+  const [list, count] = await Promise.all([
+    timedPostgresQuery(trace, 'events_page', `select ${eventListDataSql()} as data, e.start_at from app_events e ${EVENT_ATTENDEE_STATS_SQL} ${where} order by ${order} limit $${values.length + 1}`, [...values, limit + 1]),
+    includeTotal ? timedPostgresQuery(trace, 'events_count', `select count(*)::int as total from app_events ${upcomingOnly ? 'where start_at >= now()' : ''}`) : Promise.resolve(null)
+  ]);
+  return perfPhase(trace, 'mapping', async () => {
+    const rows = list.rows.slice(0, limit).map(row => row.data).filter(Boolean);
+    const last = list.rows.slice(0, limit).at(-1);
+    const nextCursor = list.rows.length > limit && last?.data?.id ? encodePageCursor({ start_at: last.start_at || last.data.start_at || null, id: last.data.id }) : '';
+    return { items: rows, total: count ? Number(count.rows[0]?.total || 0) : null, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, limit };
+  });
+}
+
+function leadIdentityKey(lead) {
+  return String(lead?.zoho_record_id || lead?.crm_lead_id || lead?.id || '').trim().toLowerCase();
+}
+
+function uniqueLeadsByIdentity(leads = []) {
+  const seen = new Set();
+  return leads.filter(lead => {
+    const key = leadIdentityKey(lead);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function dashboardLeadIdentitySql(alias = '') {
+  const prefix = alias ? `${alias}.` : '';
+  return `coalesce(nullif(${prefix}data->>'zoho_record_id', ''), nullif(${prefix}data->>'crm_lead_id', ''), nullif(${prefix}data->>'id', ''), ${prefix}id)`;
+}
+
+function dashboardDistinctLeadRowsSql(alias = '') {
+  const keySql = dashboardLeadIdentitySql(alias);
+  const prefix = alias ? `${alias}.` : '';
+  return `
+    select distinct on (${keySql})
+      ${keySql} as lead_key,
+      ${prefix}id,
+      coalesce(${prefix}stage, ${prefix}data->>'stage', '') as stage,
+      ${prefix}created_at
+    from app_leads ${alias}
+    where ${activeLeadCondition(alias)}
+    order by ${keySql}, coalesce(${prefix}created_at, 'epoch'::timestamptz) desc, ${prefix}id desc
+  `;
 }
 
 function dashboardSummaryFromDb(db) {
-  const leads = db.leads || [];
+  const leads = uniqueLeadsByIdentity(db.leads || []);
   const tasks = db.tasks || [];
   const emails = (db.emails || []).filter(email => !emailIsTrashed(email));
   const applications = db.applications || [];
@@ -2972,10 +4217,10 @@ async function loadDashboardSummaryDb() {
     postgresPool.query(`
       select
         count(*)::int as total,
-        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%new%')::int as new,
-        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) like '%qualified%')::int as qualified,
-        count(*) filter (where lower(coalesce(stage, data->>'stage', '')) not in ('enrolled', 'lost', 'not eligible'))::int as active
-      from app_leads
+        count(*) filter (where lower(coalesce(stage, '')) like '%new%')::int as new,
+        count(*) filter (where lower(coalesce(stage, '')) like '%qualified%')::int as qualified,
+        count(*) filter (where lower(coalesce(stage, '')) not in ('enrolled', 'lost', 'not eligible'))::int as active
+      from (${dashboardDistinctLeadRowsSql()}) distinct_leads
     `),
     postgresPool.query(`
       select
@@ -3121,7 +4366,7 @@ function appendSqlCondition(whereSql, condition) {
 }
 
 function leadDashboardWhere(filters, dateExpression = 'l.created_at') {
-  return dashboardWhere(filters, {
+  const where = dashboardWhere(filters, {
     date: dateExpression,
     college: "coalesce(l.data->>'college_id', l.data->>'college', '')",
     programme: 'coalesce(l.programme_id, l.data->>\'programme_id\', \'\')',
@@ -3129,6 +4374,8 @@ function leadDashboardWhere(filters, dateExpression = 'l.created_at') {
     owner: 'coalesce(l.owner_id, l.data->>\'owner_id\', \'\')',
     source: "coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other')"
   });
+  if (leadSoftDelete.enabled) where.sql = appendSqlCondition(where.sql, activeLeadCondition('l'));
+  return where;
 }
 
 function taskDashboardWhere(filters, dateExpression = 't.due_at') {
@@ -3214,7 +4461,7 @@ async function loadDashboardCockpitSummaryDb(filters, user) {
   const [leadStats, taskStats, emailStats, appStats, attentionLeadStats] = await Promise.all([
     postgresPool.query(`
       select
-        count(*) filter (where created_at >= current_date and created_at < current_date + interval '1 day')::int as new_today
+        count(distinct ${dashboardLeadIdentitySql('l')}) filter (where created_at >= current_date and created_at < current_date + interval '1 day')::int as new_today
       from app_leads l ${leadWhere.sql}
     `, leadWhere.params),
     postgresPool.query(`
@@ -3234,7 +4481,7 @@ async function loadDashboardCockpitSummaryDb(filters, user) {
         count(*) filter (where lower(coalesce(a.status, a.data->>'status', '')) in ('in review','submitted','pending','eligible'))::int as needs_review
       from app_applications a left join app_leads l on l.id = a.lead_id ${appWhere.sql}
     `, appWhere.params),
-    postgresPool.query(`select count(*)::int as no_follow_up from app_leads l ${noFollowWhere}`, leadWhere.params)
+    postgresPool.query(`select count(distinct ${dashboardLeadIdentitySql('l')})::int as no_follow_up from app_leads l ${noFollowWhere}`, leadWhere.params)
   ]);
   const integrationIssues = dashboardIntegrationHealthRows(user).filter(item => ['Warning', 'Error'].includes(item.status)).length;
   const stats = {
@@ -3284,10 +4531,10 @@ async function loadDashboardPipelineDb(filters) {
   const result = await postgresPool.query(`
     select
       coalesce(l.stage, l.data->>'stage', 'Unstaged') as stage,
-      count(*)::int as count,
-      count(*) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) in ('lost','not eligible','deferred'))::int as lost,
+      count(distinct ${dashboardLeadIdentitySql('l')})::int as count,
+      count(distinct ${dashboardLeadIdentitySql('l')}) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) in ('lost','not eligible','deferred'))::int as lost,
       round(avg(extract(epoch from (now() - coalesce(l.next_action_at, l.created_at, now()))) / 86400.0)::numeric, 1)::float as avg_time_in_stage_days,
-      count(*) filter (where coalesce(l.created_at, now()) < now() - ((${
+      count(distinct ${dashboardLeadIdentitySql('l')}) filter (where coalesce(l.created_at, now()) < now() - ((${
         thresholdCase
       })::text || ' days')::interval)::int as stuck
     from app_leads l
@@ -3425,8 +4672,8 @@ async function loadDashboardSourcePerformanceDb(filters) {
   const result = await postgresPool.query(`
     select
       coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other') as source,
-      count(distinct l.id)::int as leads,
-      count(distinct l.id) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) in ('qualified','application submitted','eligibility','ready for enrolment','enrolled'))::int as qualified,
+      count(distinct ${dashboardLeadIdentitySql('l')})::int as leads,
+      count(distinct ${dashboardLeadIdentitySql('l')}) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) in ('qualified','application submitted','eligibility','ready for enrolment','enrolled'))::int as qualified,
       count(distinct a.id)::int as applications,
       count(distinct a.id) filter (where a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled')::int as enrolled
     from app_leads l
@@ -3460,7 +4707,8 @@ function dashboardIntegrationHealthRows(user, workspace = {}) {
     dashboardIntegrationRow('Zoom', zoomConfigured(), zoomConfigured(), zoomAutoSyncState, workspace.meta?.zoom?.last_sync_at, 'zoom-sync', user),
     dashboardIntegrationRow('Eventbrite', eventbriteConfigured() || eventbritePrivateTokenConfigured(), Boolean(workspace.eventbrite?.connected || eventbritePrivateTokenConfigured()), eventAutoSyncState, workspace.eventbrite?.last_sync_at, 'eventbrite-sync', user),
     dashboardIntegrationRow('Meta', metaConfigured(), metaConfigured(), { last_result: { last_sync_at: workspace.meta?.last_sync_at }, last_error: null, running: false }, workspace.meta?.last_sync_at, 'meta-sync', user),
-    dashboardIntegrationRow('Apollo', apolloConfigured(), apolloConfigured(), { last_result: { last_sync_at: workspace.meta?.apollo?.last_sync_at }, last_error: null, running: false }, workspace.meta?.apollo?.last_sync_at, 'apollo-sync', user)
+    dashboardIntegrationRow('Apollo', apolloConfigured(), apolloConfigured(), { last_result: { last_sync_at: workspace.meta?.apollo?.last_sync_at }, last_error: null, running: false }, workspace.meta?.apollo?.last_sync_at, 'apollo-sync', user),
+    dashboardIntegrationRow('Zoho CRM', zohoConfigured(), Boolean(workspace.meta?.zoho?.connected), { last_result: { last_sync_at: workspace.meta?.zoho?.last_sync_at }, last_error: null, running: false }, workspace.meta?.zoho?.last_sync_at, 'zoho-sync', user)
   ];
 }
 
@@ -3514,7 +4762,7 @@ async function loadDashboardSearchDb(query, user) {
     postgresPool.query(`
       select id, trim(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) as title, email as detail, 'leads/' || id as route
       from app_leads l
-      where (lower(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) like $1 or lower(coalesce(email, '')) like $1 or lower(coalesce(phone, '')) like $1)
+      where ${activeLeadCondition('l')} and (lower(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) like $1 or lower(coalesce(email, '')) like $1 or lower(coalesce(phone, '')) like $1)
       ${ownerClause}
       order by created_at desc nulls last
       limit 10
@@ -3547,55 +4795,955 @@ async function loadDashboardSearchDb(query, user) {
   return { query: q, leads: leads.rows, emails: emails.rows, applications: applications.rows, tasks: tasks.rows };
 }
 
-async function loadBootstrapDb() {
-  if (!postgresPool || !usesPostgresStorage()) return loadDb();
-  await ensureStorage();
-  const emailLimit = Math.max(1, Math.min(Number(process.env.BOOTSTRAP_EMAIL_LIMIT || 50), 50));
-  const data = await loadPostgresTables({
-    leadLimit: Math.max(25, Number(process.env.BOOTSTRAP_LEAD_LIMIT || 25)),
-    taskLimit: Math.max(25, Number(process.env.BOOTSTRAP_TASK_LIMIT || 25)),
-    emailLimit: emailLimit + 1,
-    eventLimit: Math.max(5, Number(process.env.BOOTSTRAP_EVENT_LIMIT || 10)),
-    auditLimit: Math.max(25, Number(process.env.BOOTSTRAP_AUDIT_LIMIT || 25)),
-    skipApplications: true,
-    skipAudit: true,
-    skipAttribution: true
-  });
-  if (!data) return loadDb();
-  const hasMoreEmails = data.emails.length > emailLimit;
-  data.emails = data.emails.slice(0, emailLimit);
-  data.emails = data.emails.map(publicEmailSummary);
-  data.email_paging = {
-    loaded: data.emails.length,
-    next_cursor: hasMoreEmails ? encodeEmailCursor(data.emails[data.emails.length - 1]) : '',
-    limit: emailLimit,
-    has_more: hasMoreEmails
-  };
-  // This workspace only contains the first page of every table. The flag keeps saveDb
-  // from reconciling (and deleting) records that were never loaded.
-  data.__partial_load = true;
-  return recalculate(data);
+// Bookkeeping lists inside integration state that the browser never needs. They made up most
+// of the old bootstrap payload (imported id lists, stored Zoho records, cached Zoom calls).
+const BOOTSTRAP_STATE_DROP = {
+  gmail: ['imported_message_ids'],
+  eventbrite: ['imported_attendee_ids', 'imported_event_ids'],
+  zoom: ['calls', 'numbers', 'imported_meeting_ids'],
+  zoho: ['records', 'imported_record_ids'],
+  apollo: ['imported_person_ids']
+};
+
+function slimIntegrationState(name, state) {
+  const safe = withoutIntegrationSecrets(state && typeof state === 'object' ? { ...state } : {});
+  for (const key of BOOTSTRAP_STATE_DROP[name] || []) delete safe[key];
+  return safe;
 }
 
-async function loadEmailPage(options = {}) {
-  const limit = Math.max(1, Math.min(Number(options.limit || 50), 50));
-  const cursor = decodeEmailCursor(options.cursor);
-  const filters = {
+// Startup payload: the signed-in user, permissions, lookups (owners, programmes, intakes,
+// stages, sources) and integration status. Records come from their own paginated endpoints
+// and dashboard totals from GET /api/dashboard/totals, so bootstrap never scans a record
+// table and never runs recalculate()/seedDatabase() (which hash the seeded admin password).
+// The empty collections stay so tabs still running an older app.js keep working.
+const BOOTSTRAP_EXTRA_SOURCES = ['Meta', 'Email', 'Apollo', 'Zoho CRM'];
+
+function bootstrapCorePayload(db, user, degraded = [], trace = null) {
+  const integrations = degraded.includes('integrations')
+    ? ['Gmail', 'Eventbrite', 'Zoom', 'Meta', 'Apollo', 'Zoho CRM'].map(name => ({ name, status: 'Unknown', detail: 'Connection status could not be loaded. Reload to try again.' }))
+    : integrationStatuses(db);
+  const permissionsStarted = performance.now();
+  const permissions = permissionsForUser(user);
+  perfAdd(trace, 'permissions', performance.now() - permissionsStarted);
+  return {
+    demo: Boolean(db.demo),
+    user: publicUser(user),
+    permissions,
+    demoUser: user.email,
+    owners: (db.users || []).map(publicUser),
+    programmes: ensureProgrammeCatalog({ programmes: db.programmes || [] }),
+    intakes: db.intakes || [],
+    stages: db.stages || DEFAULT_STAGES.slice(),
+    sources: [...new Set([...(db.sources || DEFAULT_SOURCES), ...BOOTSTRAP_EXTRA_SOURCES])],
+    integrations,
+    gmail: slimIntegrationState('gmail', db.gmail),
+    eventbrite: slimIntegrationState('eventbrite', db.eventbrite),
+    zoom: slimIntegrationState('zoom', db.zoom),
+    zoho: slimIntegrationState('zoho', db.zoho),
+    apollo: slimIntegrationState('apollo', db.apollo),
+    ...(degraded.length ? { degraded } : {}),
+    leads: [],
+    tasks: [],
+    emails: [],
+    events: [],
+    applications: [],
+    audit: [],
+    attribution: []
+  };
+}
+
+function bootstrapPayloadQuery() {
+  const usersTable = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+  return {
+    label: 'bootstrap_payload',
+    values: ['main'],
+    sql: `select demo, stages, sources,
+       coalesce(gmail, '{}'::jsonb) - 'imported_message_ids' as gmail,
+       coalesce(eventbrite, '{}'::jsonb) - 'imported_attendee_ids' - 'imported_event_ids' as eventbrite,
+       coalesce(meta->'zoom', '{}'::jsonb) - 'calls' - 'numbers' - 'imported_meeting_ids' as zoom,
+       coalesce(meta->'zoho', '{}'::jsonb) - 'records' - 'imported_record_ids' as zoho,
+       coalesce(meta->'apollo', '{}'::jsonb) - 'imported_person_ids' as apollo,
+       coalesce((select jsonb_agg(p.data order by p.id) from app_programmes p), '[]'::jsonb) as programmes,
+       coalesce((select jsonb_agg(i.data order by i.id) from app_intakes i), '[]'::jsonb) as intakes,
+       coalesce((
+         select jsonb_agg(jsonb_build_object(
+           'id', u.id, 'name', u.name, 'email', u.email, 'role', u.role,
+           'invited_at', u.invited_at, 'password_changed_at', u.password_changed_at
+         ) order by u.created_at, u.id)
+         from ${usersTable} u
+       ), '[]'::jsonb) as owners
+     from app_workspace
+     where id = $1`
+  };
+}
+
+async function loadBootstrapPayload(user, timings = {}, trace = null) {
+  await perfPhase(trace, 'bootstrap_storage', () => ensureStorage(trace));
+  if (!postgresPool || !usesPostgresStorage()) {
+    // MongoDB mode keeps the whole workspace in one document; there is no smaller read.
+    return perfPhase(trace, 'mapping', async () => bootstrapCorePayload(await loadDb(), user, [], trace));
+  }
+  const started = performance.now();
+  const query = bootstrapPayloadQuery();
+  // One SQL round trip on one connection. Opening several fresh Neon connections in parallel
+  // was the shared cold-request bottleneck for bootstrap and Leads.
+  const result = await perfPhase(trace, 'bootstrap_db', () => timedPostgresQuery(
+    trace,
+    query.label,
+    query.sql,
+    query.values
+  ));
+  timings.db = performance.now() - started;
+  timings.queries = 1;
+  const degraded = [];
+  const row = result.rows[0] || {};
+  const programmes = Array.isArray(row.programmes) ? row.programmes : [];
+  const intakes = Array.isArray(row.intakes) ? row.intakes : [];
+  const owners = (Array.isArray(row.owners) ? row.owners : []).filter(item => !isLegacyDeveloperEmail(item.email));
+  const db = {
+    demo: row.demo,
+    users: owners.length ? owners : degraded.includes('owners') ? [user] : initialUsers(),
+    programmes,
+    stages: row.stages,
+    sources: row.sources,
+    intakes,
+    gmail: row.gmail || { connected: false },
+    eventbrite: row.eventbrite || { connected: false },
+    apollo: row.apollo || {},
+    zoho: row.zoho || {},
+    zoom: row.zoom || {},
+    meta: { zoho: row.zoho || {}, zoom: row.zoom || {}, apollo: row.apollo || {} }
+  };
+  return perfPhase(trace, 'mapping', async () => bootstrapCorePayload(db, user, degraded, trace));
+}
+
+// Local day boundaries sent by the browser (today_start, tomorrow_start) so "overdue" and
+// "today" match what the user sees. Without them the server's UTC day is used.
+function parseDayBounds(options = {}) {
+  const parse = (input, label) => {
+    const text = String(input || '').trim();
+    if (!text) return null;
+    const time = Date.parse(text);
+    if (!Number.isFinite(time)) throw statusError(400, `Invalid ${label}.`);
+    return new Date(time).toISOString();
+  };
+  const todayStart = parse(options.today_start, 'today_start');
+  const tomorrowStart = parse(options.tomorrow_start, 'tomorrow_start');
+  if (todayStart && tomorrowStart) return { todayStart, tomorrowStart, provided: true };
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  return { todayStart: start.toISOString(), tomorrowStart: new Date(start.getTime() + 86400000).toISOString(), provided: false };
+}
+
+function monitoringSnapshotSchemaSql() {
+  return `
+    create table if not exists app_monitoring_snapshot (
+      id text primary key,
+      today_start timestamptz not null,
+      tomorrow_start timestamptz not null,
+      data jsonb not null,
+      generated_at timestamptz not null,
+      refreshed_at timestamptz not null default now(),
+      expires_at timestamptz not null,
+      last_refresh_attempt_at timestamptz,
+      last_refresh_error text,
+      last_successful_refresh_at timestamptz,
+      refresh_lock_until timestamptz
+    )
+  `;
+}
+
+function monitoringSnapshotExpiresIndexSql() {
+  return `create index if not exists app_monitoring_snapshot_expires_idx on app_monitoring_snapshot(expires_at)`;
+}
+
+function monitoringSnapshotSchemaAlterSqls() {
+  return [
+    `alter table app_monitoring_snapshot add column if not exists last_refresh_attempt_at timestamptz`,
+    `alter table app_monitoring_snapshot add column if not exists last_refresh_error text`,
+    `alter table app_monitoring_snapshot add column if not exists last_successful_refresh_at timestamptz`,
+    `alter table app_monitoring_snapshot add column if not exists refresh_lock_until timestamptz`
+  ];
+}
+
+function monitoringSnapshotKey(bounds) {
+  return `main:${bounds.todayStart}:${bounds.tomorrowStart}`;
+}
+
+async function ensureMonitoringSnapshotSchema(trace = null) {
+  await getPostgresPool();
+  await tracedPostgresPoolQuery(trace, 'schema_monitoring_snapshot_table', monitoringSnapshotSchemaSql());
+  for (const [index, sql] of monitoringSnapshotSchemaAlterSqls().entries()) {
+    await tracedPostgresPoolQuery(trace, `schema_monitoring_snapshot_column_${index + 1}`, sql);
+  }
+  await tracedPostgresPoolQuery(trace, 'schema_monitoring_snapshot_expires_index', monitoringSnapshotExpiresIndexSql());
+}
+
+function monitoringSnapshotSchemaMissing(error) {
+  return ['42P01', '42703'].includes(String(error?.code || ''));
+}
+
+function monitoringSnapshotMeta(state, row = {}, ageMs = null, refreshing = false) {
+  return {
+    state,
+    stale: state === 'STALE',
+    refreshing: Boolean(refreshing),
+    ageMs: ageMs == null ? null : Math.max(0, Math.round(ageMs)),
+    generatedAt: row.generated_at ? new Date(row.generated_at).toISOString() : null,
+    refreshedAt: row.refreshed_at ? new Date(row.refreshed_at).toISOString() : null,
+    lastRefreshAttemptAt: row.last_refresh_attempt_at ? new Date(row.last_refresh_attempt_at).toISOString() : null,
+    lastSuccessfulRefreshAt: row.last_successful_refresh_at ? new Date(row.last_successful_refresh_at).toISOString() : null,
+    lastRefreshError: row.last_refresh_error || null
+  };
+}
+
+function monitoringPayloadWithSnapshotMeta(payload, meta) {
+  if (!payload || typeof payload !== 'object') return payload;
+  return { ...payload, _snapshot: meta };
+}
+
+async function readMonitoringSnapshotState(bounds, trace = null) {
+  if (!MONITORING_SNAPSHOT_ENABLED) return { state: 'MISSING', payload: null, meta: monitoringSnapshotMeta('MISSING') };
+  const key = monitoringSnapshotKey(bounds);
+  const cached = monitoringSnapshotMemoryCache.get(key);
+  if (cached && MONITORING_SNAPSHOT_MEMORY_CACHE_MS > 0 && Date.now() - cached.cachedAt <= MONITORING_SNAPSHOT_MEMORY_CACHE_MS) {
+    perfAdd(trace, 'monitoring_snapshot_memory_cache', 0, { state: cached.state });
+    return cached.value;
+  }
+  const pending = monitoringSnapshotReadPromises.get(key);
+  if (pending) {
+    perfAdd(trace, 'monitoring_snapshot_read_join', 0);
+    return pending;
+  }
+  const readPromise = (async () => {
+  try {
+    const result = await monitoringPostgresQuery(trace, 'monitoring_snapshot_read',
+      `select data, generated_at, refreshed_at, expires_at, last_refresh_attempt_at, last_refresh_error, last_successful_refresh_at, refresh_lock_until
+       from app_monitoring_snapshot
+       where id = $1
+       limit 1`,
+      [key]
+    );
+    const row = result.rows[0];
+    if (!row?.data) {
+      const missing = { state: 'MISSING', payload: null, meta: monitoringSnapshotMeta('MISSING') };
+      monitoringSnapshotMemoryCache.set(key, { cachedAt: Date.now(), state: missing.state, value: missing });
+      return missing;
+    }
+    const refreshedAt = row.refreshed_at ? new Date(row.refreshed_at).getTime() : 0;
+    const ageMs = refreshedAt ? Date.now() - refreshedAt : Number.POSITIVE_INFINITY;
+    const state = ageMs <= MONITORING_SNAPSHOT_TTL_MS ? 'FRESH' : 'STALE';
+    const refreshing = row.refresh_lock_until ? new Date(row.refresh_lock_until).getTime() > Date.now() : false;
+    const meta = monitoringSnapshotMeta(state, row, Number.isFinite(ageMs) ? ageMs : null, refreshing);
+    perfAdd(trace, 'monitoring_snapshot_hit', 0, { state, refreshed_at: row.refreshed_at });
+    perfAdd(trace, 'snapshot_age', 0, { state, age_ms: Number.isFinite(ageMs) ? Math.max(0, ageMs) : 0 });
+    const value = { state, payload: row.data, meta };
+    monitoringSnapshotMemoryCache.set(key, { cachedAt: Date.now(), state, value });
+    return value;
+  } catch (error) {
+    if (monitoringSnapshotSchemaMissing(error)) {
+      perfAdd(trace, 'monitoring_snapshot_unavailable', 0, { code: error.code || '' });
+      const missing = { state: 'MISSING', payload: null, meta: monitoringSnapshotMeta('MISSING') };
+      monitoringSnapshotMemoryCache.set(key, { cachedAt: Date.now(), state: missing.state, value: missing });
+      return missing;
+    }
+    throw error;
+  } finally {
+    monitoringSnapshotReadPromises.delete(key);
+  }
+  })();
+  monitoringSnapshotReadPromises.set(key, readPromise);
+  return readPromise;
+}
+
+async function writeMonitoringSnapshot(bounds, payload, trace = null) {
+  if (!MONITORING_SNAPSHOT_ENABLED || !payload) return false;
+  try {
+    const snapshotPayload = { ...payload };
+    delete snapshotPayload._snapshot;
+    await monitoringPostgresQuery(trace, 'monitoring_snapshot_write',
+      `insert into app_monitoring_snapshot (id, today_start, tomorrow_start, data, generated_at, refreshed_at, expires_at, last_successful_refresh_at, last_refresh_error, refresh_lock_until)
+       values ($1, $2::timestamptz, $3::timestamptz, $4::jsonb, coalesce(($4::jsonb->>'generated_at')::timestamptz, now()), now(), now() + ($5::int * interval '1 millisecond'), now(), null, null)
+       on conflict (id) do update set
+         today_start = excluded.today_start,
+         tomorrow_start = excluded.tomorrow_start,
+         data = excluded.data,
+         generated_at = excluded.generated_at,
+         refreshed_at = excluded.refreshed_at,
+         expires_at = excluded.expires_at,
+         last_successful_refresh_at = excluded.last_successful_refresh_at,
+         last_refresh_error = null,
+         refresh_lock_until = null`,
+      [monitoringSnapshotKey(bounds), bounds.todayStart, bounds.tomorrowStart, JSON.stringify(snapshotPayload), MONITORING_SNAPSHOT_TTL_MS]
+    );
+    monitoringSnapshotMemoryCache.set(monitoringSnapshotKey(bounds), {
+      cachedAt: Date.now(),
+      state: 'FRESH',
+      value: {
+        state: 'FRESH',
+        payload: snapshotPayload,
+        meta: monitoringSnapshotMeta('FRESH', {
+          generated_at: snapshotPayload.generated_at || new Date().toISOString(),
+          refreshed_at: new Date().toISOString(),
+          last_successful_refresh_at: new Date().toISOString()
+        }, 0, false)
+      }
+    });
+    return true;
+  } catch (error) {
+    if (monitoringSnapshotSchemaMissing(error)) {
+      perfAdd(trace, 'monitoring_snapshot_write_skipped', 0, { code: error.code || '' });
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function markMonitoringSnapshotRefreshAttempt(bounds, trace = null) {
+  try {
+    await monitoringPostgresQuery(trace, 'monitoring_snapshot_refresh_attempt',
+      `update app_monitoring_snapshot
+       set last_refresh_attempt_at = now(),
+           refresh_lock_until = now() + ($2::int * interval '1 millisecond')
+       where id = $1`,
+      [monitoringSnapshotKey(bounds), MONITORING_SNAPSHOT_REFRESH_LOCK_MS]
+    );
+  } catch (error) {
+    if (!monitoringSnapshotSchemaMissing(error)) throw error;
+  }
+}
+
+async function markMonitoringSnapshotRefreshFailure(bounds, error, trace = null) {
+  const message = safeMonitoringRefreshError(error);
+  try {
+    await monitoringPostgresQuery(trace, 'monitoring_snapshot_refresh_failure',
+      `update app_monitoring_snapshot
+       set last_refresh_attempt_at = coalesce(last_refresh_attempt_at, now()),
+           last_refresh_error = $2,
+           refresh_lock_until = null
+       where id = $1`,
+      [monitoringSnapshotKey(bounds), message]
+    );
+  } catch (updateError) {
+    if (!monitoringSnapshotSchemaMissing(updateError)) console.error(`Monitoring snapshot failure update skipped: ${safeMonitoringRefreshError(updateError)}`);
+  }
+}
+
+function safeMonitoringRefreshError(error) {
+  const code = error?.code ? ` (${error.code})` : '';
+  if (error?.status) return `Monitoring refresh failed${code}.`;
+  if (postgresConnectionLost(error)) return 'Monitoring refresh failed due to a transient database connection error.';
+  return `Monitoring refresh failed${code}.`;
+}
+
+async function acquireMonitoringSnapshotRefreshLock(bounds, wait = false) {
+  await getPostgresPool();
+  const client = await postgresPool.connect();
+  const key = monitoringSnapshotKey(bounds);
+  try {
+    if (wait) {
+      await client.query(`select pg_advisory_lock(hashtext($1))`, [key]);
+      return client;
+    }
+    const result = await client.query(`select pg_try_advisory_lock(hashtext($1)) as locked`, [key]);
+    if (result.rows[0]?.locked) return client;
+    client.release();
+    return null;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+async function releaseMonitoringSnapshotRefreshLock(client, bounds) {
+  if (!client) return;
+  try {
+    await client.query(`select pg_advisory_unlock(hashtext($1))`, [monitoringSnapshotKey(bounds)]);
+  } catch {}
+  try { client.release(); } catch {}
+}
+
+function scheduleMonitoringSnapshotRefresh(bounds, reason = 'stale', delayMs = 0) {
+  if (!MONITORING_SNAPSHOT_ENABLED || !usesPostgresStorage()) return;
+  const key = monitoringSnapshotKey(bounds);
+  if (activeMonitoringSnapshotRefreshKeys.has(key)) return;
+  activeMonitoringSnapshotRefreshKeys.add(key);
+  const timer = setTimeout(() => {
+    refreshMonitoringSnapshotInBackground(bounds, reason).catch(error => {
+      console.error(`Monitoring snapshot refresh skipped: ${safeMonitoringRefreshError(error)}`);
+    }).finally(() => {
+      activeMonitoringSnapshotRefreshKeys.delete(key);
+    });
+  }, Math.max(0, delayMs || 250));
+  if (timer.unref) timer.unref();
+}
+
+async function refreshMonitoringSnapshotInBackground(bounds, reason = 'scheduled') {
+  await ensureStorage();
+  if (!postgresPool) return false;
+  const lock = await acquireMonitoringSnapshotRefreshLock(bounds, false);
+  if (!lock) return false;
+  const trace = null;
+  try {
+    await markMonitoringSnapshotRefreshAttempt(bounds, trace);
+    await loadDashboardMonitoringDb({
+      today_start: bounds.todayStart,
+      tomorrow_start: bounds.tomorrowStart,
+      force_refresh: true
+    }, trace);
+    return true;
+  } catch (error) {
+    await markMonitoringSnapshotRefreshFailure(bounds, error, trace);
+    console.error(`Monitoring snapshot refresh failed (${reason}): ${safeMonitoringRefreshError(error)}`);
+    return false;
+  } finally {
+    await releaseMonitoringSnapshotRefreshLock(lock, bounds);
+  }
+}
+
+async function refreshMonitoringSnapshotForeground(bounds, options = {}, trace = null) {
+  const lock = await acquireMonitoringSnapshotRefreshLock(bounds, true);
+  try {
+    const afterLock = await readMonitoringSnapshotState(bounds, trace);
+    if (afterLock.state === 'FRESH') return monitoringPayloadWithSnapshotMeta(afterLock.payload, afterLock.meta);
+    if (afterLock.state === 'STALE') {
+      scheduleMonitoringSnapshotRefresh(bounds, 'stale-after-missing-lock');
+      return monitoringPayloadWithSnapshotMeta(afterLock.payload, { ...afterLock.meta, stale: true, refreshing: true });
+    }
+    await markMonitoringSnapshotRefreshAttempt(bounds, trace);
+    return await loadDashboardMonitoringDb({
+      ...options,
+      today_start: bounds.todayStart,
+      tomorrow_start: bounds.tomorrowStart,
+      force_refresh: true
+    }, trace);
+  } finally {
+    await releaseMonitoringSnapshotRefreshLock(lock, bounds);
+  }
+}
+
+function scheduleMonitoringSnapshotLoop(delayMs = MONITORING_SNAPSHOT_REFRESH_INTERVAL_MS) {
+  if (!MONITORING_SNAPSHOT_ENABLED || !MONITORING_SNAPSHOT_PROACTIVE_ENABLED || !usesPostgresStorage()) return;
+  if (monitoringSnapshotTimer) clearTimeout(monitoringSnapshotTimer);
+  monitoringSnapshotTimer = setTimeout(async () => {
+    const bounds = parseDayBounds();
+    try {
+      const state = await readMonitoringSnapshotState(bounds, null);
+      if (state.state !== 'FRESH') await refreshMonitoringSnapshotInBackground(bounds, 'scheduled');
+    } catch (error) {
+      console.error(`Monitoring snapshot scheduler skipped: ${safeMonitoringRefreshError(error)}`);
+    } finally {
+      scheduleMonitoringSnapshotLoop();
+    }
+  }, Math.max(1000, delayMs));
+  if (monitoringSnapshotTimer.unref) monitoringSnapshotTimer.unref();
+}
+
+function startMonitoringSnapshotScheduler() {
+  if (!MONITORING_SNAPSHOT_ENABLED || !MONITORING_SNAPSHOT_PROACTIVE_ENABLED || !usesPostgresStorage()) return;
+  setTimeout(async () => {
+    try {
+      const bounds = parseDayBounds();
+      const state = await readMonitoringSnapshotState(bounds, null);
+      if (state.state !== 'FRESH') scheduleMonitoringSnapshotRefresh(bounds, 'startup', 250);
+    } catch (error) {
+      console.error(`Monitoring snapshot startup refresh skipped: ${safeMonitoringRefreshError(error)}`);
+    }
+  }, 1000).unref?.();
+  scheduleMonitoringSnapshotLoop(MONITORING_SNAPSHOT_REFRESH_INTERVAL_MS);
+}
+
+// Task counts per planner bucket over every task (not just the rows loaded in the browser).
+async function loadTaskBucketCounts(db, bounds, trace = null) {
+  const queryFn = trace && db === postgresPool ? (sql, params) => timedPostgresQuery(trace, 'tasks_counts', sql, params) : (sql, params) => db.query(sql, params);
+  const result = await queryFn(
+    `select
+       count(*) filter (where status = 'Open' and due_at < $1::timestamptz)::int as overdue,
+       count(*) filter (where status = 'Open' and due_at >= $1::timestamptz and due_at < $2::timestamptz)::int as today,
+       count(*) filter (where status = 'Open' and (due_at >= $2::timestamptz or due_at is null))::int as upcoming,
+       count(*) filter (where status = 'Open')::int as open,
+       count(*) filter (where status = 'Done')::int as done
+     from app_tasks`,
+    [bounds.todayStart, bounds.tomorrowStart]
+  );
+  return result.rows[0];
+}
+
+async function monitoringPostgresQuery(trace, label, sql, params = []) {
+  const acquireStarted = performance.now();
+  let client = null;
+  const beforeAcquire = postgresPoolStats();
+  try {
+    client = await postgresPool.connect();
+    perfAdd(trace, `${label}_pool_acquire`, performance.now() - acquireStarted, {
+      pool_before: beforeAcquire,
+      pool_after: postgresPoolStats(),
+      query_name: `${label}_pool_acquire`
+    });
+    await client.query('begin');
+    await client.query(`set local statement_timeout = ${MONITORING_STATEMENT_TIMEOUT_MS}`);
+    const queryStarted = performance.now();
+    const result = await client.query(sql, params);
+    await client.query('commit');
+    perfAdd(trace, `${label}_query`, performance.now() - queryStarted, {
+      rows: result.rowCount ?? result.rows?.length ?? 0,
+      sql: sqlSummary(sql),
+      sql_full: sql,
+      params,
+      query_name: label
+    });
+    perfCount(trace, 'postgres_queries');
+    return result;
+  } catch (error) {
+    if (client) await client.query('rollback').catch(() => null);
+    perfAdd(trace, `${label}_error`, performance.now() - acquireStarted, {
+      sql: sqlSummary(sql),
+      query_name: label,
+      code: error?.code || ''
+    });
+    if (error?.code === '57014') {
+      const timeoutError = statusError(503, `Monitoring query timed out: ${label}.`);
+      timeoutError.code = 'monitoring_query_timeout';
+      timeoutError.query_name = label;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    if (client) {
+      try { client.release(); } catch {}
+    }
+  }
+}
+
+// Workspace-wide totals for the CRM, Leads and Events pages, computed in SQL over every record.
+// Kept out of bootstrap because they scan app_leads (~0.3 s of Postgres time).
+async function loadDashboardTotalsDb(options = {}) {
+  const bounds = parseDayBounds(options);
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) {
+    const db = recalculate(await loadDb());
+    return { dashboard: dashboardSummaryFromDb(db), stats: db.stats, source_counts: db.source_counts, marketing: await loadMarketingSummary(), stage_counts: [], task_counts: null, applications_in_review: 0 };
+  }
+  const active = activeLeadCondition();
+  const [dashboard, sourceCounts, marketing, stageCounts, taskCounts, review] = await Promise.all([
+    loadDashboardSummaryDb(),
+    postgresPool.query(
+      `select source_first_touch as source, count(*)::int as leads, count(*) filter (where stage = 'Enrolled')::int as enrolled
+       from app_leads
+       where coalesce(source_first_touch, '') <> '' and ${active}
+       group by source_first_touch
+       order by leads desc`
+    ),
+    loadMarketingSummary(),
+    postgresPool.query(`select coalesce(stage, '') as stage, count(*)::int as total from app_leads where ${active} group by 1 order by 2 desc`),
+    loadTaskBucketCounts(postgresPool, bounds),
+    postgresPool.query(`select count(*) filter (where lower(coalesce(status, '')) like '%review%')::int as review from app_applications`)
+  ]);
+  return {
+    dashboard,
+    stats: {
+      active: Number(dashboard.leads?.active || 0),
+      applications: Number(dashboard.applications?.total || 0),
+      enrolled: Number(dashboard.applications?.enrolled || 0),
+      overdue: Number(taskCounts?.overdue ?? dashboard.tasks?.overdue ?? 0),
+      unanswered: Number(dashboard.emails?.unanswered || 0)
+    },
+    source_counts: sourceCounts.rows,
+    stage_counts: stageCounts.rows,
+    task_counts: taskCounts,
+    applications_in_review: Number(review.rows[0]?.review || 0),
+    marketing
+  };
+}
+
+// Everything the Monitoring page shows, aggregated in SQL (it used to count a 200-row sample).
+// Six queries in parallel; the stale-lead list is capped at 8 rows.
+async function loadDashboardMonitoringDb(options = {}, trace = null) {
+  const bounds = parseDayBounds(options);
+  await perfPhase(trace, 'monitoring_storage', () => ensureStorage(trace));
+  if (!postgresPool || !usesPostgresStorage()) return null;
+  perfAdd(trace, 'external_api', 0, { note: 'none' });
+  if (!options.force_refresh && !options.bypass_snapshot) {
+    const snapshot = await readMonitoringSnapshotState(bounds, trace);
+    if (snapshot.state === 'FRESH') return monitoringPayloadWithSnapshotMeta(snapshot.payload, snapshot.meta);
+    if (snapshot.state === 'STALE') {
+      scheduleMonitoringSnapshotRefresh(bounds, 'stale');
+      return monitoringPayloadWithSnapshotMeta(snapshot.payload, { ...snapshot.meta, stale: true, refreshing: true });
+    }
+    return refreshMonitoringSnapshotForeground(bounds, options, trace);
+  }
+  const active = activeLeadCondition();
+  const activeLeadL = activeLeadCondition('l');
+  const activeLeadD = activeLeadCondition('d');
+  const closed = `('Enrolled', 'Lost', 'Not Eligible')`;
+  const attendeesSql = `app_events e, jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) a`;
+  const main = await monitoringPostgresQuery(trace, 'monitoring_main',
+    `with
+       lead_base as (
+         select id, owner_id, owner, coalesce(stage, '') as stage, programme, created_at, email, phone, source_first_touch, priority
+         from app_leads
+         where ${active}
+       ),
+       lead_stats as (
+         select
+           count(*)::int as total,
+           count(*) filter (where stage not in ${closed})::int as active,
+           count(*) filter (where stage = 'Enrolled')::int as enrolled_stage,
+           count(*) filter (where created_at >= $1::timestamptz)::int as today,
+           count(*) filter (where created_at >= now() - interval '7 days')::int as last_7_days,
+           count(*) filter (where created_at >= now() - interval '30 days')::int as last_30_days,
+           count(*) filter (where coalesce(email, '') = '' or coalesce(phone, '') = '')::int as missing_contact,
+           count(*) filter (where coalesce(programme, '') = '' or coalesce(source_first_touch, '') = '')::int as missing_core,
+           count(*) filter (where stage not in ${closed} and created_at < now() - interval '14 days')::int as stale,
+           (select count(*) from app_applications)::int as applications,
+           (select count(*) from app_applications where learner is not null)::int as enrolled_learners
+         from lead_base
+       ),
+       stage_rows as (
+         select stage, count(*)::int as total
+         from lead_base group by 1 order by 2 desc
+       ),
+       programme_rows as (
+         select coalesce(nullif(programme, ''), 'No programme') as label, count(*)::int as value
+         from lead_base where stage not in ${closed}
+         group by 1 order by 2 desc limit 6
+       ),
+       week_bounds as (
+         select i, $2::timestamptz - make_interval(days => 7 * (8 - i)) as start_at, $2::timestamptz - make_interval(days => 7 * (7 - i)) as end_at
+         from generate_series(0, 7) as i
+       ),
+       week_rows as (
+         select w.start_at, count(l.id)::int as total
+         from week_bounds w
+         left join app_leads l on l.created_at >= w.start_at and l.created_at < w.end_at and ${activeLeadL}
+         group by w.i, w.start_at order by w.start_at
+       ),
+       team_rows as (
+         select 'leads' as kind, owner_id, owner, count(*)::int as a, count(*) filter (where stage not in ${closed})::int as b, null::float as c from lead_base group by 2, 3
+         union all
+         select 'tasks', l.owner_id, l.owner, count(*) filter (where t.status = 'Open')::int, count(*) filter (where t.status = 'Open' and t.due_at < $1::timestamptz)::int, null
+           from app_tasks t join lead_base l on l.id = t.lead_id group by 2, 3
+         union all
+         select 'enrolments', l.owner_id, l.owner, count(distinct l.id)::int, 0, null
+           from app_applications a join lead_base l on l.id = a.lead_id where a.learner is not null group by 2, 3
+         union all
+         select 'responses', l.owner_id, l.owner, count(*)::int, 0, avg(extract(epoch from (e.response_at - e.received_at)) * 1000)::float
+           from app_emails e join lead_base l on l.id = e.lead_id
+           where e.response_at is not null and e.received_at is not null and e.response_at >= e.received_at group by 2, 3
+       ),
+       risk_row as (
+         select
+           (select coalesce(jsonb_agg(x order by x.created_at), '[]'::jsonb) from (
+              select l.id, l.first_name, l.last_name, l.programme, coalesce(l.stage, '') as stage, l.created_at
+              from app_leads l
+              where ${activeLeadL} and coalesce(l.stage, '') not in ${closed} and l.created_at < now() - interval '14 days'
+              order by l.created_at asc limit 8) x) as stale,
+           (select count(*) from lead_base l where l.priority in ('P0', 'P1') and l.stage not in ${closed}
+              and not exists (select 1 from app_tasks t where t.lead_id = l.id and t.status = 'Open'))::int as high_no_action,
+           (select count(*) from app_applications a where exists (
+              select 1 from jsonb_array_elements(case when jsonb_typeof(a.requirements) = 'array' then a.requirements else '[]'::jsonb end) r
+              where coalesce(r->'latest'->>'status', '') <> 'Verified'))::int as missing_evidence,
+           (select count(*) from app_applications a where a.learner is null and a.status = 'Eligible' and coalesce(a.contract->>'status', '') <> 'Verified')::int as pending_contracts,
+           (select count(*) from ${attendeesSql}
+              where coalesce(a->>'lead_id', '') = ''
+                 or not exists (select 1 from app_tasks t where t.lead_id = a->>'lead_id' and t.status = 'Open'))::int as attendees_no_follow_up
+       ),
+       task_counts as (
+         select
+           count(*) filter (where status = 'Open' and due_at < $1::timestamptz)::int as overdue,
+           count(*) filter (where status = 'Open' and due_at >= $1::timestamptz and due_at < $2::timestamptz)::int as today,
+           count(*) filter (where status = 'Open' and (due_at >= $2::timestamptz or due_at is null))::int as upcoming,
+           count(*) filter (where status = 'Open')::int as open,
+           count(*) filter (where status = 'Done')::int as done
+         from app_tasks
+       ),
+       quality_row as (
+         select
+           (select count(*) from (select lower(trim(d.email)) from app_leads d where ${activeLeadD} and coalesce(trim(d.email), '') <> '' group by 1 having count(*) > 1) g)::int as duplicate_emails,
+           (select count(*) from (select lower(trim(phone)) from lead_base where coalesce(trim(phone), '') <> '' group by 1 having count(*) > 1) g)::int as duplicate_phones,
+           (select count(*) from ${attendeesSql} where coalesce(a->>'lead_id', '') = '')::int as unlinked_attendees
+       )
+     select
+       (select to_jsonb(lead_stats) from lead_stats) as leads,
+       coalesce((select jsonb_agg(to_jsonb(stage_rows)) from stage_rows), '[]'::jsonb) as stage_counts,
+       coalesce((select jsonb_agg(to_jsonb(programme_rows)) from programme_rows), '[]'::jsonb) as programme_pressure,
+       coalesce((select jsonb_agg(to_jsonb(week_rows)) from week_rows), '[]'::jsonb) as weekly_leads,
+       coalesce((select jsonb_agg(to_jsonb(team_rows)) from team_rows), '[]'::jsonb) as team_rows,
+       (select to_jsonb(risk_row) from risk_row) as risks,
+       (select to_jsonb(task_counts) from task_counts) as task_counts,
+       (select to_jsonb(quality_row) from quality_row) as quality`,
+    [bounds.todayStart, bounds.tomorrowStart]
+  );
+  const row = main.rows[0] || {};
+  const payload = await perfPhase(trace, 'mapping', async () => {
+    const teamRows = new Map();
+    for (const teamRow of row.team_rows || []) {
+      const key = `${teamRow.owner_id || ''}|${teamRow.owner || ''}`;
+      const entry = teamRows.get(key) || { owner_id: teamRow.owner_id || '', owner: teamRow.owner || '', leads: 0, active: 0, open_tasks: 0, overdue: 0, enrolments: 0, responses: 0, avg_response_ms: null };
+      if (teamRow.kind === 'leads') Object.assign(entry, { leads: teamRow.a, active: teamRow.b });
+      if (teamRow.kind === 'tasks') Object.assign(entry, { open_tasks: teamRow.a, overdue: teamRow.b });
+      if (teamRow.kind === 'enrolments') entry.enrolments = teamRow.a;
+      if (teamRow.kind === 'responses') Object.assign(entry, { responses: teamRow.a, avg_response_ms: teamRow.c });
+      teamRows.set(key, entry);
+    }
+    const riskRow = row.risks || {};
+    const leads = row.leads || {};
+    return {
+      generated_at: new Date().toISOString(),
+      bounds: { today_start: bounds.todayStart, tomorrow_start: bounds.tomorrowStart },
+      leads,
+      stage_counts: (row.stage_counts || []).map(item => ({ stage: item.stage, total: item.total })),
+      programme_pressure: row.programme_pressure || [],
+      weekly_leads: (row.weekly_leads || []).map(item => ({ week_start: new Date(item.start_at).toISOString(), total: item.total })),
+      team: [...teamRows.values()],
+      task_counts: row.task_counts || {},
+      risks: {
+        stale: riskRow.stale || [],
+        stale_total: Number(leads.stale || 0),
+        high_no_action: riskRow.high_no_action || 0,
+        missing_evidence: riskRow.missing_evidence || 0,
+        pending_contracts: riskRow.pending_contracts || 0,
+        attendees_no_follow_up: riskRow.attendees_no_follow_up || 0
+      },
+      quality: { ...(row.quality || {}), missing_contact: leads.missing_contact || 0, missing_core: leads.missing_core || 0, invalid_dates: 0 }
+    };
+  });
+  await writeMonitoringSnapshot(bounds, payload, trace);
+  return payload;
+}
+
+async function refreshMonitoringSnapshotDb(options = {}, trace = null) {
+  const bounds = parseDayBounds(options);
+  await perfPhase(trace, 'monitoring_storage', () => ensureStorage(trace));
+  if (!postgresPool || !usesPostgresStorage()) return null;
+  await ensureMonitoringSnapshotSchema(trace);
+  return loadDashboardMonitoringDb({ ...options, today_start: bounds.todayStart, tomorrow_start: bounds.tomorrowStart, force_refresh: true }, trace);
+}
+
+// Inbox filters answered in PostgreSQL. The SQL mirrors emailMatchesFilters (trash, direction,
+// company sender, needs-response, unread, overdue, day and search) and pages with an offset
+// cursor; every row is still checked with emailMatchesFilters, so results match the old
+// in-memory path. Label filters, name sorts and searches that could match a label text that
+// is derived in JavaScript (for example "Zoho" or "Inbox") keep the in-memory path.
+const EMAIL_DERIVED_LABEL_WORDS = ['zoho', 'events', 'contract matter', 'das matter', 'aptem matter', 'resolved', 'inbox', 'trash'];
+
+function emailFiltersSqlCapable(filters) {
+  if (filters.label && filters.label !== 'All') return false;
+  if (!['newest', 'oldest', 'due-soon'].includes(filters.sort || 'newest')) return false;
+  const query = String(filters.search || '').trim().toLowerCase();
+  if (!query) return true;
+  const labelWords = [...EMAIL_DERIVED_LABEL_WORDS, ...Object.values(GMAIL_SYSTEM_LABELS).map(label => label.toLowerCase())];
+  return !labelWords.some(word => word.includes(query) || query.includes(word));
+}
+
+function emailFilterSql(db, filters) {
+  const values = [];
+  const bind = value => { values.push(value); return `$${values.length}`; };
+  const sender = `lower(trim(coalesce(email, '')))`;
+  const trashed = `(coalesce(data->>'trashed_at', '') <> '' or coalesce(data->>'dashboard_folder', '') = 'trash' or coalesce(data->'gmail_labels', '[]'::jsonb) ? 'TRASH')`;
+  const outbound = `coalesce(data->>'direction', '') = 'outbound'`;
+  // Bound only when a status uses it: Postgres rejects a parameter no statement references.
+  let company = '';
+  const needsResponse = () => {
+    company ||= `(${sender} = any(${bind(companyMailboxEmails(db))}::text[]) or ${sender} ~ '@(kentbusinesscollege\\.org|pathway\\.demo)$')`;
+    return `(not ${trashed} and not ${outbound} and not ${company} and response_at is null)`;
+  };
+  const unread = `(coalesce(data->'gmail_labels', '[]'::jsonb) ? 'UNREAD' or coalesce(data->'gmail_label_names', '[]'::jsonb) ? 'Unread' or coalesce(data->>'is_read', '') = 'false')`;
+  const due = `(coalesce(received_at, 'epoch'::timestamptz) + interval '48 hours')`;
+  const received = `received_at`;
+  const dateValue = received;
+  const status = filters.status || 'All';
+  const responseStatuses = new Set(['Unanswered', 'Unread', 'Seen, no reply', 'Overdue']);
+  const conditions = [];
+  if (status === 'Trash') conditions.push(trashed);
+  else if (!responseStatuses.has(status)) conditions.push(`not ${trashed}`);
+  if (status === 'Sent') conditions.push(outbound);
+  if (!['Sent', 'All', 'Trash'].includes(status) && !responseStatuses.has(status)) conditions.push(`not ${outbound}`);
+  if (status === 'Unanswered') conditions.push(needsResponse());
+  if (status === 'Unread') conditions.push(`${needsResponse()} and ${unread}`);
+  if (status === 'Seen, no reply') conditions.push(`${needsResponse()} and not ${unread}`);
+  if (status === 'Resolved') conditions.push(`not ${needsResponse()}`);
+  if (status === 'Overdue') conditions.push(`${needsResponse()} and received_at < now() - interval '48 hours'`);
+  const dayStart = parseEmailFilterDay(filters.day);
+  if (dayStart) {
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    const filterStart = filters.dateField === 'due' ? new Date(dayStart.getTime() - EMAIL_RESPONSE_SLA_MS) : dayStart;
+    const filterEnd = filters.dateField === 'due' ? new Date(dayEnd.getTime() - EMAIL_RESPONSE_SLA_MS) : dayEnd;
+    conditions.push(`${received} >= ${bind(filterStart.toISOString())}::timestamptz and ${received} < ${bind(filterEnd.toISOString())}::timestamptz`);
+  }
+  const query = String(filters.search || '').trim().toLowerCase();
+  if (query) {
+    // Same fields as the in-memory haystack (the summary carries the 260-character snippet,
+    // not the full body), plus Gmail label names.
+    const snippet = `left(coalesce(data->>'snippet', ''), 260)`;
+    conditions.push(`strpos(lower(concat_ws(' ', first_name, last_name, email, email, subject, ${snippet}, owner, data->>'gmail_label_names')), ${bind(query)}) > 0`);
+  }
+  const order = filters.sort === 'oldest'
+    ? `${received} asc, id asc`
+    : filters.sort === 'due-soon'
+      ? `${received} asc nulls last, id asc`
+      : `${received} desc nulls last, id desc`;
+  return { where: conditions.join(' and '), order, values, dateValue, due };
+}
+
+function normalizeEmailPageOptions(options = {}) {
+  const dateFilter = String(options.date_filter || options.dateFilter || '').trim();
+  const dateFieldInput = String(options.date_field || options.dateField || dateFilter || 'received').trim().toLowerCase();
+  const dayInput = String(options.day || '').trim() || (/^\d{4}-\d{2}-\d{2}$/.test(dateFilter) ? dateFilter : '');
+  return {
     status: String(options.status || '').trim(),
     label: String(options.label || '').trim(),
     search: String(options.search || '').trim(),
-    day: String(options.day || '').trim(),
-    dateField: String(options.date_field || options.dateField || 'received').trim() === 'due' ? 'due' : 'received',
+    day: dayInput,
+    dateField: dateFieldInput === 'due' ? 'due' : 'received',
     sort: String(options.sort || 'newest').trim()
   };
+}
+
+function safeEmailRequestParams(options = {}, filters = normalizeEmailPageOptions(options)) {
+  return {
+    limit: Math.max(1, Math.min(Number(options.limit || 50), 100)),
+    cursor_present: Boolean(options.cursor),
+    status: filters.status || '',
+    label: filters.label || '',
+    day: filters.day || '',
+    date_field: filters.dateField,
+    date_filter: String(options.date_filter || options.dateFilter || ''),
+    sort: filters.sort || 'newest',
+    include_total: String(options.include_total || ''),
+    search_present: Boolean(filters.search),
+    search_length: filters.search.length,
+    owner_present: Boolean(options.owner || options.owner_id),
+    folder: String(options.folder || '')
+  };
+}
+
+function emailFiltersUseKeyset(filters) {
+  return (filters.sort || 'newest') === 'newest' && filters.dateField !== 'due';
+}
+
+function buildFilteredEmailPageQuery(db, filters, limit, cursor = null) {
+  const { where, order, values, dateValue } = emailFilterSql(db, filters);
+  const queryValues = values.slice();
+  const conditions = [where];
+  const bind = value => { queryValues.push(value); return `$${queryValues.length}`; };
+  const useKeyset = emailFiltersUseKeyset(filters) && !Number.isInteger(cursor?.offset);
+  if (useKeyset && cursor?.id) {
+    const idParam = bind(String(cursor.id || ''));
+    if (cursor.received_at) {
+      const receivedParam = bind(cursor.received_at.toISOString());
+      conditions.push(`(${dateValue} < ${receivedParam}::timestamptz or (${dateValue} = ${receivedParam}::timestamptz and id < ${idParam}) or ${dateValue} is null)`);
+    } else {
+      conditions.push(`(${dateValue} is null and id < ${idParam})`);
+    }
+  }
+  const pageLimit = useKeyset ? limit + 1 : Math.max(limit * 2, 50);
+  const limitParam = bind(pageLimit);
+  const offsetSql = useKeyset ? '' : ` offset ${bind(Number(cursor?.offset || 0))}`;
+  return {
+    sql: `select ${emailSummaryDataSql()} as data from app_emails where ${conditions.join(' and ')} order by ${order} limit ${limitParam}${offsetSql}`,
+    values: queryValues,
+    where,
+    order,
+    useKeyset,
+    pageLimit
+  };
+}
+
+async function loadFilteredEmailPageSql(db, filters, limit, cursor, options = {}, trace = null) {
+  const filterStarted = performance.now();
+  const { where, values } = emailFilterSql(db, filters);
+  perfAdd(trace, 'email_filter_query', performance.now() - filterStarted, {
+    query_name: 'email_filter_query',
+    filters: safeEmailRequestParams(options, filters)
+  });
+  perfAdd(trace, 'gmail_state_query', 0, { query_name: 'gmail_state', note: 'not_called' });
+  const includeTotal = !cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
+  if (emailFiltersUseKeyset(filters) && !Number.isInteger(cursor?.offset)) {
+    perfAdd(trace, 'email_path', 0, { path: 'postgres_fast_keyset' });
+    const query = buildFilteredEmailPageQuery(db, filters, limit, cursor);
+    const result = await timedPostgresQueryWithStatementTimeout(trace, 'emails_page', query.sql, query.values, EMAIL_LIST_STATEMENT_TIMEOUT_MS);
+    const total = includeTotal
+      ? Number((await timedPostgresQueryWithStatementTimeout(trace, 'emails_count', `select count(*)::int as total from app_emails where ${where}`, values, EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows[0]?.total || 0)
+      : null;
+    return perfPhase(trace, 'mapping', async () => {
+      const rows = result.rows.map(row => row.data);
+      const emails = rows.slice(0, limit).map(publicEmailSummary);
+      return {
+        emails,
+        loaded: emails.length,
+        total,
+        next_cursor: rows.length > limit ? encodeEmailCursor(emails[emails.length - 1]) : '',
+        limit,
+        has_more: rows.length > limit
+      };
+    });
+  }
+  const { order } = emailFilterSql(db, filters);
+  perfAdd(trace, 'email_path', 0, { path: 'postgres_filtered_offset' });
+  const start = Number(cursor?.offset || 0);
+  const batch = Math.max(limit * 2, 50);
+  const emails = [];
+  let offset = start;
+  let exhausted = false;
+  let nextOffset = start;
+  let more = false;
+  while (emails.length <= limit && !exhausted && !more) {
+    const rows = (await timedPostgresQueryWithStatementTimeout(trace, 'emails_page',
+      `select ${emailSummaryDataSql()} as data from app_emails where ${where} order by ${order} limit $${values.length + 1} offset $${values.length + 2}`,
+      [...values, batch, offset],
+      EMAIL_LIST_STATEMENT_TIMEOUT_MS
+    )).rows.map(row => row.data);
+    exhausted = rows.length < batch;
+    for (const row of rows) {
+      offset += 1;
+      if (!emailMatchesFilters(db, row, filters)) continue;
+      if (emails.length < limit) {
+        emails.push(row);
+        nextOffset = offset;
+      } else {
+        more = true;
+        break;
+      }
+    }
+  }
+  const total = includeTotal
+    ? Number((await timedPostgresQueryWithStatementTimeout(trace, 'emails_count', `select count(*)::int as total from app_emails where ${where}`, values, EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows[0]?.total || 0)
+    : null;
+  return perfPhase(trace, 'mapping', async () => ({
+    emails: emails.map(publicEmailSummary),
+    loaded: start + emails.length,
+    total,
+    next_cursor: more ? Buffer.from(JSON.stringify({ offset: nextOffset })).toString('base64url') : '',
+    limit,
+    has_more: more
+  }));
+}
+
+async function loadEmailPage(options = {}, trace = null) {
+  const limit = Math.max(1, Math.min(Number(options.limit || 50), 100));
+  const cursor = decodeEmailCursor(options.cursor);
+  const filters = normalizeEmailPageOptions(options);
   const hasFilters = Boolean(filters.status || filters.label || filters.search || filters.day || filters.dateField === 'due' || filters.sort !== 'newest');
-  await ensureStorage();
+  const includeTotal = !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
+  await perfPhase(trace, 'emails_storage', () => ensureStorage());
   if (hasFilters) {
-    const db = postgresPool ? {
-      gmail: (await postgresPool.query(`select gmail from app_workspace where id = $1`, ['main'])).rows[0]?.gmail || {}
-    } : await loadDb();
+    // Hot inbox pages avoid a workspace round trip; company-sender checks use env/admin
+    // addresses plus the owned domains. Legacy/local storage still has its db object.
+    const db = postgresPool ? {} : await loadDb();
+    // engine: 'memory' is an internal switch used by scripts/dashboard-api-db-check.js to compare both paths.
+    if (postgresPool && options.engine !== 'memory' && emailFiltersSqlCapable(filters)) return loadFilteredEmailPageSql(db, filters, limit, cursor, options, trace);
+    // Label filters, name sorts and searches that could match a derived label text: the
+    // original in-memory filter, bounded so one inbox request never loads the whole table.
+    perfAdd(trace, 'email_path', 0, {
+      path: 'bounded_fallback',
+      reason: 'filters_not_sql_capable',
+      filters: safeEmailRequestParams(options, filters)
+    });
+    perfAdd(trace, 'gmail_state_query', 0, { query_name: 'gmail_state', note: 'not_called' });
+    const fallbackLimit = Math.min(Math.max(limit * 10, 200), 1000);
     const rows = postgresPool
-      ? (await postgresPool.query(`select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id`)).rows.map(item => item.data)
+      ? (await timedPostgresQueryWithStatementTimeout(trace, 'fallback', `select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id limit $1`, [fallbackLimit], EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows.map(item => item.data)
       : (db.emails || []).slice();
     const filtered = rows
       .filter(email => emailMatchesFilters(db, email, filters))
@@ -3613,37 +5761,46 @@ async function loadEmailPage(options = {}) {
     };
   }
   if (postgresPool) {
-    const total = Number((await postgresPool.query(`select count(*)::int as total from app_emails`)).rows[0]?.total || 0);
+    perfAdd(trace, 'email_path', 0, { path: 'postgres_unfiltered_keyset' });
+    perfAdd(trace, 'gmail_state_query', 0, { query_name: 'gmail_state', note: 'not_called' });
+    const totalPromise = includeTotal
+      ? timedPostgresQueryWithStatementTimeout(trace, 'emails_count', `select count(*)::int as total from app_emails`, [], EMAIL_LIST_STATEMENT_TIMEOUT_MS)
+      : Promise.resolve(null);
     const result = cursor
-      ? await postgresPool.query(
+      ? await timedPostgresQueryWithStatementTimeout(trace, 'emails_page',
         `select ${emailSummaryDataSql()} as data from app_emails
          where (
-           ($2::timestamptz is not null and (received_at < $2::timestamptz or (received_at = $2::timestamptz and id > $3) or received_at is null))
-           or ($2::timestamptz is null and received_at is null and id > $3)
+           ($2::timestamptz is not null and (received_at < $2::timestamptz or (received_at = $2::timestamptz and id < $3) or received_at is null))
+           or ($2::timestamptz is null and received_at is null and id < $3)
          )
-         order by received_at desc nulls last, id
+         order by received_at desc nulls last, id desc
          limit $1`,
-        [limit + 1, cursor.received_at ? cursor.received_at.toISOString() : null, cursor.id]
+        [limit + 1, cursor.received_at ? cursor.received_at.toISOString() : null, cursor.id],
+        EMAIL_LIST_STATEMENT_TIMEOUT_MS
       )
-      : await postgresPool.query(
-        `select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id limit $1`,
-        [limit + 1]
+      : await timedPostgresQueryWithStatementTimeout(trace, 'emails_page',
+        `select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id desc limit $1`,
+        [limit + 1],
+        EMAIL_LIST_STATEMENT_TIMEOUT_MS
       );
-    const rows = result.rows.map(item => item.data);
-    const emails = rows.slice(0, limit).map(publicEmailSummary);
-    return {
-      emails,
-      total,
-      loaded: emails.length,
-      next_cursor: rows.length > limit ? encodeEmailCursor(emails[emails.length - 1]) : '',
-      limit,
-      has_more: rows.length > limit
-    };
+    const countResult = await totalPromise;
+    return perfPhase(trace, 'mapping', async () => {
+      const rows = result.rows.map(item => item.data);
+      const emails = rows.slice(0, limit).map(publicEmailSummary);
+      return {
+        emails,
+        total: countResult ? Number(countResult.rows[0]?.total || 0) : null,
+        loaded: emails.length,
+        next_cursor: rows.length > limit ? encodeEmailCursor(emails[emails.length - 1]) : '',
+        limit,
+        has_more: rows.length > limit
+      };
+    });
   }
   const db = await loadDb();
   const rows = (db.emails || [])
     .slice()
-    .sort((a, b) => new Date(b.received_at || 0) - new Date(a.received_at || 0));
+    .sort((a, b) => new Date(b.received_at || 0) - new Date(a.received_at || 0) || String(b.id || '').localeCompare(String(a.id || '')));
   const cursorIndex = cursor ? rows.findIndex(item => item.id === cursor.id) : -1;
   const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
   const emails = rows.slice(startIndex, startIndex + limit).map(publicEmailSummary);
@@ -4101,6 +6258,22 @@ function developerConfig(req, db) {
           envKeyStatus('APOLLO_PERSON_LOCATIONS', 'Person locations', false),
           envKeyStatus('APOLLO_PER_PAGE', 'Results per sync', false)
         ]
+      },
+      {
+        name: 'Zoho CRM',
+        status: zohoConnectionDiagnostics(req, db).connected ? 'Connected' : zohoConnectionDiagnostics(req, db).reauthorizationRequired ? 'Reconnect required' : zohoConfigured() ? 'Ready to connect' : 'Needs credentials',
+        account: db.zoho?.email || db.zoho?.api_domain || '',
+        callback: zohoRedirectUri(req),
+        keys: [
+          envKeyStatus('ZOHO_CLIENT_ID', 'OAuth client ID', false),
+          envKeyStatus('ZOHO_CLIENT_SECRET', 'OAuth client secret', true),
+          envKeyStatus('ZOHO_REDIRECT_URI', 'OAuth redirect URI', false),
+          envKeyStatus('ZOHO_AUTH_ACCOUNTS_URL', 'Authorization accounts URL', false),
+          envKeyStatus('ZOHO_ACCOUNTS_URL', 'Accounts URL', false),
+          envKeyStatus('ZOHO_API_BASE_URL', 'API base URL', false),
+          envKeyStatus('ZOHO_SCOPES', 'OAuth scopes', false),
+          envKeyStatus('ZOHO_SYNC_MODULES', 'Modules to sync', false)
+        ]
       }
     ]
   };
@@ -4137,13 +6310,112 @@ function loadAttributionList(db, limit = 100) {
     .slice(0, Math.max(1, Math.min(Number(limit || 100), 250)));
 }
 
-async function loadApplicationListDb() {
-  await ensureStorage();
+async function loadApplicationListDb(options = {}, trace = null) {
+  await perfPhase(trace, 'applications_storage', () => ensureStorage());
+  const safeLimit = Math.max(1, Math.min(Number(options.limit || 50), 100));
+  const safeOffset = Math.max(0, Number(options.offset || 0));
+  const cursor = decodePageCursor(options.cursor, 'application cursor');
+  const includeTotal = !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
+  const filters = {
+    status: String(options.status || '').trim(),
+    programme: String(options.programme || options.programme_id || '').trim(),
+    intake: String(options.intake || options.intake_id || '').trim(),
+    owner: String(options.owner || options.owner_id || '').trim(),
+    source: String(options.source || '').trim(),
+    search: String(options.search || '').trim().slice(0, 200),
+    createdFrom: parseOptionalIsoDate(options.created_from, 'created_from'),
+    createdTo: parseOptionalIsoDate(options.created_to, 'created_to')
+  };
   if (postgresPool) {
-    const result = await postgresPool.query(`select data from app_applications order by created_at desc nulls last, id`);
-    return result.rows.map(item => publicApplication(item.data));
+    const values = [];
+    const conditions = [];
+    const bind = value => { values.push(value); return `$${values.length}`; };
+    if (filters.status) conditions.push(`a.status = ${bind(filters.status)}`);
+    if (filters.programme) conditions.push(`(a.programme = ${bind(filters.programme)} or a.data->>'programme_id' = $${values.length})`);
+    if (filters.intake) conditions.push(`(a.intake = ${bind(filters.intake)} or a.data->>'intake_id' = $${values.length})`);
+    if (filters.owner) conditions.push(`(l.owner_id = ${bind(filters.owner)} or a.manager = $${values.length} or a.data->>'owner_id' = $${values.length})`);
+    if (filters.source) {
+      const sourceParam = bind(filters.source);
+      conditions.push(`(l.source_first_touch = ${sourceParam} or l.source_lead_capture = ${sourceParam} or a.data->>'source' = ${sourceParam})`);
+    }
+    if (filters.createdFrom) conditions.push(`a.created_at >= ${bind(filters.createdFrom)}::timestamptz`);
+    if (filters.createdTo) conditions.push(`a.created_at < ${bind(filters.createdTo)}::timestamptz`);
+    if (filters.search) {
+      const term = bind(`%${escapeSqlLike(filters.search)}%`);
+      conditions.push(`(
+        a.first_name ilike ${term} or a.last_name ilike ${term} or a.programme ilike ${term} or a.status ilike ${term}
+        or l.email ilike ${term} or l.first_name ilike ${term} or l.last_name ilike ${term}
+      )`);
+    }
+    if (cursor?.id) {
+      if (cursor.created_at) {
+        const createdParam = bind(cursor.created_at);
+        const idParam = bind(String(cursor.id || ''));
+        conditions.push(`(a.created_at < ${createdParam}::timestamptz or (a.created_at = ${createdParam}::timestamptz and a.id < ${idParam}) or a.created_at is null)`);
+      } else {
+        conditions.push(`(a.created_at is null and a.id < ${bind(String(cursor.id || ''))})`);
+      }
+    }
+    const whereSql = conditions.length ? `where ${conditions.join(' and ')}` : '';
+    const listValues = cursor ? [...values, safeLimit + 1] : [...values, safeLimit + 1, safeOffset];
+    const [result, total] = await Promise.all([
+      timedPostgresQuery(trace, 'applications_page',
+        `select a.data, a.created_at
+         from app_applications a
+         left join app_leads l on l.id = a.lead_id
+         ${whereSql}
+         order by a.created_at desc nulls last, a.id desc
+         limit $${cursor ? listValues.length : listValues.length - 1}${cursor ? '' : ` offset $${listValues.length}`}`,
+        listValues
+      ),
+      includeTotal ? timedPostgresQuery(trace, 'applications_count', `select count(*)::int as count from app_applications a left join app_leads l on l.id = a.lead_id ${whereSql}`, values) : Promise.resolve(null)
+    ]);
+    return perfPhase(trace, 'mapping', async () => {
+      const pageRows = result.rows.slice(0, safeLimit);
+      const applications = pageRows.map(item => publicApplication(item.data));
+      const count = total ? Number(total.rows[0]?.count || 0) : null;
+      const last = pageRows[pageRows.length - 1];
+      const nextCursor = result.rows.length > safeLimit && last?.data?.id ? encodePageCursor({ created_at: last.created_at || last.data.created_at || null, id: last.data.id }) : '';
+      return {
+        applications,
+        total: count,
+        offset: safeOffset,
+        limit: safeLimit,
+        loaded: safeOffset + applications.length,
+        has_more: Boolean(nextCursor),
+        hasMore: Boolean(nextCursor),
+        next_cursor: nextCursor,
+        nextCursor,
+        next_offset: safeOffset + applications.length
+      };
+    });
   }
-  return loadApplicationList(await loadDb());
+  const all = loadApplicationList(await loadDb());
+  const filtered = all
+    .filter(app => !filters.status || String(app.status || '') === filters.status)
+    .filter(app => !filters.programme || String(app.programme || app.programme_id || '') === filters.programme)
+    .filter(app => !filters.intake || String(app.intake || app.intake_id || '') === filters.intake)
+    .filter(app => !filters.owner || String(app.owner_id || app.manager || '') === filters.owner)
+    .filter(app => !filters.source || String(app.source || '') === filters.source)
+    .filter(app => !filters.createdFrom || new Date(app.created_at || 0) >= new Date(filters.createdFrom))
+    .filter(app => !filters.createdTo || new Date(app.created_at || 0) < new Date(filters.createdTo))
+    .filter(app => !filters.search || JSON.stringify(app).toLowerCase().includes(filters.search.toLowerCase()));
+  const cursorIndex = cursor?.id ? filtered.findIndex(app => app.id === cursor.id) + 1 : safeOffset;
+  const start = Math.max(0, cursorIndex || 0);
+  const applications = filtered.slice(start, start + safeLimit);
+  const nextCursor = start + applications.length < filtered.length ? encodePageCursor({ created_at: applications[applications.length - 1]?.created_at || null, id: applications[applications.length - 1]?.id || '' }) : '';
+  return {
+    applications,
+    total: filtered.length,
+    offset: start,
+    limit: safeLimit,
+    loaded: start + applications.length,
+    has_more: Boolean(nextCursor),
+    hasMore: Boolean(nextCursor),
+    next_cursor: nextCursor,
+    nextCursor,
+    next_offset: start + applications.length
+  };
 }
 
 async function nextPostgresId(client, table, prefix) {
@@ -4441,7 +6713,7 @@ async function createLeadFastDb(body, user) {
     const email = normalizeEmail(body.email);
     if (isExcludedLeadSender(email, body.first_name, body.last_name)) throw statusError(400, 'This sender is excluded from lead creation.');
     const existingResult = email
-      ? await client.query(`select data from app_leads where lower(email) = $1 limit 1 for update`, [email])
+      ? await client.query(`select data from app_leads where lower(email) = $1 and ${activeLeadCondition()} limit 1 for update`, [email])
       : { rows: [] };
     const now = new Date().toISOString();
     const normalized = {
@@ -5120,40 +7392,139 @@ function isZoomEventRecord(event = {}) {
 }
 
 async function loadZoomEventListDb(limit = 2000) {
-  await ensureStorage();
-  const safeLimit = Math.max(1, Math.min(Number(limit || 2000), 5000));
+  return (await loadZoomEventPageDb({ limit })).items;
+}
+
+function publicMeetingSummary(event = {}) {
+  const attendeeCount = Array.isArray(event.attendees) ? event.attendees.length : Number(event.attendee_count || 0);
+  const summary = { ...event, attendee_count: attendeeCount };
+  delete summary.attendees;
+  delete summary.transcript;
+  delete summary.recording;
+  delete summary.recordings;
+  delete summary.raw;
+  delete summary.raw_payload;
+  return summary;
+}
+
+async function loadZoomEventPageDb(options = {}, trace = null) {
+  await perfPhase(trace, 'meetings_storage', () => ensureStorage());
+  const rawLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 200)) : 50;
+  const cursor = decodePageCursor(options.cursor, 'meeting cursor');
+  const filters = {
+    startFrom: parseOptionalIsoDate(options.start_from || options.date_from, 'start_from'),
+    startTo: parseOptionalIsoDate(options.start_to || options.date_to, 'start_to'),
+    owner: String(options.owner || options.owner_id || '').trim(),
+    lead: String(options.lead_id || '').trim(),
+    contact: String(options.contact || options.contact_id || '').trim(),
+    provider: String(options.provider || 'zoom').trim().toLowerCase(),
+    search: String(options.search || '').trim().slice(0, 200)
+  };
+  if (filters.provider && filters.provider !== 'zoom') throw statusError(400, 'Only Zoom meetings are available here.');
   if (postgresPool) {
-    const result = await postgresPool.query(
-      `select data
-       from app_events
-       where coalesce(data->>'zoom_meeting_id', '') <> ''
-          or coalesce(data->>'zoom_meeting_uuid', '') <> ''
-          or lower(coalesce(location, data->>'location', '')) = 'zoom'
-          or lower(coalesce(campaign, data->>'campaign', '')) like 'zoom%'
-       order by start_at desc nulls last, id
-       limit $1`,
-      [safeLimit]
+    const values = [];
+    const conditions = [
+      `(coalesce(e.data->>'zoom_meeting_id', '') <> ''
+        or coalesce(e.data->>'zoom_meeting_uuid', '') <> ''
+        or lower(coalesce(e.location, e.data->>'location', '')) = 'zoom'
+        or lower(coalesce(e.campaign, e.data->>'campaign', '')) like 'zoom%')`
+    ];
+    const bind = value => { values.push(value); return `$${values.length}`; };
+    if (filters.startFrom) conditions.push(`e.start_at >= ${bind(filters.startFrom)}::timestamptz`);
+    if (filters.startTo) conditions.push(`e.start_at < ${bind(filters.startTo)}::timestamptz`);
+    if (filters.owner) {
+      const ownerParam = bind(filters.owner);
+      conditions.push(`(e.data->>'zoom_host_id' = ${ownerParam} or e.data->>'zoom_host_label' = ${ownerParam} or e.data->>'owner_id' = ${ownerParam})`);
+    }
+    if (filters.lead) {
+      const leadParam = bind(filters.lead);
+      conditions.push(`exists (
+        select 1 from jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) a
+        where a->>'lead_id' = ${leadParam}
+      )`);
+    }
+    if (filters.contact) {
+      const contactParam = bind(filters.contact.toLowerCase());
+      conditions.push(`exists (
+        select 1 from jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) a
+        where lower(coalesce(a->>'id', a->>'email', a->>'phone', '')) = ${contactParam}
+      )`);
+    }
+    if (filters.search) {
+      const term = bind(`%${escapeSqlLike(filters.search)}%`);
+      conditions.push(`(
+        e.name ilike ${term} or e.location ilike ${term} or e.campaign ilike ${term}
+        or e.data->>'zoom_host_label' ilike ${term} or e.data->>'zoom_host_id' ilike ${term} or e.data->>'zoom_meeting_id' ilike ${term}
+      )`);
+    }
+    if (cursor?.id) {
+      if (cursor.start_at) {
+        const startParam = bind(cursor.start_at);
+        const idParam = bind(String(cursor.id || ''));
+        conditions.push(`(e.start_at < ${startParam}::timestamptz or (e.start_at = ${startParam}::timestamptz and e.id < ${idParam}) or e.start_at is null)`);
+      } else {
+        conditions.push(`(e.start_at is null and e.id < ${bind(String(cursor.id || ''))})`);
+      }
+    }
+    const whereSql = conditions.join(' and ');
+    const result = await timedPostgresQuery(trace, 'meetings_page',
+      `select
+         jsonb_build_object(
+           'id', e.id,
+           'name', e.name,
+           'title', e.name,
+           'start_at', e.start_at,
+           'duration', e.data->'duration',
+           'provider', 'zoom',
+           'location', coalesce(e.location, 'Zoom'),
+           'campaign', coalesce(e.campaign, 'Zoom'),
+           'status', coalesce(e.data->>'status', e.data->>'zoom_list_type', 'meeting'),
+           'zoom_list_type', coalesce(e.data->>'zoom_list_type', e.data->>'status', 'meeting'),
+           'zoom_meeting_id', coalesce(e.data->>'zoom_meeting_id', ''),
+           'zoom_meeting_uuid', coalesce(e.data->>'zoom_meeting_uuid', ''),
+           'zoom_host_id', coalesce(e.data->>'zoom_host_id', ''),
+           'zoom_host_label', coalesce(e.data->>'zoom_host_label', ''),
+           'zoom_account_id', coalesce(e.data->>'zoom_account_id', ''),
+           'zoom_account_label', coalesce(e.data->>'zoom_account_label', ''),
+           'meeting_link', coalesce(e.data->>'meeting_link', e.data->>'zoom_link', ''),
+           'zoom_link', coalesce(e.data->>'zoom_link', e.data->>'meeting_link', ''),
+           'attendee_count', jsonb_array_length(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end)
+         ) as data,
+         e.start_at
+       from app_events e
+       where ${whereSql}
+       order by e.start_at desc nulls last, e.id desc
+       limit $${values.length + 1}`,
+      [...values, limit + 1]
     );
-    return result.rows.map(item => item.data);
+    return perfPhase(trace, 'mapping', async () => {
+      const rows = result.rows.slice(0, limit);
+      const items = rows.map(item => publicMeetingSummary(item.data));
+      const last = rows[rows.length - 1];
+      const nextCursor = result.rows.length > limit && last?.data?.id ? encodePageCursor({ start_at: last.start_at || last.data.start_at || null, id: last.data.id }) : '';
+      return { items, events: items, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, limit };
+    });
   }
-  return (await loadDb()).events
+  const rows = (await loadDb()).events
     .filter(isZoomEventRecord)
-    .sort((a, b) => new Date(b.start_at || 0) - new Date(a.start_at || 0))
-    .slice(0, safeLimit);
+    .filter(event => !filters.startFrom || new Date(event.start_at || 0) >= new Date(filters.startFrom))
+    .filter(event => !filters.startTo || new Date(event.start_at || 0) < new Date(filters.startTo))
+    .filter(event => !filters.owner || [event.zoom_host_id, event.zoom_host_label, event.owner_id].map(String).includes(filters.owner))
+    .filter(event => !filters.lead || (event.attendees || []).some(a => String(a.lead_id || '') === filters.lead))
+    .filter(event => !filters.search || JSON.stringify(publicMeetingSummary(event)).toLowerCase().includes(filters.search.toLowerCase()))
+    .sort((a, b) => new Date(b.start_at || 0) - new Date(a.start_at || 0) || String(b.id || '').localeCompare(String(a.id || '')));
+  const start = cursor?.id ? Math.max(0, rows.findIndex(item => item.id === cursor.id) + 1) : 0;
+  const page = rows.slice(start, start + limit).map(publicMeetingSummary);
+  const nextCursor = start + page.length < rows.length ? encodePageCursor({ start_at: page[page.length - 1]?.start_at || null, id: page[page.length - 1]?.id || '' }) : '';
+  return { items: page, events: page, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, limit };
 }
 
 async function loadZoomCallPageDb(limit = 50, offset = 0) {
   await ensureStorage();
   const safeLimit = Math.max(1, Math.min(Number(limit || 50), 250));
   const safeOffset = Math.max(0, Number(offset || 0));
-  let zoomState = dbCache?.zoom?.calls?.length ? dbCache.zoom : {};
-  if (postgresPool && !(zoomState.calls || []).length) {
-    const result = await postgresPool.query(`select meta->'zoom' as zoom from app_workspace where id = $1`, ['main']);
-    zoomState = result.rows[0]?.zoom || {};
-  }
-  if (!(zoomState.calls || []).length) {
-    zoomState = (await loadDb()).zoom || {};
-  }
+  const zoomState = await loadZoomStateForPaging();
   const allCalls = (zoomState.calls || [])
     .map(call => hydrateZoomStoredCall({ leads: [] }, call))
     .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
@@ -5166,6 +7537,93 @@ async function loadZoomCallPageDb(limit = 50, offset = 0) {
     loaded: safeOffset + calls.length,
     has_more: safeOffset + calls.length < allCalls.length,
     next_offset: safeOffset + calls.length,
+    last_sync_at: zoomState.last_call_sync_at || null
+  };
+}
+
+async function loadZoomStateForPaging() {
+  let zoomState = dbCache?.zoom?.calls?.length ? dbCache.zoom : {};
+  if (postgresPool && !(zoomState.calls || []).length) {
+    const result = await postgresPool.query(`select meta->'zoom' as zoom from app_workspace where id = $1`, ['main']);
+    zoomState = result.rows[0]?.zoom || {};
+  }
+  if (!(zoomState.calls || []).length) {
+    zoomState = (await loadDb()).zoom || {};
+  }
+  return zoomState || {};
+}
+
+function zoomStoredNumberKey(number = '') {
+  const digits = phoneDigits(number);
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+function zoomStoredCallSource(call = {}) {
+  return [call.zoom_account_label || call.zoom_account_id, call.owner_name, call.owner_extension ? `Ext ${call.owner_extension}` : '', call.site_name, call.path]
+    .filter(Boolean)
+    .join(' / ') || 'Zoom Phone';
+}
+
+function summarizeZoomStoredNumbers(calls = []) {
+  const byNumber = new Map();
+  for (const call of calls) {
+    for (const [side, number, name] of [['caller', call.caller_number, call.caller_name], ['callee', call.callee_number, call.callee_name]]) {
+      const key = zoomStoredNumberKey(number);
+      if (!key) continue;
+      const row = byNumber.get(key) || {
+        key,
+        number,
+        display: number,
+        name: name || '',
+        total: 0,
+        inbound: 0,
+        outbound: 0,
+        caller: 0,
+        callee: 0,
+        linked: 0,
+        last_at: '',
+        lead_id: '',
+        lead_name: '',
+        sources: new Set(),
+        accounts: new Set()
+      };
+      row.total += 1;
+      row[side] += 1;
+      if (String(call.direction || '').includes('in')) row.inbound += 1;
+      if (String(call.direction || '').includes('out')) row.outbound += 1;
+      if (call.lead_id && (call.matched_number ? zoomStoredNumberKey(call.matched_number) === key : true)) {
+        row.linked += 1;
+        row.lead_id = call.lead_id;
+        row.lead_name = call.lead_name || call.lead_id;
+      }
+      if (!row.last_at || new Date(call.started_at || 0) > new Date(row.last_at || 0)) row.last_at = call.started_at || '';
+      if (name && !row.name) row.name = name;
+      if (call.zoom_account_label || call.zoom_account_id) row.accounts.add(call.zoom_account_label || call.zoom_account_id);
+      row.sources.add(zoomStoredCallSource(call));
+      byNumber.set(key, row);
+    }
+  }
+  return [...byNumber.values()]
+    .map(row => ({ ...row, sources: [...row.sources], accounts: [...row.accounts] }))
+    .sort((a, b) => b.total - a.total || new Date(b.last_at || 0) - new Date(a.last_at || 0));
+}
+
+async function loadZoomNumberPageDb(limit = 50, offset = 0) {
+  await ensureStorage();
+  const safeLimit = Math.max(1, Math.min(Number(limit || 50), 250));
+  const safeOffset = Math.max(0, Number(offset || 0));
+  const zoomState = await loadZoomStateForPaging();
+  const calls = (zoomState.calls || []).map(call => hydrateZoomStoredCall({ leads: [] }, call));
+  const numbers = summarizeZoomStoredNumbers(calls);
+  const rows = numbers.slice(safeOffset, safeOffset + safeLimit);
+  return {
+    numbers: rows,
+    total: numbers.length,
+    offset: safeOffset,
+    limit: safeLimit,
+    loaded: safeOffset + rows.length,
+    has_more: safeOffset + rows.length < numbers.length,
+    next_offset: safeOffset + rows.length,
     last_sync_at: zoomState.last_call_sync_at || null
   };
 }
@@ -5244,6 +7702,10 @@ function eventbriteRedirectUri(req) {
   return process.env.EVENTBRITE_REDIRECT_URI || `${originFor(req)}/api/integrations/eventbrite/callback`;
 }
 
+function zohoRedirectUri(req) {
+  return process.env.ZOHO_REDIRECT_URI || `${originFor(req)}/api/integrations/zoho/callback`;
+}
+
 function gmailConfigured() {
   return Boolean(
     process.env.GMAIL_CLIENT_ID &&
@@ -5272,6 +7734,95 @@ function eventbritePrivateTokenConfigured() {
     !process.env.EVENTBRITE_PRIVATE_TOKEN.includes('your-eventbrite') &&
     !process.env.EVENTBRITE_PRIVATE_TOKEN.includes('replace-with')
   );
+}
+
+function zohoAccountsUrl() {
+  return String(process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com').replace(/\/+$/, '');
+}
+
+function zohoAuthAccountsUrl() {
+  return String(process.env.ZOHO_AUTH_ACCOUNTS_URL || 'https://accounts.zoho.com').replace(/\/+$/, '');
+}
+
+function zohoTokenAccountsUrl(db = {}) {
+  return String(db.zoho?.accounts_url || process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com').replace(/\/+$/, '');
+}
+
+function zohoApiBaseUrl(db = {}) {
+  return String(db.zoho?.api_domain || process.env.ZOHO_API_BASE_URL || 'https://www.zohoapis.com').replace(/\/+$/, '');
+}
+
+function zohoScopes() {
+  const configured = String(process.env.ZOHO_SCOPES || DEFAULT_ZOHO_SCOPES.join(','))
+    .split(/[,\s]+/)
+    .map(scope => scope.trim())
+    .filter(Boolean);
+  return configured.length ? [...new Set(configured)] : DEFAULT_ZOHO_SCOPES;
+}
+
+function safeUrl(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    return parsed.protocol === 'https:' && parsed.origin === String(value || '').replace(/\/+$/, '');
+  } catch {
+    return false;
+  }
+}
+
+function maskedCredential(value = '') {
+  const text = String(value || '');
+  if (!text) return '';
+  if (text.length <= 12) return `${text.slice(0, 3)}...`;
+  return `${text.slice(0, 10)}...${text.slice(-6)}`;
+}
+
+function zohoConfigIssues(req) {
+  const issues = [];
+  const clientId = String(process.env.ZOHO_CLIENT_ID || '');
+  const clientSecret = String(process.env.ZOHO_CLIENT_SECRET || '');
+  if (!clientId) issues.push('Missing ZOHO_CLIENT_ID.');
+  if (!clientSecret) issues.push('Missing ZOHO_CLIENT_SECRET.');
+  if (/your-zoho|replace-with|YOUR_ZOHO|undefined|null/i.test(clientId)) issues.push('ZOHO_CLIENT_ID is a placeholder.');
+  if (/your-zoho|replace-with|YOUR_ZOHO|undefined|null/i.test(clientSecret)) issues.push('ZOHO_CLIENT_SECRET is a placeholder.');
+  if (!safeUrl(zohoAuthAccountsUrl())) issues.push('ZOHO_AUTH_ACCOUNTS_URL must be an https origin.');
+  if (!safeUrl(zohoAccountsUrl())) issues.push('ZOHO_ACCOUNTS_URL must be an https origin.');
+  if (!safeUrl(zohoApiBaseUrl())) issues.push('ZOHO_API_BASE_URL must be an https origin.');
+  if (!String(zohoRedirectUri(req)).startsWith('https://')) issues.push('ZOHO_REDIRECT_URI must be https in production.');
+  if (!zohoScopes().length) issues.push('Missing ZOHO_SCOPES.');
+  return issues;
+}
+
+function zohoSafeStatus(req, db = {}) {
+  const diagnostics = zohoConnectionDiagnostics(req, db);
+  const records = db.zoho?.records || {};
+  const recordCounts = Object.fromEntries(zohoSyncModules().map(moduleName => [moduleName, Array.isArray(records[moduleName]) ? records[moduleName].length : 0]));
+  return {
+    configured: diagnostics.configured,
+    connected: diagnostics.connected,
+    status: diagnostics.status,
+    hasRefreshToken: diagnostics.hasRefreshToken,
+    accessTokenExpiresAt: diagnostics.accessTokenExpiresAt,
+    dataCenter: diagnostics.dataCenter,
+    reauthorizationRequired: diagnostics.reauthorizationRequired,
+    client_id_hint: maskedCredential(process.env.ZOHO_CLIENT_ID || ''),
+    auth_accounts_url: zohoAuthAccountsUrl(),
+    token_accounts_url: zohoAccountsUrl(),
+    stored_accounts_url: db.zoho?.accounts_url || null,
+    api_domain: db.zoho?.api_domain || zohoApiBaseUrl(db),
+    redirect_uri: zohoRedirectUri(req),
+    scopes: zohoScopes(),
+    modules: zohoSyncModules(),
+    record_counts: recordCounts,
+    email: db.zoho?.email || null,
+    last_sync_at: db.zoho?.last_sync_at || null,
+    last_error: db.zoho?.last_error || null,
+    reconnect_required: diagnostics.reauthorizationRequired,
+    config_issues: diagnostics.config_issues
+  };
+}
+
+function zohoConfigured() {
+  return zohoConfigIssues({ headers: {}, socket: {} }).length === 0;
 }
 
 function metaConfigured() {
@@ -5380,7 +7931,28 @@ function eventbriteAuthUrl(req, state) {
   return `https://www.eventbrite.com/oauth/authorize?${params}`;
 }
 
+function zohoAuthUrl(req, state, options = {}) {
+  const params = new URLSearchParams({
+    scope: zohoScopes().join(','),
+    client_id: process.env.ZOHO_CLIENT_ID,
+    response_type: 'code',
+    access_type: 'offline',
+    redirect_uri: zohoRedirectUri(req),
+    state
+  });
+  if (options.promptConsent) params.set('prompt', 'consent');
+  return `${zohoAuthAccountsUrl()}/oauth/v2/auth?${params}`;
+}
+
 async function fetchJson(url, options = {}) {
+  const urlText = String(url || '');
+  if (/gmail\.googleapis\.com|oauth2\.googleapis\.com/i.test(urlText)) externalFetchCounters.gmail += 1;
+  if (/googleapis\.com|google\.com/i.test(urlText)) externalFetchCounters.google += 1;
+  if (/zoho/i.test(urlText)) externalFetchCounters.zoho += 1;
+  if (/zoom\.us/i.test(urlText)) externalFetchCounters.zoom += 1;
+  if (/eventbrite/i.test(urlText)) externalFetchCounters.eventbrite += 1;
+  if (/graph\.facebook\.com/i.test(urlText)) externalFetchCounters.meta += 1;
+  if (/apollo/i.test(urlText)) externalFetchCounters.apollo += 1;
   const timeoutMs = Number(options.timeoutMs || 20000);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -5457,28 +8029,96 @@ async function exchangeEventbriteCode(req, code) {
   });
 }
 
+async function exchangeZohoCode(req, code, accountsUrl = '') {
+  return fetchJson(`${String(accountsUrl || zohoAccountsUrl()).replace(/\/+$/, '')}/oauth/v2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: process.env.ZOHO_CLIENT_ID,
+      client_secret: process.env.ZOHO_CLIENT_SECRET,
+      redirect_uri: zohoRedirectUri(req),
+      code
+    })
+  });
+}
+
 function eventbriteAccessToken(db) {
   if (eventbritePrivateTokenConfigured()) return process.env.EVENTBRITE_PRIVATE_TOKEN;
   if (!db.eventbrite?.access_token) throw statusError(400, 'Eventbrite is not connected.');
   return db.eventbrite.access_token;
 }
 
-async function refreshGmailToken(db) {
-  if (!db.gmail?.refresh_token) throw statusError(400, 'Gmail is not connected.');
-  const token = await fetchJson('https://oauth2.googleapis.com/token', {
+async function refreshZohoToken(db) {
+  if (!db.zoho?.refresh_token) throw statusError(400, 'Zoho CRM is not connected. Reconnect Zoho CRM so the server can store a refresh token.');
+  const accountsUrl = zohoTokenAccountsUrl(db);
+  console.info(`[zoho] refresh start accounts=${accountsUrl} access_expired=${!zohoAccessTokenValid(db.zoho)}`);
+  const token = await fetchJson(`${accountsUrl}/oauth/v2/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: process.env.GMAIL_CLIENT_ID,
-      client_secret: process.env.GMAIL_CLIENT_SECRET,
-      refresh_token: db.gmail.refresh_token,
-      grant_type: 'refresh_token'
+      grant_type: 'refresh_token',
+      client_id: process.env.ZOHO_CLIENT_ID,
+      client_secret: process.env.ZOHO_CLIENT_SECRET,
+      refresh_token: db.zoho.refresh_token
     })
   });
+  db.zoho.access_token = token.access_token;
+  db.zoho.api_domain = token.api_domain || db.zoho.api_domain;
+  db.zoho.expires_at = Date.now() + ((token.expires_in || 3600) - 60) * 1000;
+  db.zoho.connected = true;
+  db.zoho.reauthorization_required = false;
+  db.zoho.last_error = null;
+  console.info(`[zoho] refresh success api_domain=${db.zoho.api_domain}`);
+  return db.zoho.access_token;
+}
+
+async function zohoAccessToken(db) {
+  if (!db.zoho?.refresh_token) throw statusError(401, zohoReconnectRequiredMessage());
+  if (!db.zoho.expires_at || db.zoho.expires_at < Date.now()) return refreshZohoToken(db);
+  if (!db.zoho.access_token) return refreshZohoToken(db);
+  return db.zoho.access_token;
+}
+
+async function refreshGmailToken(db) {
+  if (!db.gmail?.refresh_token) throw statusError(400, 'Gmail is not connected.');
+  let token;
+  try {
+    token = await fetchJson('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: process.env.GMAIL_CLIENT_ID,
+        client_secret: process.env.GMAIL_CLIENT_SECRET,
+        refresh_token: db.gmail.refresh_token,
+        grant_type: 'refresh_token'
+      })
+    });
+  } catch (error) {
+    if (gmailReconnectError(error.message)) throw await markGmailReconnectRequired(db, error.message);
+    throw error;
+  }
   db.gmail.access_token = token.access_token;
   db.gmail.expires_at = Date.now() + ((token.expires_in || 3600) - 60) * 1000;
+  db.gmail.reconnect_required = false;
+  db.gmail.last_error = '';
   await saveGmailImportTables(db, { leadIds: [], taskIds: [], emailIds: [], auditIds: [], preserveEventbrite: true });
   return db.gmail.access_token;
+}
+
+function gmailReconnectError(message = '') {
+  return /expired|revoked|invalid_grant|invalid authentication|unauthorized|reauth|reconnect/i.test(String(message || ''));
+}
+
+async function markGmailReconnectRequired(db, message = '') {
+  db.gmail ||= {};
+  db.gmail.connected = false;
+  db.gmail.reconnect_required = true;
+  db.gmail.last_error = 'Gmail token expired or revoked. Reconnect Gmail from Settings.';
+  db.gmail.access_token = '';
+  db.gmail.expires_at = 0;
+  await saveGmailImportTables(db, { leadIds: [], taskIds: [], emailIds: [], auditIds: [], preserveEventbrite: true });
+  return statusError(401, db.gmail.last_error || message || 'Reconnect Gmail from Settings.');
 }
 
 async function gmailAccessToken(db) {
@@ -6277,6 +8917,8 @@ async function runZoomAutoSync() {
 }
 
 function startAutoSync() {
+  resumeZohoSyncJobs().catch(error => console.error(`Zoho sync resume failed: ${zohoSafeJobError(error)}`));
+  scheduleZohoAutoSync(60 * 1000);
   if (!GMAIL_AUTO_SYNC_ENABLED && !EVENT_AUTO_SYNC_ENABLED && !ZOOM_AUTO_SYNC_ENABLED) {
     gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME, running: false, next_run_at: null };
     eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
@@ -7654,6 +10296,1268 @@ async function importApolloPeople(db, user, maxPeople = 25) {
   return { imported, updated, scanned, reconciliation, last_sync_at: db.apollo.last_sync_at };
 }
 
+function zohoSyncModules() {
+  const configured = String(process.env.ZOHO_SYNC_MODULES || DEFAULT_ZOHO_MODULES.join(','))
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+  return configured.length ? [...new Set(configured)] : DEFAULT_ZOHO_MODULES;
+}
+
+function zohoRecordId(moduleName, record = {}) {
+  return `${moduleName}:${String(record.id || record.Id || '').trim()}`;
+}
+
+function zohoRecordNameParts(record = {}) {
+  const full = record.Full_Name || record.Full_Name__s || record.Name || [record.First_Name, record.Last_Name].filter(Boolean).join(' ');
+  const email = normalizeEmail(record.Email || record.Email_Address || '');
+  return {
+    first_name: record.First_Name || nameParts(full || '', email).first_name || 'Zoho',
+    last_name: record.Last_Name || nameParts(full || '', email).last_name || 'Contact'
+  };
+}
+
+function zohoRecordEmail(record = {}) {
+  return normalizeEmail(record.Email || record.Email_Address || record.Secondary_Email || '');
+}
+
+function zohoRecordPhone(record = {}) {
+  return record.Phone || record.Mobile || record.Home_Phone || record.Other_Phone || '';
+}
+
+function zohoRecordCompany(record = {}) {
+  return record.Company || record.Account_Name?.name || record.Vendor_Name?.name || record.Organization || '';
+}
+
+function zohoRecordText(record = {}) {
+  return [
+    record.Description,
+    record.Title,
+    record.Lead_Source,
+    record.Industry,
+    record.Course,
+    record.Programme,
+    record.Program,
+    record.Interested_In,
+    record.Tag?.map?.(item => item.name).join(' ')
+  ].filter(Boolean).join(' ');
+}
+
+function zohoDisplayValue(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(zohoDisplayValue).filter(Boolean).join(', ');
+  if (typeof value === 'object') return value.name || value.display_value || value.email || value.id || '';
+  return String(value);
+}
+
+function zohoRecordOwner(record = {}) {
+  return zohoDisplayValue(record.Owner || record.Created_By || record.Modified_By);
+}
+
+function zohoRecordStatus(moduleName, record = {}) {
+  return record.Stage || record.Deal_Stage || record.Lead_Status || record.Status || record.Call_Status || record.Event_Status || record.Task_Status || moduleName;
+}
+
+function zohoRecordTitle(moduleName, record = {}) {
+  const names = zohoRecordNameParts(record);
+  const person = [names.first_name, names.last_name].filter(Boolean).join(' ').trim();
+  return record.Subject || record.Deal_Name || record.Campaign_Name || record.Account_Name?.name || record.Account_Name || record.Full_Name || record.Name || record.Company || record.Title || person || `${moduleName} record`;
+}
+
+function zohoRecordSummary(moduleName, record = {}) {
+  const id = String(record.id || record.Id || '').trim();
+  const interestingKeys = [
+    'Lead_Source',
+    'Industry',
+    'Description',
+    'Amount',
+    'Closing_Date',
+    'Due_Date',
+    'Call_Start_Time',
+    'Call_Duration',
+    'Call_Type',
+    'Venue',
+    'Start_DateTime',
+    'End_DateTime',
+    'Note_Title',
+    'Note_Content'
+  ];
+  const fields = {};
+  for (const key of interestingKeys) {
+    const value = zohoDisplayValue(record[key]);
+    if (value) fields[key] = value.length > 500 ? `${value.slice(0, 500)}...` : value;
+  }
+  return {
+    id,
+    key: zohoRecordId(moduleName, record),
+    module: moduleName,
+    title: zohoRecordTitle(moduleName, record),
+    name: zohoRecordTitle(moduleName, record),
+    email: zohoRecordEmail(record),
+    phone: zohoRecordPhone(record),
+    company: zohoRecordCompany(record),
+    owner: zohoRecordOwner(record),
+    status: zohoRecordStatus(moduleName, record),
+    created_time: record.Created_Time || record.created_time || null,
+    modified_time: record.Modified_Time || record.modified_time || null,
+    fields
+  };
+}
+
+function mergeZohoRecordSummaries(db, moduleName, summaries = []) {
+  db.zoho ||= { imported_record_ids: [] };
+  db.zoho.records ||= {};
+  const existing = Array.isArray(db.zoho.records[moduleName]) ? db.zoho.records[moduleName] : [];
+  const byKey = new Map(existing.map(item => [item.key || `${moduleName}:${item.id}`, item]));
+  for (const summary of summaries) {
+    if (!summary?.key || summary.key.endsWith(':')) continue;
+    byKey.set(summary.key, { ...(byKey.get(summary.key) || {}), ...summary });
+  }
+  db.zoho.records[moduleName] = [...byKey.values()]
+    .sort((a, b) => new Date(b.modified_time || b.created_time || 0) - new Date(a.modified_time || a.created_time || 0))
+    .slice(0, 500);
+}
+
+function zohoRecordsPayload(db = {}) {
+  const records = db.zoho?.records || {};
+  const connection = zohoConnectionDiagnostics({ headers: {}, socket: {} }, db);
+  return {
+    modules: zohoSyncModules().map(moduleName => {
+      const rows = Array.isArray(records[moduleName]) ? records[moduleName] : [];
+      return { module: moduleName, total: rows.length, records: rows };
+    }),
+    last_sync_at: db.zoho?.last_sync_at || null,
+    connected: connection.connected
+  };
+}
+
+// One page of stored Zoho records, read straight from app_zoho_records so the UI never
+// has to hold a whole module in memory.
+// Zoho Contacts as a list: only the columns a list renders plus the linked lead id, never the
+// raw Zoho payload. Search and paging run in PostgreSQL.
+async function loadContactPage(options = {}, trace = null) {
+  await perfPhase(trace, 'contacts_storage', () => ensureStorage());
+  const rawLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 200)) : 100;
+  const offset = Math.max(0, Number.parseInt(options.offset, 10) || 0);
+  const cursor = decodePageCursor(options.cursor, 'contact cursor');
+  const includeTotal = !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
+  const search = String(options.search || '').trim().slice(0, 200);
+  if (!postgresPool || !usesPostgresStorage()) return { items: [], total: includeTotal ? 0 : null, limit, offset, hasMore: false, nextOffset: offset, next_cursor: '' };
+  const params = [];
+  const where = [`z.module = 'Contacts'`];
+  const bind = value => { params.push(value); return `$${params.length}`; };
+  if (search) {
+    const term = bind(`%${search.replace(/[\\%_]/g, char => `\\${char}`)}%`);
+    where.push(`(z.title ilike ${term} or z.email ilike ${term} or z.phone ilike ${term} or z.company ilike ${term})`);
+  }
+  if (cursor?.key || cursor?.id) {
+    const key = String(cursor.key || cursor.id || '');
+    if (cursor.modified_time) {
+      const modifiedParam = bind(cursor.modified_time);
+      const keyParam = bind(key);
+      where.push(`(z.modified_time < ${modifiedParam}::timestamptz or (z.modified_time = ${modifiedParam}::timestamptz and z.key > ${keyParam}) or z.modified_time is null)`);
+    } else {
+      where.push(`(z.modified_time is null and z.key > ${bind(key)})`);
+    }
+  }
+  const whereSql = where.join(' and ');
+  const [count, rows] = await Promise.all([
+    includeTotal ? timedPostgresQuery(trace, 'contacts_count', `select count(*)::int as total from app_zoho_records z where ${whereSql}`, params) : Promise.resolve(null),
+    // Page first, then look up the linked lead for those rows only (indexed on the Zoho key).
+    timedPostgresQuery(trace, 'contacts_page',
+      `with page as materialized (
+         select z.key, z.zoho_id, z.title as name, z.email, z.phone, z.company, z.owner_name, z.status, z.created_time, z.modified_time
+         from app_zoho_records z where ${whereSql}
+         order by z.modified_time desc nulls last, z.key
+         limit $${params.length + 1}
+       )
+       select page.*, lead.id as lead_id
+       from page
+       left join lateral (select l.id from app_leads l where l.data->>'zoho_record_id' = page.key and ${activeLeadCondition('l')} limit 1) lead on true
+       order by page.modified_time desc nulls last, page.key`,
+      [...params, limit + 1]
+    )
+  ]);
+  return perfPhase(trace, 'mapping', async () => {
+    const items = rows.rows.slice(0, limit);
+    const last = items[items.length - 1];
+    const nextCursor = rows.rows.length > limit && last?.key ? encodePageCursor({ modified_time: last.modified_time || null, key: last.key }) : '';
+    return {
+      items,
+      total: count ? Number(count.rows[0]?.total || 0) : null,
+      limit,
+      offset,
+      hasMore: Boolean(nextCursor),
+      has_more: Boolean(nextCursor),
+      nextOffset: offset + items.length,
+      next_offset: offset + items.length,
+      nextCursor,
+      next_cursor: nextCursor
+    };
+  });
+}
+
+async function loadZohoRecordPage(options = {}) {
+  await ensureStorage();
+  const limit = Math.max(1, Math.min(Number(options.limit || 200), 500));
+  const offset = Math.max(0, Number(options.offset || 0) || 0);
+  const moduleName = String(options.module || '').trim();
+  const search = String(options.search || '').trim().slice(0, 200);
+  if (!postgresPool || !usesPostgresStorage()) {
+    const db = await loadDb();
+    const all = Object.values(db.zoho?.records || {}).flat()
+      .filter(row => !moduleName || String(row.module || '').toLowerCase() === moduleName.toLowerCase())
+      .filter(row => !search || JSON.stringify(row).toLowerCase().includes(search.toLowerCase()));
+    const records = all.slice(offset, offset + limit);
+    return { module: moduleName, search, records, total: all.length, limit, offset, has_more: offset + records.length < all.length, next_offset: offset + records.length };
+  }
+  await ensureZohoRecordsTable();
+  const where = [];
+  const params = [];
+  if (moduleName) {
+    params.push(moduleName);
+    where.push(`module = $${params.length}`);
+  }
+  if (search) {
+    params.push(`%${search.replace(/[\\%_]/g, char => `\\${char}`)}%`);
+    const term = `$${params.length}`;
+    where.push(`(title ilike ${term} or email ilike ${term} or phone ilike ${term} or company ilike ${term} or owner_name ilike ${term} or status ilike ${term} or zoho_id ilike ${term})`);
+  }
+  const whereSql = where.length ? `where ${where.join(' and ')}` : '';
+  const [count, rows] = await Promise.all([
+    postgresPool.query(`select count(*)::int as total from app_zoho_records ${whereSql}`, params),
+    postgresPool.query(
+      `select data from app_zoho_records ${whereSql}
+       order by modified_time desc nulls last, key
+       limit $${params.length + 1} offset $${params.length + 2}`,
+      [...params, limit, offset]
+    )
+  ]);
+  const total = Number(count.rows[0]?.total || 0);
+  const records = rows.rows.map(row => row.data).filter(Boolean);
+  return { module: moduleName, search, records, total, limit, offset, has_more: offset + records.length < total, next_offset: offset + records.length };
+}
+
+async function zohoRecordsPayloadDb(db = {}) {
+  if (!postgresPool || !usesPostgresStorage()) return zohoRecordsPayload(db);
+  await ensureZohoRecordsTable();
+  const [counts, records] = await Promise.all([
+    postgresPool.query(`select module, count(*)::int as total from app_zoho_records group by module`),
+    postgresPool.query(`
+      select data from (
+        select data, module, modified_time, synced_at, key, row_number() over (
+          partition by module
+          order by modified_time desc nulls last, synced_at desc nulls last, key
+        ) as rn
+        from app_zoho_records
+      ) ranked
+      where rn <= 50
+      order by module, modified_time desc nulls last, key
+    `)
+  ]);
+  const totals = new Map(counts.rows.map(row => [row.module, Number(row.total || 0)]));
+  const byModule = new Map();
+  for (const row of records.rows.map(item => item.data).filter(Boolean)) {
+    const moduleName = row.module || 'Zoho CRM';
+    const list = byModule.get(moduleName) || [];
+    list.push(row);
+    byModule.set(moduleName, list);
+  }
+  const payload = zohoRecordsPayload({ ...db, zoho: { ...(db.zoho || {}), records: Object.fromEntries(byModule) } });
+  payload.modules = zohoSyncModules().map(moduleName => {
+    const rows = byModule.get(moduleName) || [];
+    return { module: moduleName, total: totals.get(moduleName) || rows.length, loaded: rows.length, records: rows };
+  });
+  payload.total = [...totals.values()].reduce((sum, value) => sum + value, 0);
+  return payload;
+}
+
+function createOrUpdateZohoLead(db, user, moduleName, record) {
+  const recordId = zohoRecordId(moduleName, record);
+  if (!recordId.endsWith(':') && (db.zoho.imported_record_ids || []).includes(recordId)) {
+    const existing = db.leads.find(item => item.zoho_record_id === recordId);
+    if (existing) return { lead: existing, created: false, skipped: true };
+  }
+  const email = zohoRecordEmail(record) || `${String(record.id || crypto.randomBytes(5).toString('hex'))}@zoho.local`;
+  const names = zohoRecordNameParts(record);
+  const programme = programmeForText(db, zohoRecordText(record));
+  return ensureLeadRecord(db, user, {
+    first_name: names.first_name,
+    last_name: names.last_name,
+    programme_id: programme.id,
+    email,
+    employer: zohoRecordCompany(record),
+    phone: zohoRecordPhone(record),
+    city: [record.City, record.State, record.Country].filter(Boolean).join(', '),
+    stage: 'New lead',
+    priority: moduleName === 'Leads' ? 'P2' : 'P3',
+    source_first_touch: 'Zoho CRM',
+    source_lead_capture: 'Zoho CRM',
+    contact_permission: record.Email_Opt_Out ? 'Declined' : 'Unknown',
+    created_at: record.Created_Time || record.Modified_Time || new Date().toISOString(),
+    zoho_record_id: recordId,
+    zoho_module: moduleName,
+    programme_text: zohoRecordText(record)
+  });
+}
+
+// Only Zoho Leads become CRM leads. Contacts and the other modules stay in
+// app_zoho_records and are shown on the Zoho page.
+function zohoModuleCreatesCrmLeads(moduleName) {
+  return String(moduleName || '').toLowerCase() === 'leads';
+}
+
+function zohoRecordFields(moduleName) {
+  const common = ['id', 'Owner', 'Created_Time', 'Modified_Time', 'Created_By', 'Modified_By'];
+  const byModule = {
+    Leads: ['First_Name', 'Last_Name', 'Full_Name', 'Email', 'Secondary_Email', 'Phone', 'Mobile', 'Company', 'City', 'State', 'Country', 'Lead_Status', 'Lead_Source', 'Industry', 'Title', 'Description', 'Email_Opt_Out', 'Tag'],
+    Contacts: ['First_Name', 'Last_Name', 'Full_Name', 'Email', 'Secondary_Email', 'Phone', 'Mobile', 'Home_Phone', 'Other_Phone', 'Account_Name', 'Mailing_City', 'Mailing_State', 'Mailing_Country', 'Lead_Source', 'Description', 'Email_Opt_Out', 'Tag'],
+    Accounts: ['Account_Name', 'Phone', 'Website', 'Industry', 'Billing_City', 'Billing_State', 'Billing_Country', 'Description', 'Tag'],
+    Deals: ['Deal_Name', 'Stage', 'Amount', 'Closing_Date', 'Account_Name', 'Contact_Name', 'Lead_Source', 'Description', 'Tag'],
+    Tasks: ['Subject', 'Status', 'Due_Date', 'Priority', 'What_Id', 'Who_Id', 'Description'],
+    Calls: ['Subject', 'Call_Type', 'Call_Status', 'Call_Start_Time', 'Call_Duration', 'Who_Id', 'What_Id', 'Description'],
+    Events: ['Event_Title', 'Start_DateTime', 'End_DateTime', 'Venue', 'Who_Id', 'What_Id', 'Description'],
+    Campaigns: ['Campaign_Name', 'Status', 'Type', 'Start_Date', 'End_Date', 'Expected_Revenue', 'Description'],
+    Notes: ['Note_Title', 'Note_Content', 'Parent_Id', 'se_module']
+  };
+  return [...new Set([...common, ...(byModule[moduleName] || ['Name', 'Email', 'Phone', 'Description'])])].slice(0, 50);
+}
+
+// Zoho only serves the first 2000 records of a listing through `page`; later pages must
+// be requested with the `page_token` returned in the previous response's info.
+const ZOHO_PAGE_PARAM_RECORD_LIMIT = 2000;
+
+async function fetchZohoRecordPage(db, moduleName, page = 1, maxRecords = ZOHO_SYNC_BATCH_SIZE, pageToken = '', options = {}) {
+  const limit = Math.max(1, Math.min(Number(maxRecords || ZOHO_SYNC_BATCH_SIZE), 200));
+  const safePage = Math.max(1, Math.min(Number(page || 1), ZOHO_SYNC_MAX_PAGES_PER_MODULE));
+  const params = new URLSearchParams({
+    fields: zohoRecordFields(moduleName).join(','),
+    per_page: String(limit),
+    sort_order: 'desc',
+    sort_by: 'Modified_Time'
+  });
+  if (pageToken && safePage * limit > ZOHO_PAGE_PARAM_RECORD_LIMIT) params.set('page_token', pageToken);
+  else params.set('page', String(safePage));
+  const url = `${zohoApiBaseUrl(db)}/crm/v8/${encodeURIComponent(moduleName)}?${params}`;
+  // Incremental runs only ask for records modified after the module's last sync.
+  const modifiedSince = options.modifiedSince ? new Date(options.modifiedSince).toISOString().replace(/\.\d{3}Z$/, '+00:00') : '';
+  async function requestWithToken() {
+    const token = await zohoAccessToken(db);
+    const headers = { Authorization: `Zoho-oauthtoken ${token}` };
+    if (modifiedSince) headers['If-Modified-Since'] = modifiedSince;
+    return fetchJson(url, { headers, timeoutMs: 30000 });
+  }
+  const pageResult = result => ({
+    records: result.data || [],
+    info: result.info || {},
+    moreRecords: Boolean(result.info?.more_records),
+    nextPage: safePage + 1
+  });
+  try {
+    return pageResult(await requestWithToken());
+  } catch (error) {
+    // Zoho answers 304 when nothing changed since If-Modified-Since.
+    if (Number(error.status || 0) === 304) return pageResult({});
+    if (Number(error.status || 0) !== 401 || !db.zoho?.refresh_token) throw error;
+    db.zoho.access_token = '';
+    db.zoho.expires_at = 0;
+    await refreshZohoToken(db);
+    try {
+      return pageResult(await requestWithToken());
+    } catch (retryError) {
+      if (Number(retryError.status || 0) === 304) return pageResult({});
+      throw retryError;
+    }
+  }
+}
+
+async function fetchZohoRecords(db, moduleName, maxRecords = 50) {
+  const result = await fetchZohoRecordPage(db, moduleName, 1, maxRecords);
+  return result.records || [];
+}
+
+async function importZohoCrmRecords(db, user, maxRecords = 50) {
+  if (!zohoConfigured()) throw statusError(400, 'Zoho CRM credentials are not configured. Add ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET to .env.');
+  db.zoho ||= { imported_record_ids: [] };
+  const connection = zohoConnectionDiagnostics({ headers: {}, socket: {} }, db);
+  console.info(`[zoho] sync connection status=${connection.status} record=${connection.connectionRecordExists} refresh=${connection.refreshTokenStored} access_expired=${connection.accessTokenExpired} accounts=${connection.accountsServer || 'missing'} api_domain=${connection.apiDomain || 'missing'}`);
+  if (!connection.connected) throw statusError(401, connection.status === 'reauthorization_required' ? zohoReconnectRequiredMessage() : `Zoho CRM is not ready to sync (${connection.status}).`);
+  const safeMax = Math.max(1, Math.min(Number(maxRecords || 50), 100));
+  const modules = zohoSyncModules();
+  let imported = 0, updated = 0, scanned = 0;
+  const module_results = [];
+  const warnings = [];
+  for (const moduleName of modules) {
+    let records = [];
+    let moduleImported = 0, moduleUpdated = 0;
+    try {
+      records = await fetchZohoRecords(db, moduleName, safeMax);
+    } catch (error) {
+      if (/oauth_scope_mismatch|scope|permission|no permission|not authorized|authorization/i.test(error.message || '')) {
+        warnings.push(`${moduleName}: ${error.message}`);
+        module_results.push({ module: moduleName, scanned: 0, imported: 0, updated: 0, stored: Array.isArray(db.zoho.records?.[moduleName]) ? db.zoho.records[moduleName].length : 0, skipped: true, warning: error.message });
+        continue;
+      }
+      throw error;
+    }
+    mergeZohoRecordSummaries(db, moduleName, records.slice(0, safeMax).map(record => zohoRecordSummary(moduleName, record)));
+    for (const record of records.slice(0, safeMax)) {
+      scanned += 1;
+      const recordId = zohoRecordId(moduleName, record);
+      if (!recordId || recordId.endsWith(':')) continue;
+      if (!db.zoho.imported_record_ids.includes(recordId)) db.zoho.imported_record_ids.push(recordId);
+      if (!zohoModuleCreatesCrmLeads(moduleName)) continue;
+      const result = createOrUpdateZohoLead(db, user, moduleName, record);
+      if (!result.excluded && !db.zoho.imported_record_ids.includes(recordId)) db.zoho.imported_record_ids.push(recordId);
+      if (result.created) {
+        imported += 1;
+        moduleImported += 1;
+      } else if (result.lead && !result.skipped) {
+        updated += 1;
+        moduleUpdated += 1;
+      }
+    }
+    module_results.push({
+      module: moduleName,
+      scanned: records.length,
+      imported: moduleImported,
+      updated: moduleUpdated,
+      stored: Array.isArray(db.zoho.records?.[moduleName]) ? db.zoho.records[moduleName].length : 0
+    });
+  }
+  db.zoho.last_sync_at = new Date().toISOString();
+  db.meta ||= {};
+  db.meta.zoho = db.zoho;
+  const reconciliation = reconcileImportedData(db, user);
+  addAudit(db, user, 'Zoho CRM synced', 'integration', 'Zoho CRM', `${imported} created, ${updated} updated, ${scanned} scanned`);
+  await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, preserveApollo: true });
+  return { imported, updated, scanned, modules: module_results, warnings, reconciliation, last_sync_at: db.zoho.last_sync_at };
+}
+
+function zohoSyncConnectionId() {
+  return 'main';
+}
+
+function zohoSyncJobId() {
+  return `zoho_sync_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function zohoSyncCursor(values = {}, batchSize = ZOHO_SYNC_BATCH_SIZE) {
+  return {
+    page: Math.max(1, Number(values.page || 1)),
+    pageToken: values.pageToken || null,
+    limit: Math.max(1, Math.min(Number(values.limit || batchSize), 200)),
+    done: Boolean(values.done),
+    skipped: Boolean(values.skipped),
+    modifiedSince: values.modifiedSince || null
+  };
+}
+
+function zohoSyncState(row = {}) {
+  const state = row.state || {};
+  const modules = Array.isArray(state.modules) && state.modules.length ? state.modules : zohoSyncModules();
+  const batchSize = Math.max(1, Math.min(Number(state.batchSize || ZOHO_SYNC_BATCH_SIZE), 200));
+  const moduleIndex = Math.max(0, Math.min(Number(state.moduleIndex || 0), modules.length));
+  const moduleResults = state.moduleResults || {};
+  const cursors = {};
+  modules.forEach((moduleName, index) => {
+    if (state.cursors?.[moduleName]) {
+      cursors[moduleName] = zohoSyncCursor(state.cursors[moduleName], batchSize);
+    } else if (state.cursors) {
+      cursors[moduleName] = zohoSyncCursor({}, ZOHO_SYNC_BATCH_SIZE);
+    } else if (index < moduleIndex) {
+      // Jobs created before per-module cursors walked the modules one at a time.
+      cursors[moduleName] = zohoSyncCursor({ done: true, skipped: moduleResults[moduleName]?.skipped }, batchSize);
+    } else if (index === moduleIndex) {
+      cursors[moduleName] = zohoSyncCursor({ page: row.current_page, pageToken: row.next_page_token }, batchSize);
+    } else {
+      cursors[moduleName] = zohoSyncCursor({}, ZOHO_SYNC_BATCH_SIZE);
+    }
+  });
+  const mode = state.mode || (state.fullSync === false ? 'partial' : 'full');
+  return {
+    ...state,
+    version: 2,
+    mode,
+    modules,
+    moduleIndex,
+    batchSize,
+    maxRecords: Math.max(0, Math.min(Number(state.maxRecords || 0), 1000000)),
+    fullSync: mode === 'full',
+    cursors,
+    warnings: Array.isArray(state.warnings) ? state.warnings : [],
+    moduleResults
+  };
+}
+
+function zohoIncrementalSince(mark) {
+  const time = mark ? new Date(mark).getTime() : NaN;
+  return Number.isFinite(time) ? new Date(time - ZOHO_INCREMENTAL_OVERLAP_MS).toISOString() : null;
+}
+
+function zohoSyncJobPayload(row = null) {
+  if (!row) return { jobId: null, status: 'idle' };
+  const state = zohoSyncState(row);
+  return {
+    jobId: row.id,
+    status: row.status,
+    currentModule: row.current_module || null,
+    currentPage: Number(row.current_page || 1),
+    recordsScanned: Number(row.records_scanned || 0),
+    recordsAdded: Number(row.records_added || 0),
+    recordsUpdated: Number(row.records_updated || 0),
+    recordsFailed: Number(row.records_failed || 0),
+    modulesCompleted: Number(row.modules_completed || 0),
+    modulesTotal: Number(row.modules_total || 0),
+    batchSize: state.batchSize,
+    maxRecords: state.maxRecords,
+    fullSync: state.fullSync,
+    mode: state.mode,
+    activeModules: ['queued', 'running'].includes(row.status) ? state.modules.filter(moduleName => !state.cursors[moduleName]?.done) : [],
+    moduleResults: state.moduleResults,
+    warnings: state.warnings,
+    startedAt: row.started_at ? new Date(row.started_at).toISOString() : null,
+    lastProgressAt: row.last_progress_at ? new Date(row.last_progress_at).toISOString() : null,
+    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null,
+    retryAfterAt: row.retry_after_at ? new Date(row.retry_after_at).toISOString() : null,
+    lastError: row.last_error || null
+  };
+}
+
+function zohoSafeJobError(error) {
+  return String(error?.message || error || 'Zoho sync failed.')
+    .replace(/access[_-]?token|refresh[_-]?token|client[_-]?secret|password|bearer|zoho-oauthtoken/ig, 'credential')
+    .slice(0, 500);
+}
+
+async function loadZohoConnectionState(client = postgresPool) {
+  await ensureIntegrationJobsTable(client);
+  const result = await client.query(`select meta from app_workspace where id = $1`, ['main']);
+  const meta = result.rows[0]?.meta || {};
+  return meta.zoho || { imported_record_ids: [] };
+}
+
+async function saveZohoConnectionState(client, zohoState = {}) {
+  const current = await client.query(`select demo, stages, sources, gmail, eventbrite, meta from app_workspace where id = $1`, ['main']);
+  const row = current.rows[0] || {};
+  const meta = { ...(row.meta || {}), zoho: zohoState };
+  await client.query(
+    `insert into app_workspace (id, demo, stages, sources, gmail, eventbrite, meta, updated_at)
+     values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, now())
+     on conflict (id) do update set meta = excluded.meta, updated_at = now()`,
+    ['main', Boolean(row.demo), jsonValue(row.stages || []), jsonValue(row.sources || []), jsonValue(row.gmail || {}), jsonValue(row.eventbrite || {}), jsonValue(meta)]
+  );
+  dbCache = null;
+}
+
+async function latestZohoSyncJob(connectionId = zohoSyncConnectionId()) {
+  await ensureStorage();
+  if (!postgresPool) return null;
+  await ensureIntegrationJobsTable();
+  const result = await postgresPool.query(
+    `select * from integration_jobs
+     where provider = 'zoho'
+       and type = 'crm_sync'
+       and connection_id = $1
+     order by
+       case when status in ('queued', 'running') then 0 else 1 end,
+       updated_at desc
+     limit 1`,
+    [connectionId]
+  );
+  return result.rows[0] || null;
+}
+
+async function getZohoSyncJob(jobId) {
+  await ensureStorage();
+  if (!postgresPool) return null;
+  await ensureIntegrationJobsTable();
+  const result = await postgresPool.query(`select * from integration_jobs where id = $1 and provider = 'zoho' limit 1`, [jobId]);
+  return result.rows[0] || null;
+}
+
+async function createOrResumeZohoSyncJob(req, user, options = {}) {
+  await ensureStorage();
+  if (!postgresPool) throw statusError(500, 'Zoho background sync requires PostgreSQL storage.');
+  await ensureIntegrationJobsTable();
+  if (!zohoConfigured()) throw statusError(400, 'Zoho CRM credentials are not configured. Add ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET to .env.');
+  const connectionId = zohoSyncConnectionId();
+  const client = await postgresPool.connect();
+  try {
+    const active = await client.query(
+      `select * from integration_jobs
+       where provider = 'zoho'
+         and type = 'crm_sync'
+         and connection_id = $1
+         and status in ('queued', 'running')
+       order by updated_at desc
+       limit 1`,
+      [connectionId]
+    );
+    const fullSyncRequested = options.full_sync === true || String(options.full_sync || '').toLowerCase() === 'true' || String(options.mode || '').toLowerCase() === 'full' || String(options.max_records || options.maxRecords || '').toLowerCase() === 'all';
+    // A running job's state is written page by page by its module workers, so it is never
+    // rewritten here; a full resync requested meanwhile starts after the active job ends.
+    if (active.rows[0]) {
+      scheduleZohoSyncWorker(active.rows[0].id, 0);
+      return active.rows[0];
+    }
+    const zoho = await loadZohoConnectionState(client);
+    const connection = zohoConnectionDiagnostics(req, { zoho });
+    if (!connection.connected) {
+      throw statusError(401, connection.status === 'reauthorization_required' ? zohoReconnectRequiredMessage() : `Zoho CRM is not ready to sync (${connection.status}).`);
+    }
+    // A normal sync picks up a recently failed job from its saved cursors instead of
+    // starting over. Zoho page tokens last 24 hours, so older failures start fresh.
+    if (!fullSyncRequested) {
+      const resumed = await client.query(
+        `update integration_jobs
+         set status = 'queued', completed_at = null, last_error = null, retry_after_at = null,
+             locked_by = null, locked_until = null, updated_at = now()
+         where id = (
+             select id from integration_jobs
+             where provider = 'zoho' and type = 'crm_sync' and connection_id = $1
+             order by updated_at desc
+             limit 1
+           )
+           and status = 'failed'
+           and updated_at > now() - interval '20 hours'
+         returning *`,
+        [connectionId]
+      );
+      if (resumed.rows[0]) {
+        scheduleZohoSyncWorker(resumed.rows[0].id, 0);
+        return resumed.rows[0];
+      }
+    }
+    const modules = zohoSyncModules();
+    const batchSize = Math.max(1, Math.min(Number(options.batch_size || options.batchSize || ZOHO_SYNC_BATCH_SIZE), 200));
+    const id = zohoSyncJobId();
+    // Modules with a previous completed sync only fetch what changed since then, unless a
+    // full resync was asked for.
+    const marks = fullSyncRequested ? {} : (zoho.sync_marks || {});
+    const cursors = Object.fromEntries(modules.map(moduleName => [moduleName, zohoSyncCursor({ modifiedSince: zohoIncrementalSince(marks[moduleName]) }, batchSize)]));
+    const mode = modules.some(moduleName => cursors[moduleName].modifiedSince) ? 'incremental' : 'full';
+    const state = { version: 2, mode, modules, batchSize, maxRecords: 0, fullSync: mode === 'full', cursors, warnings: [], moduleResults: {}, startedBy: user.id };
+    const inserted = await client.query(
+      `insert into integration_jobs (
+         id, provider, connection_id, type, status, current_module, current_page,
+         records_scanned, records_added, records_updated, records_failed,
+         modules_total, modules_completed, created_by, state, created_at, updated_at
+       )
+       values ($1, 'zoho', $2, 'crm_sync', 'queued', $3, 1, 0, 0, 0, 0, $4, 0, $5, $6::jsonb, now(), now())
+       returning *`,
+      [id, connectionId, modules[0] || null, modules.length, user.id, jsonValue(state)]
+    );
+    scheduleZohoSyncWorker(id, 0);
+    return inserted.rows[0];
+  } catch (error) {
+    if (error.code === '23505') {
+      const existing = await latestZohoSyncJob(connectionId);
+      if (existing && ['queued', 'running'].includes(existing.status)) {
+        scheduleZohoSyncWorker(existing.id, 0);
+        return existing;
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function upsertZohoLeadFromRecord(client, user, moduleName, record) {
+  const recordId = zohoRecordId(moduleName, record);
+  if (!recordId || recordId.endsWith(':')) return { added: 0, updated: 0 };
+  const email = zohoRecordEmail(record) || `${String(record.id || crypto.randomBytes(5).toString('hex'))}@zoho.local`;
+  if (isExcludedLeadSender(email, record.First_Name, record.Last_Name)) return { added: 0, updated: 0 };
+  const names = zohoRecordNameParts(record);
+  const programme = programmeForText({ programmes: [] }, zohoRecordText(record));
+  const incoming = {
+    first_name: names.first_name,
+    last_name: names.last_name,
+    full_name: `${names.first_name} ${names.last_name}`.trim(),
+    programme: programme.name,
+    programme_id: programme.id,
+    level: programme.level,
+    email: normalizeEmail(email),
+    employer: zohoRecordCompany(record),
+    phone: zohoRecordPhone(record),
+    city: [record.City, record.State, record.Country, record.Mailing_City, record.Mailing_State, record.Mailing_Country].filter(Boolean).join(', '),
+    owner: user?.name || 'Sales',
+    owner_id: user?.id || 'system',
+    stage: 'New lead',
+    priority: moduleName === 'Leads' ? 'P2' : 'P3',
+    source_first_touch: 'Zoho CRM',
+    source_lead_capture: 'Zoho CRM',
+    contact_permission: record.Email_Opt_Out ? 'Declined' : 'Unknown',
+    created_at: record.Created_Time || record.Modified_Time || new Date().toISOString(),
+    next_action_at: null,
+    zoho_record_id: recordId,
+    zoho_module: moduleName
+  };
+  // A match on a merged duplicate resolves to its master, so re-imports never recreate it.
+  const existing = await client.query(
+    `select ${leadSoftDelete.enabled ? 'coalesce(m.data, l.data)' : 'l.data'} as data from app_leads l
+     ${leadSoftDelete.enabled ? 'left join app_leads m on m.id = l.merged_into_id and m.deleted_at is null' : ''}
+     where l.data->>'zoho_record_id' = $1
+        or ($2 <> '' and lower(coalesce(l.email, '')) = $2)
+     order by case when l.data->>'zoho_record_id' = $1 then 0 else 1 end
+     limit 1`,
+    [recordId, incoming.email]
+  );
+  let lead = existing.rows[0]?.data || null;
+  let added = 0;
+  if (lead) {
+    mergeLeadData(lead, incoming);
+  } else {
+    let id = leadIdForEmail({ leads: [] }, incoming.email);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const taken = await client.query(`select data from app_leads where id = $1 limit 1`, [id]);
+      if (!taken.rows[0] || normalizeEmail(taken.rows[0].data?.email) === incoming.email) break;
+      id = emailLeadId(`${incoming.email}:${recordId}`, attempt);
+    }
+    lead = { ...incoming, id, person_id: id };
+    addLeadSource(lead, 'Zoho CRM', { provider_id: recordId, captured_at: incoming.created_at });
+    added = 1;
+  }
+  lead.full_name = fullName(lead);
+  await client.query(
+    `insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::timestamptz, $20::timestamptz, $21::jsonb)
+     on conflict (id) do update set
+       person_id = excluded.person_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
+       employer = excluded.employer, phone = excluded.phone, city = excluded.city, programme_id = excluded.programme_id,
+       programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
+       stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
+       source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
+       created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
+    [lead.id, lead.person_id || lead.id, lead.first_name || null, lead.last_name || null, lead.email || null, lead.employer || null, lead.phone || null, lead.city || null, lead.programme_id || null, lead.programme || null, lead.level || null, lead.owner_id || null, lead.owner || null, lead.stage || null, lead.priority || null, lead.source_first_touch || null, lead.source_lead_capture || null, lead.contact_permission || null, lead.created_at || null, lead.next_action_at || null, jsonValue(lead)]
+  );
+  if (added) {
+    const taskId = `ZT-${crypto.createHash('sha1').update(recordId).digest('hex').slice(0, 16)}`;
+    const task = {
+      id: taskId,
+      title: `Follow up Zoho ${moduleName.slice(0, -1).toLowerCase()}: ${lead.first_name || ''} ${lead.last_name || ''}`.trim(),
+      lead_id: lead.id,
+      kind: 'Follow-up',
+      status: 'Open',
+      created_at: new Date().toISOString(),
+      due_at: new Date(Date.now() + 86400000).toISOString(),
+      priority: lead.priority,
+      owner_id: lead.owner_id
+    };
+    await client.query(
+      `insert into app_tasks (id, title, lead_id, kind, status, due_at, completed_at, priority, owner_id, data)
+       values ($1, $2, $3, $4, $5, $6::timestamptz, null, $7, $8, $9::jsonb)
+       on conflict (id) do nothing`,
+      [task.id, task.title, task.lead_id, task.kind, task.status, task.due_at, task.priority, task.owner_id, jsonValue(task)]
+    );
+  }
+  return { added, updated: added ? 0 : 1 };
+}
+
+async function upsertZohoLeadsFromRecords(client, user, moduleName, records = []) {
+  const incomingRows = [];
+  for (const record of records) {
+    const recordId = zohoRecordId(moduleName, record);
+    if (!recordId || recordId.endsWith(':')) continue;
+    const email = zohoRecordEmail(record) || `${String(record.id || crypto.randomBytes(5).toString('hex'))}@zoho.local`;
+    if (isExcludedLeadSender(email, record.First_Name, record.Last_Name)) continue;
+    const names = zohoRecordNameParts(record);
+    const programme = programmeForText({ programmes: [] }, zohoRecordText(record));
+    incomingRows.push({
+      first_name: names.first_name,
+      last_name: names.last_name,
+      full_name: `${names.first_name} ${names.last_name}`.trim(),
+      programme: programme.name,
+      programme_id: programme.id,
+      level: programme.level,
+      email: normalizeEmail(email),
+      employer: zohoRecordCompany(record),
+      phone: zohoRecordPhone(record),
+      city: [record.City, record.State, record.Country, record.Mailing_City, record.Mailing_State, record.Mailing_Country].filter(Boolean).join(', '),
+      owner: user?.name || 'Sales',
+      owner_id: user?.id || 'system',
+      stage: 'New lead',
+      priority: moduleName === 'Leads' ? 'P2' : 'P3',
+      source_first_touch: 'Zoho CRM',
+      source_lead_capture: 'Zoho CRM',
+      contact_permission: record.Email_Opt_Out ? 'Declined' : 'Unknown',
+      created_at: record.Created_Time || record.Modified_Time || new Date().toISOString(),
+      next_action_at: null,
+      zoho_record_id: recordId,
+      zoho_module: moduleName
+    });
+  }
+  if (!incomingRows.length) return { added: 0, updated: 0, failed: 0 };
+  const zohoIds = incomingRows.map(row => row.zoho_record_id);
+  const emails = incomingRows.map(row => String(row.email || '').toLowerCase()).filter(Boolean);
+  // Matches on a merged duplicate resolve to its master, so re-imports never recreate it.
+  const existing = await client.query(
+    `select ${leadSoftDelete.enabled ? 'coalesce(m.data, l.data)' : 'l.data'} as data,
+       l.data->>'zoho_record_id' as matched_zoho_id, lower(l.email) as matched_email
+     from app_leads l
+     ${leadSoftDelete.enabled ? 'left join app_leads m on m.id = l.merged_into_id and m.deleted_at is null' : ''}
+     where l.data->>'zoho_record_id' = any($1::text[])
+        or lower(l.email) = any($2::text[])`,
+    [zohoIds, emails]
+  );
+  // One object per lead id, so a lead matched twice is updated once.
+  const byId = new Map();
+  const byZoho = new Map();
+  const byEmail = new Map();
+  for (const row of existing.rows.filter(item => item.data?.id)) {
+    const lead = byId.get(row.data.id) || row.data;
+    byId.set(lead.id, lead);
+    for (const key of [row.matched_zoho_id, lead.zoho_record_id]) if (key) byZoho.set(key, lead);
+    for (const key of [row.matched_email, lead.email]) if (key) byEmail.set(normalizeEmail(key), lead);
+  }
+  const touched = new Map();
+  let added = 0;
+  let updated = 0;
+  const usedIds = new Set(byId.keys());
+  for (const incoming of incomingRows) {
+    let lead = byZoho.get(incoming.zoho_record_id) || byEmail.get(incoming.email) || null;
+    if (lead) {
+      mergeLeadData(lead, incoming);
+      updated += 1;
+    } else {
+      let id = leadIdForEmail({ leads: [] }, incoming.email);
+      for (let attempt = 0; usedIds.has(id) && attempt < 20; attempt += 1) id = emailLeadId(`${incoming.email}:${incoming.zoho_record_id}`, attempt);
+      usedIds.add(id);
+      lead = { ...incoming, id, person_id: id };
+      addLeadSource(lead, 'Zoho CRM', { provider_id: incoming.zoho_record_id, captured_at: incoming.created_at });
+      // Later rows in this batch with the same email or record join this lead instead of
+      // creating a second one.
+      if (incoming.zoho_record_id) byZoho.set(incoming.zoho_record_id, lead);
+      if (incoming.email) byEmail.set(incoming.email, lead);
+      added += 1;
+    }
+    lead.full_name = fullName(lead);
+    touched.set(lead.id, lead);
+  }
+  const leadRows = [...touched.values()].map(lead => ({
+    id: lead.id,
+    person_id: lead.person_id || lead.id,
+    first_name: lead.first_name || null,
+    last_name: lead.last_name || null,
+    email: lead.email || null,
+    employer: lead.employer || null,
+    phone: lead.phone || null,
+    city: lead.city || null,
+    programme_id: lead.programme_id || null,
+    programme: lead.programme || null,
+    level: lead.level || null,
+    owner_id: lead.owner_id || null,
+    owner: lead.owner || null,
+    stage: lead.stage || null,
+    priority: lead.priority || null,
+    source_first_touch: lead.source_first_touch || null,
+    source_lead_capture: lead.source_lead_capture || null,
+    contact_permission: lead.contact_permission || null,
+    created_at: lead.created_at || null,
+    next_action_at: lead.next_action_at || null,
+    data: lead
+  }));
+  await client.query(
+    `with rows as (
+       select * from jsonb_to_recordset($1::jsonb) as x(
+         id text, person_id text, first_name text, last_name text, email text, employer text, phone text, city text,
+         programme_id text, programme text, level text, owner_id text, owner text, stage text, priority text,
+         source_first_touch text, source_lead_capture text, contact_permission text, created_at text, next_action_at text, data jsonb
+       )
+     )
+     insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
+     select id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at::timestamptz, next_action_at::timestamptz, data from rows
+     on conflict (id) do update set
+       person_id = excluded.person_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
+       employer = excluded.employer, phone = excluded.phone, city = excluded.city, programme_id = excluded.programme_id,
+       programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
+       stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
+       source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
+       created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
+    [jsonValue(leadRows)]
+  );
+  return { added, updated, failed: 0 };
+}
+
+async function insertZohoSyncAudit(client, detail) {
+  const audit = {
+    id: `A-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    occurred_at: new Date().toISOString(),
+    actor: 'Zoho Sync',
+    action: 'Zoho CRM sync completed',
+    entity: 'integration',
+    entity_id: 'Zoho CRM',
+    detail
+  };
+  await client.query(
+    `insert into app_audit (id, occurred_at, actor, action, entity, entity_id, data)
+     values ($1, $2::timestamptz, $3, $4, $5, $6, $7::jsonb)
+     on conflict (id) do nothing`,
+    [audit.id, audit.occurred_at, audit.actor, audit.action, audit.entity, audit.entity_id, jsonValue(audit)]
+  );
+}
+
+function scheduleZohoSyncWorker(jobId = null, delayMs = ZOHO_SYNC_WORKER_YIELD_MS) {
+  if (!postgresPool || !ZOHO_SYNC_WORKER_ENABLED) return;
+  const delay = Math.max(0, Number(delayMs) || 0);
+  const timer = setTimeout(() => {
+    runZohoSyncWorker(jobId).catch(error => console.error(`Zoho sync worker failed: ${zohoSafeJobError(error)}`));
+  }, delay);
+  if (timer.unref) timer.unref();
+}
+
+// A job is owned through a lease on its row (locked_by/locked_until) rather than a
+// session advisory lock: Neon's pooled connections do not keep a session between
+// statements, so advisory locks there neither exclude a second worker nor release cleanly.
+async function claimZohoSyncJob(jobId) {
+  const result = await postgresPool.query(
+    `update integration_jobs
+     set locked_by = $2, locked_until = now() + ($3 || ' milliseconds')::interval, updated_at = now()
+     where id = $1
+       and provider = 'zoho'
+       and status in ('queued', 'running')
+       and (locked_by is null or locked_by = $2 or locked_until is null or locked_until < now())
+     returning *`,
+    [jobId, ZOHO_WORKER_ID, String(ZOHO_JOB_LEASE_MS)]
+  );
+  return result.rows[0] || null;
+}
+
+async function renewZohoSyncLease(ctx) {
+  const result = await postgresPool.query(
+    `update integration_jobs
+     set locked_until = now() + ($3 || ' milliseconds')::interval
+     where id = $1 and locked_by = $2
+     returning status`,
+    [ctx.jobId, ZOHO_WORKER_ID, String(ZOHO_JOB_LEASE_MS)]
+  );
+  if (result.rows[0]?.status !== 'running') ctx.stop = true;
+}
+
+async function releaseZohoSyncJob(jobId) {
+  await postgresPool.query(
+    `update integration_jobs set locked_by = null, locked_until = null where id = $1 and locked_by = $2`,
+    [jobId, ZOHO_WORKER_ID]
+  ).catch(() => null);
+}
+
+// Dropped connections to Zoho or Neon (TLS resets, timeouts, DNS blips) are temporary; the
+// job resumes from its saved cursors instead of failing.
+function isTransientNetworkError(error) {
+  const code = String(error?.code || error?.cause?.code || '');
+  if (['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', '57P01', '08000', '08003', '08006'].includes(code)) return true;
+  return /socket disconnected|socket hang up|tls connection|connection terminated|connection timeout|ECONNRESET|ETIMEDOUT|fetch failed/i.test(String(error?.message || ''));
+}
+
+function isZohoScopeError(error) {
+  return /oauth_scope_mismatch|scope|permission|no permission|not authorized|authorization/i.test(error?.message || '');
+}
+
+async function fetchZohoPageWithRetry(ctx, moduleName, cursor) {
+  let lastError = null;
+  for (let attempt = 0; attempt < ZOHO_FETCH_ATTEMPTS; attempt += 1) {
+    if (ctx.stop) throw statusError(499, 'Zoho sync stopped.');
+    try {
+      return await fetchZohoRecordPage(ctx.dbLike, moduleName, cursor.page, cursor.limit, cursor.pageToken || '', { modifiedSince: cursor.modifiedSince || '' });
+    } catch (error) {
+      lastError = error;
+      const status = Number(error.status || 0);
+      if (![429, 500, 502, 503, 504].includes(status) || attempt === ZOHO_FETCH_ATTEMPTS - 1) throw error;
+      await wait(status === 429 ? 30000 * (attempt + 1) : 3000 * (attempt + 1));
+      await renewZohoSyncLease(ctx);
+    }
+  }
+  throw lastError;
+}
+
+async function saveZohoRecordPage(ctx, moduleName, records) {
+  const rows = records.map(record => {
+    const summary = zohoRecordSummary(moduleName, record);
+    return { ...summary, zoho_id: summary.id || '', owner_name: summary.owner || '', data: summary };
+  });
+  const leadModule = zohoModuleCreatesCrmLeads(moduleName);
+  const [, leads] = await Promise.all([
+    upsertZohoRecordRows(postgresPool, rows),
+    leadModule ? upsertZohoLeadsFromRecords(postgresPool, ctx.user, moduleName, records) : Promise.resolve({ added: 0, updated: 0, failed: 0 })
+  ]);
+  dbCache = null;
+  return leads;
+}
+
+async function persistZohoTokenIfChanged(ctx) {
+  const zoho = ctx.dbLike.zoho || {};
+  if ((zoho.access_token || '') === ctx.savedAccessToken) return;
+  ctx.savedAccessToken = zoho.access_token || '';
+  const latest = await loadZohoConnectionState();
+  await saveZohoConnectionState(postgresPool, { ...latest, ...zohoNewerTokenFields(zoho, latest) });
+}
+
+function zohoNewerTokenFields(candidate = {}, current = {}) {
+  if (!candidate.access_token || Number(candidate.expires_at || 0) <= Number(current.expires_at || 0)) return {};
+  return { access_token: candidate.access_token, expires_at: candidate.expires_at, api_domain: candidate.api_domain || current.api_domain };
+}
+
+// One progress write per page: counters, this module's cursor and results, and the lease.
+async function recordZohoModuleProgress(ctx, moduleName, cursor, results, delta, options = {}) {
+  const result = await postgresPool.query(
+    `update integration_jobs
+     set current_module = $3,
+         current_page = $4,
+         next_page_token = $5,
+         records_scanned = records_scanned + $6,
+         records_added = records_added + $7,
+         records_updated = records_updated + $8,
+         records_failed = records_failed + $9,
+         modules_completed = modules_completed + $10,
+         state = jsonb_set(
+           jsonb_set(
+             jsonb_set(state, '{warnings}', coalesce(state->'warnings', '[]'::jsonb) || $13::jsonb, true),
+             array['cursors', $3::text], $11::jsonb, true
+           ),
+           array['moduleResults', $3::text], $12::jsonb, true
+         ),
+         locked_until = now() + ($14 || ' milliseconds')::interval,
+         last_progress_at = now(),
+         updated_at = now()
+     where id = $1 and locked_by = $2
+     returning status`,
+    [
+      ctx.jobId,
+      ZOHO_WORKER_ID,
+      moduleName,
+      cursor.page,
+      cursor.pageToken || null,
+      Number(delta.scanned || 0),
+      Number(delta.added || 0),
+      Number(delta.updated || 0),
+      Number(delta.failed || 0),
+      options.moduleFinished ? 1 : 0,
+      jsonValue(cursor),
+      jsonValue(results),
+      jsonValue(options.warning ? [options.warning] : []),
+      String(ZOHO_JOB_LEASE_MS)
+    ]
+  );
+  if (result.rows[0]?.status !== 'running') ctx.stop = true;
+}
+
+// Pulls one module to the end. The next Zoho page is requested while the current one is
+// being written, so Zoho latency and database latency overlap instead of adding up.
+async function syncZohoModule(ctx, moduleName) {
+  const cursor = ctx.state.cursors[moduleName];
+  const results = { scanned: 0, added: 0, updated: 0, failed: 0, ...(ctx.state.moduleResults[moduleName] || {}) };
+  const request = next => {
+    const pending = fetchZohoPageWithRetry(ctx, moduleName, next);
+    pending.catch(() => null);
+    return pending;
+  };
+  let pending = request({ ...cursor });
+  while (!ctx.stop) {
+    let pageResult;
+    try {
+      pageResult = await pending;
+    } catch (error) {
+      if (!isZohoScopeError(error)) throw error;
+      Object.assign(cursor, { done: true, skipped: true, pageToken: null });
+      results.skipped = true;
+      await recordZohoModuleProgress(ctx, moduleName, cursor, results, {}, { moduleFinished: true, warning: `${moduleName}: ${zohoSafeJobError(error)}` });
+      return;
+    }
+    const records = (pageResult.records || []).slice(0, cursor.limit);
+    const more = pageResult.moreRecords && records.length > 0;
+    const next = { ...cursor, page: cursor.page + 1, pageToken: pageResult.info?.next_page_token || null };
+    if (more && next.page > ZOHO_SYNC_MAX_PAGES_PER_MODULE) throw statusError(500, `Zoho pagination safety limit reached for ${moduleName}.`);
+    if (more) pending = request(next);
+    const saved = await saveZohoRecordPage(ctx, moduleName, records);
+    results.scanned += records.length;
+    results.added += saved.added;
+    results.updated += saved.updated;
+    results.failed += saved.failed;
+    if (more) Object.assign(cursor, { page: next.page, pageToken: next.pageToken });
+    else Object.assign(cursor, { done: true, pageToken: null });
+    await persistZohoTokenIfChanged(ctx);
+    await recordZohoModuleProgress(ctx, moduleName, cursor, results, { scanned: records.length, ...saved }, { moduleFinished: !more });
+    if (!more) return;
+  }
+}
+
+async function completeZohoSyncJob(ctx) {
+  const current = await postgresPool.query(
+    `select * from integration_jobs where id = $1 and locked_by = $2 and status = 'running'`,
+    [ctx.jobId, ZOHO_WORKER_ID]
+  );
+  const row = current.rows[0];
+  if (!row) return;
+  const state = zohoSyncState(row);
+  // Save the sync marks before flipping the job to completed, so anything that sees a
+  // completed job also sees the marks the next incremental run starts from.
+  const mark = new Date(row.started_at || row.created_at || Date.now()).toISOString();
+  const latest = await loadZohoConnectionState();
+  const marks = { ...(latest.sync_marks || {}) };
+  for (const moduleName of state.modules) {
+    if (state.cursors[moduleName]?.done && !state.cursors[moduleName]?.skipped) marks[moduleName] = mark;
+  }
+  await saveZohoConnectionState(postgresPool, {
+    ...latest,
+    ...zohoNewerTokenFields(ctx.dbLike.zoho, latest),
+    sync_marks: marks,
+    last_sync_at: new Date().toISOString(),
+    last_error: null,
+    connected: true,
+    reauthorization_required: false
+  });
+  await insertZohoSyncAudit(postgresPool, `${state.mode} sync: ${Number(row.records_scanned || 0)} scanned, ${Number(row.records_added || 0)} created, ${Number(row.records_updated || 0)} updated`);
+  await postgresPool.query(
+    `update integration_jobs
+     set status = 'completed', completed_at = now(), current_module = null, next_page_token = null,
+         last_progress_at = now(), updated_at = now()
+     where id = $1 and locked_by = $2 and status = 'running'`,
+    [ctx.jobId, ZOHO_WORKER_ID]
+  );
+}
+
+async function runZohoSyncWorker(jobId = null) {
+  await ensureStorage();
+  if (!postgresPool) return;
+  await ensureIntegrationJobsTable();
+  const target = jobId || (await latestZohoSyncJob())?.id;
+  if (!target || activeZohoSyncWorkers.has(target)) return;
+  activeZohoSyncWorkers.add(target);
+  let retryDelay = 0;
+  try {
+    const job = await claimZohoSyncJob(target);
+    if (!job) {
+      // Another process holds the lease. Check back after it would expire so the job
+      // is taken over if that process has died.
+      const current = await getZohoSyncJob(target);
+      if (current && ['queued', 'running'].includes(current.status)) retryDelay = ZOHO_JOB_LEASE_MS;
+      return;
+    }
+    if (job.retry_after_at && new Date(job.retry_after_at).getTime() > Date.now()) {
+      retryDelay = Math.max(1000, new Date(job.retry_after_at).getTime() - Date.now());
+      return;
+    }
+    const state = zohoSyncState(job);
+    await postgresPool.query(
+      `update integration_jobs
+       set status = 'running', started_at = coalesce(started_at, now()), attempts = attempts + 1,
+           last_error = null, retry_after_at = null, state = $3::jsonb, updated_at = now()
+       where id = $1 and locked_by = $2`,
+      [target, ZOHO_WORKER_ID, jsonValue(state)]
+    );
+    const zoho = await loadZohoConnectionState();
+    const ctx = {
+      jobId: target,
+      state,
+      stop: false,
+      user: { id: job.created_by || 'system', name: 'Zoho Sync' },
+      dbLike: { zoho },
+      savedAccessToken: zoho.access_token || ''
+    };
+    const queue = state.modules.filter(moduleName => !state.cursors[moduleName]?.done);
+    let failure = null;
+    const runners = Array.from({ length: Math.min(ZOHO_SYNC_MODULE_CONCURRENCY, queue.length) }, async () => {
+      while (!ctx.stop && queue.length) {
+        const moduleName = queue.shift();
+        try {
+          await syncZohoModule(ctx, moduleName);
+        } catch (error) {
+          if (!ctx.stop) failure ||= error;
+          ctx.stop = true;
+        }
+      }
+    });
+    await Promise.all(runners);
+    if (failure) throw failure;
+    if (ctx.stop) return;
+    await completeZohoSyncJob(ctx);
+  } catch (error) {
+    const status = Number(error.status || 0);
+    const safeMessage = zohoSafeJobError(error);
+    try {
+      if ([429, 502, 503, 504].includes(status) || isTransientNetworkError(error)) {
+        retryDelay = status === 429 ? 60 * 1000 : 15 * 1000;
+        await postgresPool.query(
+          `update integration_jobs
+           set status = 'queued', retry_after_at = now() + ($2 || ' milliseconds')::interval,
+               last_error = $3, updated_at = now()
+           where id = $1 and provider = 'zoho'`,
+          [target, String(retryDelay), safeMessage]
+        );
+      } else if (/oauth|token|reauthorization|refresh/i.test(safeMessage)) {
+        await postgresPool.query(`update integration_jobs set status = 'failed', last_error = $2, completed_at = now(), updated_at = now() where id = $1 and provider = 'zoho'`, [target, zohoReconnectRequiredMessage()]);
+      } else {
+        await postgresPool.query(`update integration_jobs set status = 'failed', last_error = $2, completed_at = now(), updated_at = now() where id = $1 and provider = 'zoho'`, [target, safeMessage]);
+      }
+    } catch (updateError) {
+      // The database itself was unreachable; the job keeps its saved cursors, so try again.
+      console.error(`Zoho sync status update failed: ${zohoSafeJobError(updateError)}`);
+      retryDelay = 30 * 1000;
+    }
+  } finally {
+    await releaseZohoSyncJob(target);
+    activeZohoSyncWorkers.delete(target);
+  }
+  if (retryDelay) scheduleZohoSyncWorker(target, retryDelay);
+}
+
+async function resumeZohoSyncJobs() {
+  await ensureStorage();
+  if (!postgresPool) return;
+  await ensureIntegrationJobsTable();
+  const active = await postgresPool.query(
+    `select id from integration_jobs
+     where provider = 'zoho'
+       and type = 'crm_sync'
+       and status in ('queued', 'running')
+     order by updated_at desc
+     limit $1`,
+    [ZOHO_SYNC_CONCURRENCY]
+  );
+  for (const row of active.rows) scheduleZohoSyncWorker(row.id, 1000);
+}
+
+// After the first full import, keep app_zoho_records current with small incremental runs.
+function scheduleZohoAutoSync(delayMs = ZOHO_AUTO_SYNC_INTERVAL_MS) {
+  if (!ZOHO_AUTO_SYNC_ENABLED || !usesPostgresStorage()) return;
+  const timer = setTimeout(async () => {
+    try {
+      await startZohoAutoSync();
+    } catch (error) {
+      console.error(`Zoho auto sync skipped: ${zohoSafeJobError(error)}`);
+    }
+    scheduleZohoAutoSync();
+  }, delayMs);
+  if (timer.unref) timer.unref();
+}
+
+async function startZohoAutoSync() {
+  await ensureStorage();
+  if (!postgresPool) return;
+  const zoho = await loadZohoConnectionState();
+  // Only incremental runs are automatic; the first full import is started from the UI.
+  if (!Object.keys(zoho.sync_marks || {}).length) return;
+  await createOrResumeZohoSyncJob({ headers: {}, socket: {} }, { id: 'system', name: 'Zoho Auto Sync' }, { mode: 'incremental' });
+}
+
+async function cancelZohoSyncJob(jobId) {
+  await ensureStorage();
+  if (!postgresPool) throw statusError(500, 'Zoho background sync requires PostgreSQL storage.');
+  await ensureIntegrationJobsTable();
+  const result = await postgresPool.query(
+    `update integration_jobs
+     set status = 'cancelled', completed_at = now(), last_error = $2, updated_at = now()
+     where id = $1
+       and provider = 'zoho'
+       and status in ('queued', 'running')
+     returning *`,
+    [jobId, 'Cancelled by user.']
+  );
+  return result.rows[0] || await getZohoSyncJob(jobId);
+}
+
 function statusError(status, message) {
   const error = new Error(message);
   error.status = status;
@@ -7685,9 +11589,328 @@ function readBody(req) {
   });
 }
 
-function sendJson(res, value, status = 200, headers = {}) {
+function createPerfTrace(route, startedAt = performance.now()) {
+  return {
+    route,
+    started_at: startedAt,
+    stages: [],
+    counters: {},
+    bytes: 0,
+    status: 0
+  };
+}
+
+function perfAdd(trace, name, ms, meta = {}) {
+  if (!trace) return;
+  const stage = { name, ms, ...meta };
+  if (stage.start_ms === undefined) {
+    stage.start_ms = Number(Math.max(0, performance.now() - trace.started_at - Number(ms || 0)).toFixed(1));
+  }
+  trace.stages.push(stage);
+}
+
+async function perfPhase(trace, name, fn, meta = {}) {
+  const started = performance.now();
+  try {
+    return await fn();
+  } finally {
+    perfAdd(trace, name, performance.now() - started, meta);
+  }
+}
+
+function perfCount(trace, name, by = 1) {
+  if (!trace) return;
+  trace.counters[name] = Number(trace.counters[name] || 0) + by;
+}
+
+async function timedPostgresQuery(trace, label, sql, params = [], attempts = 2) {
+  if (!trace) return postgresPool.query(sql, params);
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const acquireStarted = performance.now();
+    let client = null;
+    const beforeAcquire = postgresPoolStats();
+    try {
+      client = await postgresPool.connect();
+      perfAdd(trace, `${label}_pool_acquire`, performance.now() - acquireStarted, {
+        pool_before: beforeAcquire,
+        pool_after: postgresPoolStats(),
+        query_name: `${label}_pool_acquire`
+      });
+      const queryStarted = performance.now();
+      const result = await client.query(sql, params);
+      perfAdd(trace, `${label}_query`, performance.now() - queryStarted, {
+        rows: result.rowCount ?? result.rows?.length ?? 0,
+        sql: sqlSummary(sql),
+        sql_full: sql,
+        params,
+        query_name: label
+      });
+      perfCount(trace, 'postgres_queries');
+      return result;
+    } catch (error) {
+      lastError = error;
+      perfAdd(trace, `${label}_error`, performance.now() - acquireStarted);
+      if (!postgresConnectionLost(error) || attempt >= attempts - 1) throw error;
+      console.error(`Postgres query connection lost; reconnecting: ${error.message || error}`);
+      await resetPostgresPool();
+      await getPostgresPool();
+    } finally {
+      if (client) {
+        try {
+          client.release();
+        } catch {}
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function timedPostgresQueryWithStatementTimeout(trace, label, sql, params = [], timeoutMs = 5000, attempts = 2) {
+  if (!trace || !Number.isFinite(Number(timeoutMs)) || Number(timeoutMs) <= 0) return timedPostgresQuery(trace, label, sql, params, attempts);
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const acquireStarted = performance.now();
+    let client = null;
+    const beforeAcquire = postgresPoolStats();
+    try {
+      client = await postgresPool.connect();
+      perfAdd(trace, `${label}_pool_acquire`, performance.now() - acquireStarted, {
+        pool_before: beforeAcquire,
+        pool_after: postgresPoolStats(),
+        query_name: `${label}_pool_acquire`
+      });
+      const queryStarted = performance.now();
+      await client.query('begin');
+      await client.query(`set local statement_timeout = ${Math.round(Number(timeoutMs))}`);
+      const result = await client.query({
+        text: sql,
+        values: params,
+        query_timeout: Math.round(Number(timeoutMs) + 1000)
+      });
+      await client.query('commit');
+      perfAdd(trace, `${label}_query`, performance.now() - queryStarted, {
+        rows: result.rowCount ?? result.rows?.length ?? 0,
+        sql: sqlSummary(sql),
+        sql_full: sql,
+        params,
+        statement_timeout_ms: Math.round(Number(timeoutMs)),
+        query_name: label
+      });
+      perfCount(trace, 'postgres_queries');
+      return result;
+    } catch (error) {
+      lastError = error;
+      try { if (client) await client.query('rollback'); } catch {}
+      perfAdd(trace, `${label}_error`, performance.now() - acquireStarted, {
+        sql: sqlSummary(sql),
+        statement_timeout_ms: Math.round(Number(timeoutMs)),
+        query_name: label
+      });
+      if (!postgresConnectionLost(error) || attempt >= attempts - 1) throw error;
+      console.error(`Postgres query connection lost; reconnecting: ${error.message || error}`);
+      await resetPostgresPool();
+      await getPostgresPool();
+    } finally {
+      if (client) {
+        try {
+          client.release();
+        } catch {}
+      }
+    }
+  }
+  throw lastError;
+}
+
+function perfDuration(trace, name) {
+  if (!trace) return 0;
+  return trace.stages
+    .filter(stage => stage.name === name || stage.name.startsWith(`${name}_`))
+    .reduce((sum, stage) => sum + Number(stage.ms || 0), 0);
+}
+
+function perfDurationEnding(trace, suffix) {
+  if (!trace) return 0;
+  return trace.stages
+    .filter(stage => stage.name.endsWith(suffix))
+    .reduce((sum, stage) => sum + Number(stage.ms || 0), 0);
+}
+
+function perfDurationPrefix(trace, prefix) {
+  if (!trace) return 0;
+  return trace.stages
+    .filter(stage => stage.name === prefix || stage.name.startsWith(prefix))
+    .reduce((sum, stage) => sum + Number(stage.ms || 0), 0);
+}
+
+function sqlSummary(sql) {
+  return String(sql || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+async function tracedPostgresPoolQuery(trace, label, sql, params = []) {
+  const started = performance.now();
+  try {
+    const result = await postgresPool.query(sql, params);
+    perfAdd(trace, `${label}_query`, performance.now() - started, {
+      rows: result.rowCount ?? result.rows?.length ?? 0,
+      sql: sqlSummary(sql),
+      sql_full: sql,
+      params,
+      query_name: label
+    });
+    perfCount(trace, 'postgres_queries');
+    return result;
+  } catch (error) {
+    perfAdd(trace, `${label}_error`, performance.now() - started, {
+      sql: sqlSummary(sql),
+      query_name: label
+    });
+    throw error;
+  }
+}
+
+function bootstrapQueryBreakdown(trace) {
+  if (!trace) return [];
+  return trace.stages
+    .filter(stage => stage.name.endsWith('_query'))
+    .map(stage => ({
+      query_name: stage.query_name || stage.name.replace(/_query$/, ''),
+      start_ms: Number(Number(stage.start_ms || 0).toFixed(1)),
+      duration_ms: Number(Number(stage.ms || 0).toFixed(1)),
+      returned_rows: Number(stage.rows || 0),
+      sql: stage.sql || ''
+    }));
+}
+
+function perfCounters(trace) {
+  return trace ? { ...trace.counters } : {};
+}
+
+function eventLoopDelayMs(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0 || number > 1e18) return 0;
+  return Number((number / 1e6).toFixed(1));
+}
+
+function eventLoopSnapshot(reset = false) {
+  const utilization = perfHooksPerformance.eventLoopUtilization && eventLoopUtilizationBaseline
+    ? perfHooksPerformance.eventLoopUtilization(eventLoopUtilizationBaseline)
+    : null;
+  const snapshot = {
+    delay_mean_ms: eventLoopDelayMs(eventLoopDelayMonitor.mean),
+    delay_p95_ms: eventLoopDelayMs(eventLoopDelayMonitor.percentile(95)),
+    delay_p99_ms: eventLoopDelayMs(eventLoopDelayMonitor.percentile(99)),
+    delay_max_ms: eventLoopDelayMs(eventLoopDelayMonitor.max),
+    utilization: utilization ? Number(utilization.utilization.toFixed(4)) : null
+  };
+  if (reset) {
+    eventLoopDelayMonitor.reset();
+    if (perfHooksPerformance.eventLoopUtilization) {
+      eventLoopUtilizationBaseline = perfHooksPerformance.eventLoopUtilization();
+    }
+  }
+  return snapshot;
+}
+
+function formatServerTiming(trace) {
+  if (!trace) return '';
+  const keys = ['pre_handler', 'middleware', 'body_parse', 'middleware_cookie_gate', 'cookie_parse', 'auth_storage', 'auth_session_lookup', 'auth_session_join', 'auth_session_cache', 'auth_session_touch', 'bootstrap_storage', 'bootstrap_db', 'emails_handler_start', 'emails_before_sql', 'emails_after_sql', 'emails_storage', 'gmail_api_calls', 'monitoring_storage', 'external_api', 'leads_sql', 'mapping', 'permissions', 'serialize', 'response_headers', 'response_write', 'response_end'];
+  const parts = [];
+  const dbAcquire = perfDurationEnding(trace, '_pool_acquire');
+  const dbQuery = perfDurationEnding(trace, '_query');
+  const mainQuery = trace.stages
+    .filter(stage => /_page_query$|_payload_query$/.test(stage.name) || stage.name === 'monitoring_main_query')
+    .reduce((sum, stage) => sum + Number(stage.ms || 0), 0);
+  const countQuery = trace.stages
+    .filter(stage => /_count_query$|_counts_query$/.test(stage.name))
+    .reduce((sum, stage) => sum + Number(stage.ms || 0), 0);
+  const secondaryQuery = Math.max(0, dbQuery - mainQuery - countQuery);
+  const auth = perfDurationPrefix(trace, 'auth_') + perfDuration(trace, 'cookie_parse');
+  const query = dbQuery;
+  const db = dbAcquire + dbQuery;
+  const leadsQuery = perfDuration(trace, 'leads_sql');
+  const snapshotRead = perfDuration(trace, 'monitoring_snapshot_read_query');
+  const snapshotAgeStage = trace.stages.find(stage => stage.name === 'snapshot_age');
+  const snapshotMemoryCache = trace.stages.find(stage => stage.name === 'monitoring_snapshot_memory_cache');
+  const snapshotReadJoin = trace.stages.find(stage => stage.name === 'monitoring_snapshot_read_join');
+  const emailPathStage = trace.stages.find(stage => stage.name === 'email_path');
+  const gmailApiCallsStage = trace.stages.find(stage => stage.name === 'gmail_api_calls');
+  if (auth > 0) parts.push(`auth;dur=${auth.toFixed(1)}`);
+  if (db > 0) parts.push(`db;dur=${db.toFixed(1)}`);
+  if (query > 0) parts.push(`query;dur=${query.toFixed(1)}`);
+  if (snapshotRead > 0) parts.push(`snapshot-read;dur=${snapshotRead.toFixed(1)}`);
+  if (snapshotMemoryCache) parts.push(`monitoring-snapshot-memory-cache;dur=0`);
+  if (snapshotReadJoin) parts.push(`monitoring-snapshot-read-join;dur=0`);
+  if (snapshotAgeStage) parts.push(`snapshot-age;dur=0;desc="${Math.round(Number(snapshotAgeStage.age_ms || 0))}ms-${snapshotAgeStage.state || 'UNKNOWN'}"`);
+  if (emailPathStage) parts.push(`email-path;dur=0;desc="${String(emailPathStage.path || 'unknown').replace(/"/g, '')}"`);
+  if (gmailApiCallsStage) parts.push(`gmail-api-calls;dur=0;desc="${Number(gmailApiCallsStage.calls || 0)}"`);
+  if (mainQuery > 0) parts.push(`main-query;dur=${mainQuery.toFixed(1)}`);
+  if (countQuery > 0) parts.push(`count-query;dur=${countQuery.toFixed(1)}`);
+  if (secondaryQuery > 0) parts.push(`secondary-query;dur=${secondaryQuery.toFixed(1)}`);
+  if (leadsQuery > 0) parts.push(`leads-query;dur=${leadsQuery.toFixed(1)}`);
+  if (dbAcquire > 0) parts.push(`db-acquire;dur=${dbAcquire.toFixed(1)}`);
+  if (dbQuery > 0) parts.push(`db-query;dur=${dbQuery.toFixed(1)}`);
+  for (const key of keys) {
+    const value = perfDuration(trace, key);
+    if (value > 0) parts.push(`${key.replace(/_/g, '-')};dur=${value.toFixed(1)}`);
+  }
+  for (const stage of trace.stages) {
+    if (!/_query$|_pool_acquire$/.test(stage.name)) continue;
+    const safeName = stage.name.replace(/_/g, '-').replace(/[^a-z0-9-]/gi, '').toLowerCase();
+    parts.push(`${safeName};dur=${Number(stage.ms || 0).toFixed(1)}`);
+  }
+  const total = performance.now() - trace.started_at;
+  parts.push(`node-total;dur=${total.toFixed(1)}`);
+  parts.push(`total;dur=${total.toFixed(1)}`);
+  return parts.join(', ');
+}
+
+function logPerfTrace(trace) {
+  if (!API_PERF_TRACE_ENABLED || !trace) return;
+  const total = performance.now() - trace.started_at;
+  const stages = trace.stages.map(stage => {
+    const meta = stage.rows !== undefined ? ` rows=${stage.rows}` : '';
+    const pool = stage.pool_before ? ` pool=${stage.pool_before.totalCount}/${stage.pool_before.idleCount}/${stage.pool_before.waitingCount}->${stage.pool_after?.totalCount}/${stage.pool_after?.idleCount}/${stage.pool_after?.waitingCount}` : '';
+    return `${stage.name}=${stage.ms.toFixed(1)}ms${meta}${pool}`;
+  }).join(' ');
+  const queryCount = trace.counters.postgres_queries || 0;
+  const pool = postgresPoolStats();
+  const loop = eventLoopSnapshot(false);
+  console.log(`[PERF] ${trace.route} status=${trace.status || 0} total=${total.toFixed(1)}ms bytes=${trace.bytes || 0} pg_queries=${queryCount} pool=${pool.totalCount}/${pool.idleCount}/${pool.waitingCount} loop_p95=${loop.delay_p95_ms}ms loop_p99=${loop.delay_p99_ms}ms loop_max=${loop.delay_max_ms}ms loop_util=${loop.utilization} ${stages}`);
+}
+
+// List endpoints return tens to hundreds of KB of JSON, which gzip shrinks roughly 8x.
+const JSON_GZIP_MIN_BYTES = 8 * 1024;
+
+function sendJson(res, value, status = 200, headers = {}, trace = null) {
+  const serializeStarted = performance.now();
+  const body = JSON.stringify(value);
+  perfAdd(trace, 'serialize', performance.now() - serializeStarted, { bytes: Buffer.byteLength(body) });
+  if (trace) {
+    trace.bytes = Buffer.byteLength(body);
+    trace.status = status;
+    headers = { ...headers, 'Server-Timing': formatServerTiming(trace) };
+  }
+  const acceptsGzip = /\bgzip\b/i.test(String(res.req?.headers?.['accept-encoding'] || ''));
+  const writeStarted = performance.now();
+  if (acceptsGzip && body.length >= JSON_GZIP_MIN_BYTES) {
+    perfAdd(trace, 'response_headers', 0);
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding', ...headers });
+    res.end(zlib.gzipSync(body));
+    perfAdd(trace, 'response_write', performance.now() - writeStarted, { gzip: true });
+    perfAdd(trace, 'response_end', Math.max(0, performance.now() - trace?.started_at || 0));
+    logPerfTrace(trace);
+    return;
+  }
+  perfAdd(trace, 'response_headers', 0);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
-  res.end(JSON.stringify(value));
+  res.end(body);
+  perfAdd(trace, 'response_write', performance.now() - writeStarted, { gzip: false });
+  perfAdd(trace, 'response_end', Math.max(0, performance.now() - trace?.started_at || 0));
+  logPerfTrace(trace);
 }
 
 function requestPath(req) {
@@ -7771,15 +11994,42 @@ function serveStatic(req, res) {
 }
 
 async function handleApi(req, res) {
+  const handlerEntry = performance.now();
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = url.pathname;
   const method = req.method;
-  const body = ['POST', 'PATCH', 'PUT'].includes(method) ? await readBody(req) : {};
+  const traceableRoutes = new Set(['/api/health', '/api/bootstrap', '/api/leads', '/api/tasks', '/api/emails', '/api/events', '/api/zoom/events', '/api/applications', '/api/meetings', '/api/activity', '/api/contacts', '/api/monitoring', '/api/dashboard/monitoring', '/api/debug/db-ping', '/api/debug/ping']);
+  const requestEntry = Number(req.__requestEntryAt || handlerEntry);
+  const trace = method === 'GET' && traceableRoutes.has(route) ? createPerfTrace(route, requestEntry) : null;
+  req.__perfTrace = trace;
+  perfAdd(trace, 'pre_handler', Math.max(0, handlerEntry - requestEntry));
+  const middlewareStarted = performance.now();
+  let middlewareRecorded = false;
+  const finishMiddleware = () => {
+    if (middlewareRecorded) return;
+    middlewareRecorded = true;
+    perfAdd(trace, 'middleware', Math.max(0, performance.now() - middlewareStarted));
+  };
+  const body = ['POST', 'PATCH', 'PUT'].includes(method) ? await perfPhase(trace, 'body_parse', () => readBody(req)) : {};
 
-  if (route === '/api/health' && method === 'GET') return sendJson(res, { demo: false, storage: storageMode() });
+  if (route === '/api/health' && method === 'GET') {
+    finishMiddleware();
+    return sendJson(res, { ok: true }, 200, {}, trace);
+  }
+  if (route === '/api/debug/ping' && method === 'GET') {
+    if (!API_DEBUG_ENDPOINTS_ENABLED) throw statusError(404, 'API route not found.');
+    finishMiddleware();
+    return sendJson(res, { ok: true }, 200, {}, trace);
+  }
   if (route === '/api/signup') throw statusError(404, 'Sign up is disabled. Ask the developer to invite your account.');
-  const publicRoutes = new Set(['/api/login', '/api/password/forgot', '/api/password/reset']);
-  if (!publicRoutes.has(route) && !parseCookies(req).sid) throw statusError(401, 'Sign in to continue.');
+  const publicRoutes = new Set(['/api/login', '/api/password/forgot', '/api/password/reset', '/api/integrations/gmail/callback', '/api/integrations/eventbrite/callback', '/api/integrations/zoho/callback']);
+  if (!publicRoutes.has(route)) {
+    const cookieGateStarted = performance.now();
+    const hasSessionCookie = Boolean(parseCookies(req).sid);
+    perfAdd(trace, 'middleware_cookie_gate', performance.now() - cookieGateStarted);
+    if (!hasSessionCookie) throw statusError(401, 'Sign in to continue.');
+  }
+  finishMiddleware();
   let lightweightMatch = null;
   if (route === '/api/login' && method === 'POST') {
     const email = normalizeEmail(body.email);
@@ -7801,16 +12051,89 @@ async function handleApi(req, res) {
     return;
   }
   if (route === '/api/bootstrap' && method === 'GET') {
-    const user = await currentSessionUser(req);
-    const db = await loadBootstrapDb();
-    const payload = bootstrap(db, user);
-    payload.marketing = await loadMarketingSummary();
-    payload.dashboard = await loadDashboardSummaryDb();
-    return sendJson(res, payload);
+    const timings = {};
+    const user = await currentSessionUser(req, trace);
+    const payload = await loadBootstrapPayload(user, timings, trace);
+    if (url.searchParams.get('debug_timing') === 'true') {
+      requireDeveloperAccess(req, user);
+      payload._debug = {
+        timings: {
+          node_total_ms: Number((performance.now() - trace.started_at).toFixed(1)),
+          pre_handler_ms: Number(perfDuration(trace, 'pre_handler').toFixed(1)),
+          middleware_ms: Number(perfDuration(trace, 'middleware').toFixed(1)),
+          auth_ms: Number((perfDuration(trace, 'auth_session_lookup') + perfDuration(trace, 'auth_session_join') + perfDuration(trace, 'auth_session_cache')).toFixed(1)),
+          db_acquire_ms: Number(perfDurationEnding(trace, '_pool_acquire').toFixed(1)),
+          db_query_ms: Number(perfDurationEnding(trace, '_query').toFixed(1)),
+          serialize_ms: 0
+        },
+        counters: perfCounters(trace),
+        queries: bootstrapQueryBreakdown(trace),
+        event_loop: eventLoopSnapshot(false)
+      };
+    }
+    // Visible in the browser's Network > Timing panel.
+    return sendJson(res, payload, 200, {}, trace);
+  }
+  if (route === '/api/debug/db-ping' && method === 'GET') {
+    const user = await currentSessionUser(req, trace);
+    requireDeveloperAccess(req, user);
+    await perfPhase(trace, 'debug_storage', () => ensureStorage(trace));
+    if (!postgresPool || !usesPostgresStorage()) throw statusError(400, 'PostgreSQL storage is not configured.');
+    const poolBefore = postgresPoolStats();
+    const result = await timedPostgresQuery(trace, 'debug_select1', 'select 1 as ok');
+    const poolAfter = postgresPoolStats();
+    return sendJson(res, {
+      ok: result.rows[0]?.ok === 1,
+      database: databaseSafeMetadata(),
+      pool_before: poolBefore,
+      pool_after: poolAfter,
+      timings: {
+        node_total_ms: Number((performance.now() - trace.started_at).toFixed(1)),
+        pre_handler_ms: Number(perfDuration(trace, 'pre_handler').toFixed(1)),
+        middleware_ms: Number(perfDuration(trace, 'middleware').toFixed(1)),
+        auth_ms: Number((perfDuration(trace, 'auth_session_lookup') + perfDuration(trace, 'auth_session_join') + perfDuration(trace, 'auth_session_cache')).toFixed(1)),
+        db_acquire_ms: Number(perfDurationEnding(trace, '_pool_acquire').toFixed(1)),
+        db_query_ms: Number(perfDurationEnding(trace, '_query').toFixed(1)),
+        total_ms: Number((performance.now() - trace.started_at).toFixed(1))
+      },
+      event_loop: eventLoopSnapshot(url.searchParams.get('reset_event_loop') === 'true')
+    }, 200, {}, trace);
   }
   if (route === '/api/dashboard/summary' && method === 'GET') {
     const user = await currentSessionUser(req);
     return sendJson(res, await loadDashboardCockpitSummaryDb(parseDashboardFilters(url, user), user));
+  }
+  if (route === '/api/dashboard/totals' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadDashboardTotalsDb({ today_start: url.searchParams.get('today_start'), tomorrow_start: url.searchParams.get('tomorrow_start') }));
+  }
+  if ((route === '/api/dashboard/monitoring' || route === '/api/monitoring') && method === 'GET') {
+    try {
+      await currentSessionUser(req, trace);
+      return sendJson(res, await loadDashboardMonitoringDb({ today_start: url.searchParams.get('today_start'), tomorrow_start: url.searchParams.get('tomorrow_start') }, trace), 200, {}, trace);
+    } catch (error) {
+      if (error.status === 400) throw error;
+      console.error(`[monitoring] request failed ${error.query_name || ''}: ${error.stack || error.message || error}`);
+      return sendJson(res, {
+        error: error.code || 'monitoring_query_failed',
+        message: 'Unable to load monitoring data.'
+      }, error.status || 500, {}, trace);
+    }
+  }
+  // Recent activity (audit trail), newest first; same data as the Today widget.
+  if (route === '/api/activity' && method === 'GET') {
+    const user = await currentSessionUser(req, trace);
+    return sendJson(res, await loadDashboardActivityDb(parseDashboardFilters(url, user), url.searchParams.get('limit') || 20), 200, {}, trace);
+  }
+  if (route === '/api/contacts' && method === 'GET') {
+    await currentSessionUser(req, trace);
+    return sendJson(res, await loadContactPage({
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      cursor: url.searchParams.get('cursor'),
+      search: url.searchParams.get('search'),
+      include_total: url.searchParams.get('include_total')
+    }, trace), 200, {}, trace);
   }
   if (route === '/api/dashboard/pipeline' && method === 'GET') {
     const user = await currentSessionUser(req);
@@ -7841,15 +12164,48 @@ async function handleApi(req, res) {
     return sendJson(res, await loadDashboardSearchDb(url.searchParams.get('q'), user));
   }
   if (route === '/api/leads' && method === 'GET') {
-    await currentSessionUser(req);
-    return sendJson(res, await loadLeadPage({
-      cursor: url.searchParams.get('cursor'),
+    const user = await currentSessionUser(req, trace);
+    const params = Object.fromEntries(['cursor', 'limit', 'search', 'stage', 'owner_id', 'programme_id', 'lead_source', 'created_from', 'created_to', 'sort', 'dir', 'include_total']
+      .map(name => [name, url.searchParams.get(name)]));
+    const payload = await loadLeadPage(params, trace);
+    if (url.searchParams.get('debug_timing') === 'true') {
+      requireDeveloperAccess(req, user);
+      payload._debug = {
+        timings: {
+          node_total_ms: Number((performance.now() - trace.started_at).toFixed(1)),
+          pre_handler_ms: Number(perfDuration(trace, 'pre_handler').toFixed(1)),
+          middleware_ms: Number(perfDuration(trace, 'middleware').toFixed(1)),
+          auth_ms: Number((perfDuration(trace, 'auth_session_lookup') + perfDuration(trace, 'auth_session_join') + perfDuration(trace, 'auth_session_cache')).toFixed(1)),
+          db_acquire_ms: Number(perfDurationEnding(trace, '_pool_acquire').toFixed(1)),
+          leads_query_ms: Number(perfDuration(trace, 'leads_sql').toFixed(1)),
+          serialize_ms: 0
+        },
+        counters: perfCounters(trace),
+        queries: bootstrapQueryBreakdown(trace),
+        event_loop: eventLoopSnapshot(false)
+      };
+    }
+    return sendJson(res, payload, 200, {}, trace);
+  }
+  if (route === '/api/tasks' && method === 'GET') {
+    await currentSessionUser(req, trace);
+    const params = Object.fromEntries(['limit', 'status', 'offset', 'cursor', 'today_start', 'tomorrow_start', 'bucket', 'search', 'owner_id', 'lead_id', 'due_before', 'due_after', 'include_counts']
+      .map(name => [name, url.searchParams.get(name)]));
+    return sendJson(res, await loadTaskPage(params, trace), 200, {}, trace);
+  }
+  lightweightMatch = route.match(/^\/api\/events\/([^/]+)$/);
+  if (lightweightMatch && method === 'GET') {
+    await currentSessionUser(req, trace);
+    return sendJson(res, await loadEventDetailDb(decodeURIComponent(lightweightMatch[1]), trace), 200, {}, trace);
+  }
+  if (route === '/api/events' && method === 'GET') {
+    await currentSessionUser(req, trace);
+    return sendJson(res, await loadEventPage({
       limit: url.searchParams.get('limit'),
-      search: url.searchParams.get('search'),
-      stage: url.searchParams.get('stage'),
-      owner_id: url.searchParams.get('owner_id'),
-      programme_id: url.searchParams.get('programme_id')
-    }));
+      cursor: url.searchParams.get('cursor'),
+      upcoming: url.searchParams.get('upcoming'),
+      include_total: url.searchParams.get('include_total')
+    }, trace), 200, {}, trace);
   }
   if (route === '/api/developer/config' && method === 'GET') {
     const user = await currentSessionUser(req);
@@ -7858,12 +12214,15 @@ async function handleApi(req, res) {
   }
   lightweightMatch = route.match(/^\/api\/emails\/([^/]+)$/);
   if (lightweightMatch && method === 'GET') {
-    await currentSessionUser(req);
-    return sendJson(res, await loadEmailDetail(lightweightMatch[1]));
+    await currentSessionUser(req, trace);
+    return sendJson(res, await loadEmailDetail(lightweightMatch[1]), 200, {}, trace);
   }
   if (route === '/api/emails' && method === 'GET') {
-    await currentSessionUser(req);
-    return sendJson(res, await loadEmailPage({
+    const emailsHandlerStarted = performance.now();
+    const externalFetchBefore = { ...externalFetchCounters };
+    perfAdd(trace, 'emails_handler_start', 0, { pool: postgresPoolStats() });
+    const user = await currentSessionUser(req, trace);
+    const params = {
       cursor: url.searchParams.get('cursor'),
       limit: url.searchParams.get('limit'),
       status: url.searchParams.get('status'),
@@ -7871,8 +12230,55 @@ async function handleApi(req, res) {
       search: url.searchParams.get('search'),
       day: url.searchParams.get('day'),
       date_field: url.searchParams.get('date_field'),
-      sort: url.searchParams.get('sort')
-    }));
+      date_filter: url.searchParams.get('date_filter'),
+      dateField: url.searchParams.get('dateField'),
+      sort: url.searchParams.get('sort'),
+      include_total: url.searchParams.get('include_total'),
+      owner: url.searchParams.get('owner'),
+      owner_id: url.searchParams.get('owner_id'),
+      folder: url.searchParams.get('folder')
+    };
+    perfAdd(trace, 'emails_before_sql', performance.now() - emailsHandlerStarted, {
+      pool: postgresPoolStats(),
+      request: safeEmailRequestParams(params)
+    });
+    const payload = await loadEmailPage(params, trace);
+    perfAdd(trace, 'emails_after_sql', performance.now() - emailsHandlerStarted, { pool: postgresPoolStats() });
+    perfAdd(trace, 'gmail_api_calls', 0, { calls: externalFetchCounters.gmail - Number(externalFetchBefore.gmail || 0) });
+    if (url.searchParams.get('debug_timing') === 'true') {
+      requireDeveloperAccess(req, user);
+      const filters = normalizeEmailPageOptions(params);
+      payload._debug = {
+        request: safeEmailRequestParams(params, filters),
+        email_path: trace.stages.find(stage => stage.name === 'email_path')?.path || 'unknown',
+        timings: {
+          node_total_ms: Number((performance.now() - trace.started_at).toFixed(1)),
+          auth_ms: Number((perfDuration(trace, 'auth_session_lookup') + perfDuration(trace, 'auth_session_join') + perfDuration(trace, 'auth_session_cache')).toFixed(1)),
+          db_acquire_ms: Number(perfDurationEnding(trace, '_pool_acquire').toFixed(1)),
+          emails_page_query_ms: Number(perfDuration(trace, 'emails_page_query').toFixed(1)),
+          email_filter_query_ms: Number(perfDuration(trace, 'email_filter_query').toFixed(1)),
+          fallback_query_ms: Number(perfDuration(trace, 'fallback_query').toFixed(1)),
+          secondary_query_ms: Number(Math.max(0, perfDurationEnding(trace, '_query') - perfDuration(trace, 'emails_page_query') - perfDuration(trace, 'emails_count_query')).toFixed(1)),
+          gmail_state_query_ms: Number(perfDuration(trace, 'gmail_state_query').toFixed(1)),
+          mapping_ms: Number(perfDuration(trace, 'mapping').toFixed(1)),
+          serialize_ms: 0
+        },
+        pool: postgresPoolStats(),
+        external_api_calls: {
+          gmail: externalFetchCounters.gmail - Number(externalFetchBefore.gmail || 0),
+          google: externalFetchCounters.google - Number(externalFetchBefore.google || 0),
+          zoho: externalFetchCounters.zoho - Number(externalFetchBefore.zoho || 0),
+          zoom: externalFetchCounters.zoom - Number(externalFetchBefore.zoom || 0),
+          eventbrite: externalFetchCounters.eventbrite - Number(externalFetchBefore.eventbrite || 0),
+          meta: externalFetchCounters.meta - Number(externalFetchBefore.meta || 0),
+          apollo: externalFetchCounters.apollo - Number(externalFetchBefore.apollo || 0)
+        },
+        counters: perfCounters(trace),
+        queries: bootstrapQueryBreakdown(trace),
+        event_loop: eventLoopSnapshot(false)
+      };
+    }
+    return sendJson(res, payload, 200, {}, trace);
   }
   if (route === '/api/users' && method === 'POST') {
     const user = await currentSessionUser(req);
@@ -7898,8 +12304,24 @@ async function handleApi(req, res) {
     return sendJson(res, await deleteWorkspaceUser(lightweightMatch[1], user));
   }
   if (route === '/api/applications' && method === 'GET') {
-    await currentSessionUser(req);
-    return sendJson(res, { applications: await loadApplicationListDb() });
+    await currentSessionUser(req, trace);
+    return sendJson(res, await loadApplicationListDb({
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      cursor: url.searchParams.get('cursor'),
+      status: url.searchParams.get('status'),
+      programme: url.searchParams.get('programme'),
+      programme_id: url.searchParams.get('programme_id'),
+      intake: url.searchParams.get('intake'),
+      intake_id: url.searchParams.get('intake_id'),
+      owner: url.searchParams.get('owner'),
+      owner_id: url.searchParams.get('owner_id'),
+      source: url.searchParams.get('source'),
+      created_from: url.searchParams.get('created_from'),
+      created_to: url.searchParams.get('created_to'),
+      search: url.searchParams.get('search'),
+      include_total: url.searchParams.get('include_total')
+    }, trace), 200, {}, trace);
   }
   if (route === '/api/applications' && method === 'POST' && postgresPool) {
     const user = await currentSessionUser(req);
@@ -7911,6 +12333,11 @@ async function handleApi(req, res) {
     return sendJson(res, result, result.created ? 201 : 200);
   }
   lightweightMatch = route.match(/^\/api\/leads\/([^/]+)$/);
+  if (lightweightMatch && method === 'GET' && usesPostgresStorage()) {
+    await currentSessionUser(req);
+    await ensureStorage();
+    return sendJson(res, await loadLeadDetailDb(decodeURIComponent(lightweightMatch[1])));
+  }
   if (lightweightMatch && method === 'PATCH' && postgresPool) {
     const user = await currentSessionUser(req);
     return sendJson(res, await updateLeadFastDb(lightweightMatch[1], body, user));
@@ -8022,12 +12449,35 @@ async function handleApi(req, res) {
     return sendJson(res, await deleteApplicationFastDb(lightweightMatch[1], user));
   }
   if (route === '/api/zoom/events' && method === 'GET') {
-    await currentSessionUser(req);
-    return sendJson(res, { events: await loadZoomEventListDb(url.searchParams.get('limit')) });
+    await currentSessionUser(req, trace);
+    const page = await loadZoomEventPageDb({ limit: url.searchParams.get('limit'), cursor: url.searchParams.get('cursor'), search: url.searchParams.get('search') }, trace);
+    return sendJson(res, { events: page.items, has_more: page.has_more, hasMore: page.hasMore, next_cursor: page.next_cursor, nextCursor: page.nextCursor, limit: page.limit }, 200, {}, trace);
+  }
+  // Zoom meetings under the generic name; default page of 50, newest first.
+  if (route === '/api/meetings' && method === 'GET') {
+    await currentSessionUser(req, trace);
+    return sendJson(res, await loadZoomEventPageDb({
+      limit: url.searchParams.get('limit'),
+      cursor: url.searchParams.get('cursor'),
+      start_from: url.searchParams.get('start_from'),
+      start_to: url.searchParams.get('start_to'),
+      date_from: url.searchParams.get('date_from'),
+      date_to: url.searchParams.get('date_to'),
+      owner_id: url.searchParams.get('owner_id'),
+      owner: url.searchParams.get('owner'),
+      lead_id: url.searchParams.get('lead_id'),
+      contact: url.searchParams.get('contact'),
+      provider: url.searchParams.get('provider'),
+      search: url.searchParams.get('search')
+    }, trace), 200, {}, trace);
   }
   if (route === '/api/zoom/calls' && method === 'GET') {
     await currentSessionUser(req);
     return sendJson(res, await loadZoomCallPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
+  }
+  if (route === '/api/zoom/numbers' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadZoomNumberPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
   }
   if (route === '/api/audit' && method === 'GET') {
     await currentSessionUser(req);
@@ -8045,6 +12495,43 @@ async function handleApi(req, res) {
     const sid = parseCookies(req).sid;
     await deleteSession(sid);
     return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
+  }
+  if (route === '/api/integrations/zoho/sync' && method === 'POST') {
+    const user = await currentSessionUser(req);
+    const started = performance.now();
+    const job = await createOrResumeZohoSyncJob(req, user, body);
+    const payload = zohoSyncJobPayload(job);
+    return sendJson(res, { success: true, ...payload, acceptedMs: Math.round(performance.now() - started) }, 202);
+  }
+  if (route === '/api/integrations/zoho/records/page' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await loadZohoRecordPage({
+      module: url.searchParams.get('module'),
+      search: url.searchParams.get('search'),
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset')
+    }));
+  }
+  if (route === '/api/integrations/zoho/sync-status' && method === 'GET') {
+    await currentSessionUser(req);
+    const job = await latestZohoSyncJob();
+    if (job && ['queued', 'running'].includes(job.status)) scheduleZohoSyncWorker(job.id, 0);
+    return sendJson(res, zohoSyncJobPayload(job));
+  }
+  lightweightMatch = route.match(/^\/api\/integrations\/zoho\/sync-status\/([^/]+)$/);
+  if (lightweightMatch && method === 'GET') {
+    await currentSessionUser(req);
+    const job = await getZohoSyncJob(decodeURIComponent(lightweightMatch[1]));
+    if (!job) throw statusError(404, 'Zoho sync job not found.');
+    if (['queued', 'running'].includes(job.status)) scheduleZohoSyncWorker(job.id, 0);
+    return sendJson(res, zohoSyncJobPayload(job));
+  }
+  lightweightMatch = route.match(/^\/api\/integrations\/zoho\/sync\/([^/]+)\/cancel$/);
+  if (lightweightMatch && method === 'POST') {
+    await currentSessionUser(req);
+    const job = await cancelZohoSyncJob(decodeURIComponent(lightweightMatch[1]));
+    if (!job) throw statusError(404, 'Zoho sync job not found.');
+    return sendJson(res, { success: true, ...zohoSyncJobPayload(job) });
   }
   const loadDbStart = performance.now();
   const db = await loadDb();
@@ -8108,13 +12595,16 @@ async function handleApi(req, res) {
   // handlers earlier in this function. They intentionally return before this point so a
   // full workspace is never loaded for a page refresh.
   if (route === '/api/integrations/gmail/status' && method === 'GET') {
+    const gmailNeedsReconnect = Boolean(db.gmail?.reconnect_required || db.gmail?.last_error);
     return sendJson(res, {
       configured: gmailConfigured(),
-      connected: Boolean(db.gmail?.connected),
+      connected: Boolean(db.gmail?.connected && !gmailNeedsReconnect),
       email: db.gmail?.email || null,
       last_sync_at: db.gmail?.last_sync_at || null,
-    auto_sync: gmailAutoSyncState,
-    import_enabled: GMAIL_IMPORT_ENABLED,
+      reconnect_required: gmailNeedsReconnect,
+      last_error: gmailNeedsReconnect ? 'Gmail token expired or revoked. Reconnect Gmail from Settings.' : null,
+      auto_sync: gmailAutoSyncState,
+      import_enabled: GMAIL_IMPORT_ENABLED,
       redirect_uri: gmailRedirectUri(req)
     });
   }
@@ -8131,7 +12621,10 @@ async function handleApi(req, res) {
   if (route === '/api/integrations/gmail/callback' && method === 'GET') {
     const sid = parseCookies(req).sid;
     const session = await getSession(sid);
-    if (!session || !session.gmail_state || session.gmail_state !== url.searchParams.get('state')) throw statusError(401, 'Gmail connection session expired. Sign in and try again.');
+    if (!session || !session.gmail_state || session.gmail_state !== url.searchParams.get('state')) {
+      res.writeHead(302, { Location: '/#/settings?gmail=session-expired' });
+      return res.end();
+    }
     const code = url.searchParams.get('code');
     if (!code) throw statusError(400, url.searchParams.get('error') || 'Gmail did not return an authorization code.');
     const token = await exchangeGmailCode(req, code);
@@ -8144,20 +12637,28 @@ async function handleApi(req, res) {
       refresh_token: token.refresh_token || db.gmail?.refresh_token,
       expires_at: Date.now() + ((token.expires_in || 3600) - 60) * 1000,
       connected_at: new Date().toISOString(),
+      reconnect_required: false,
+      last_error: '',
       imported_message_ids: db.gmail?.imported_message_ids || []
     };
     addAudit(db, user, 'Gmail connected', 'integration', 'Gmail', db.gmail.email);
     await saveDb(db);
-    res.writeHead(302, { Location: '/#/settings' });
+    res.writeHead(302, { Location: '/#/zoho?connected=1' });
     return res.end();
   }
   if (route === '/api/integrations/gmail/sync' && method === 'POST') {
     if (!GMAIL_IMPORT_ENABLED) throw statusError(403, 'Gmail import is paused. Existing emails remain available.');
-    const result = await importGmailMessages(db, user, Number(body.max_results || 10), {
-      latest: body.latest === undefined ? true : Boolean(body.latest),
-      skipTrash: Boolean(body.skip_trash),
-      forceTrash: Boolean(body.force_trash)
-    });
+    let result;
+    try {
+      result = await importGmailMessages(db, user, Number(body.max_results || 10), {
+        latest: body.latest === undefined ? true : Boolean(body.latest),
+        skipTrash: Boolean(body.skip_trash),
+        forceTrash: Boolean(body.force_trash)
+      });
+    } catch (error) {
+      if (gmailReconnectError(error.message)) throw await markGmailReconnectRequired(db, error.message);
+      throw error;
+    }
     return sendJson(res, result);
   }
   if (route === '/api/integrations/eventbrite/status' && method === 'GET') {
@@ -8183,7 +12684,10 @@ async function handleApi(req, res) {
   if (route === '/api/integrations/eventbrite/callback' && method === 'GET') {
     const sid = parseCookies(req).sid;
     const session = await getSession(sid);
-    if (!session || !session.eventbrite_state || session.eventbrite_state !== url.searchParams.get('state')) throw statusError(401, 'Eventbrite connection session expired. Sign in and try again.');
+    if (!session || !session.eventbrite_state || session.eventbrite_state !== url.searchParams.get('state')) {
+      res.writeHead(302, { Location: '/#/settings?eventbrite=session-expired' });
+      return res.end();
+    }
     const code = url.searchParams.get('code');
     if (!code) throw statusError(400, url.searchParams.get('error') || 'Eventbrite did not return an authorization code.');
     const token = await exchangeEventbriteCode(req, code);
@@ -8292,7 +12796,82 @@ async function handleApi(req, res) {
     const result = await importApolloPeople(db, user, Number(body.max_people || body.max_leads || 25));
     return sendJson(res, result);
   }
-
+  if (route === '/api/integrations/zoho/status' && method === 'GET') {
+    return sendJson(res, zohoSafeStatus(req, db));
+  }
+  if (route === '/api/integrations/zoho/diagnostics' && method === 'GET') {
+    const canInspect = permissionsForUser(user).developer || permissions(user.role).admin;
+    if (!canInspect) throw statusError(403, 'Developer access is required.');
+    return sendJson(res, zohoConnectionDiagnostics(req, db));
+  }
+  if (route === '/api/integrations/zoho/records' && method === 'GET') {
+    return sendJson(res, await zohoRecordsPayloadDb(db));
+  }
+  if ((route === '/api/integrations/zoho/connect' || route === '/api/integrations/zoho/authorize') && method === 'GET') {
+    const issues = zohoConfigIssues(req);
+    if (issues.length) throw statusError(400, `Zoho OAuth configuration appears invalid. Verify ZOHO_CLIENT_ID and ZOHO_ACCOUNTS_URL. ${issues[0]}`);
+    const sid = parseCookies(req).sid;
+    const session = await getSession(sid);
+    if (!session) throw statusError(401, 'Sign in to continue.');
+    const zohoState = crypto.randomBytes(16).toString('hex');
+    await patchSession(sid, { zoho_state: zohoState });
+    const promptConsent = ['1', 'true', 'yes'].includes(String(url.searchParams.get('reauthorize') || url.searchParams.get('prompt_consent') || '').toLowerCase());
+    console.info(`[zoho] authorize start prompt_consent=${promptConsent} accounts=${zohoAuthAccountsUrl()}`);
+    res.writeHead(302, { Location: zohoAuthUrl(req, zohoState, { promptConsent }) });
+    return res.end();
+  }
+  if (route === '/api/integrations/zoho/callback' && method === 'GET') {
+    const sid = parseCookies(req).sid;
+    const session = await getSession(sid);
+    if (!session || !session.zoho_state || session.zoho_state !== url.searchParams.get('state')) {
+      res.writeHead(302, { Location: '/#/settings?zoho=session-expired' });
+      return res.end();
+    }
+    const providerError = url.searchParams.get('error');
+    if (providerError) {
+      db.zoho ||= {};
+      db.zoho.connected = false;
+      db.zoho.reauthorization_required = true;
+      db.zoho.last_error = 'Zoho OAuth did not authorize the connection. Verify the Client ID, data center, redirect URI and scopes.';
+      db.meta ||= {};
+      db.meta.zoho = db.zoho;
+      await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, preserveApollo: true });
+      res.writeHead(302, { Location: '/#/settings?zoho=oauth-error' });
+      return res.end();
+    }
+    const code = url.searchParams.get('code');
+    if (!code) throw statusError(400, url.searchParams.get('error') || 'Zoho did not return an authorization code.');
+    const callbackAccountsUrl = url.searchParams.get('accounts-server') || url.searchParams.get('accounts_server') || zohoAccountsUrl();
+    const callbackLocation = url.searchParams.get('location') || url.searchParams.get('dc') || '';
+    const previousZoho = db.zoho || db.meta?.zoho || {};
+    const token = await exchangeZohoCode(req, code, callbackAccountsUrl);
+    const refreshToken = token.refresh_token || previousZoho.refresh_token || '';
+    const durableConnection = Boolean(refreshToken);
+    db.zoho = {
+      ...previousZoho,
+      connected: durableConnection,
+      reauthorization_required: !durableConnection,
+      email: token.email || previousZoho.email || '',
+      access_token: token.access_token,
+      refresh_token: refreshToken || undefined,
+      accounts_url: callbackAccountsUrl,
+      location: callbackLocation || previousZoho.location || '',
+      scope: token.scope || zohoScopes().join(','),
+      api_domain: token.api_domain || previousZoho.api_domain || zohoApiBaseUrl(db),
+      expires_at: Date.now() + ((token.expires_in || 3600) - 60) * 1000,
+      connected_at: new Date().toISOString(),
+      last_error: durableConnection ? null : 'Zoho did not return a refresh token. Reconnect with consent to store durable offline access.',
+      imported_record_ids: previousZoho.imported_record_ids || [],
+      records: previousZoho.records || {}
+    };
+    db.meta ||= {};
+    db.meta.zoho = db.zoho;
+    console.info(`[zoho] callback persisted connected=${db.zoho.connected} refresh_token=${Boolean(db.zoho.refresh_token)} accounts=${db.zoho.accounts_url} api_domain=${db.zoho.api_domain} location=${db.zoho.location || 'unknown'}`);
+    addAudit(db, user, 'Zoho CRM connected', 'integration', 'Zoho CRM', db.zoho.api_domain || '');
+    await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, preserveApollo: true });
+    res.writeHead(302, { Location: durableConnection ? '/#/settings?zoho=connected' : '/#/zoho?zoho=reauthorization-required' });
+    return res.end();
+  }
   let match = route.match(/^\/api\/leads\/([^/]+)$/);
   if (match && method === 'GET') {
     const lead = leadFor(db, match[1]);
@@ -8568,6 +13147,7 @@ async function handleApi(req, res) {
 
 const server = http.createServer(async (req, res) => {
   const startedAt = performance.now();
+  req.__requestEntryAt = startedAt;
   const apiRequest = requestPath(req).startsWith('/api/');
   if (apiRequest) res.once('finish', () => recordApiTiming(req, res.statusCode, startedAt));
   try {
@@ -8575,7 +13155,7 @@ const server = http.createServer(async (req, res) => {
     return serveStatic(req, res);
   } catch (error) {
     if (apiRequest) recordApiError(req, error);
-    sendJson(res, { error: error.message || 'Server error.' }, error.status || 500);
+    sendJson(res, { error: error.message || 'Server error.' }, error.status || 500, {}, req.__perfTrace || null);
   }
 });
 
@@ -8583,6 +13163,7 @@ if (process.env.NEST_COMPAT_MODE !== 'true') {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Kent Business College backend running on port ${PORT}`);
     startAutoSync();
+    startMonitoringSnapshotScheduler();
   });
 }
 
@@ -8603,8 +13184,48 @@ module.exports = {
   importZoomMeetings,
   importZoomCalls,
   importGmailMessages,
+  databaseSafeMetadata,
   ensureProgrammeCatalog,
   programmeForText,
   programmeForEvent,
-  recalculate
+  recalculate,
+  __zohoTest: {
+    zohoAccessTokenValid,
+    zohoTokenUsable,
+    zohoConnectionDiagnostics,
+    zohoSafeStatus,
+    mergeZohoState,
+    zohoReconnectRequiredMessage,
+    createOrResumeZohoSyncJob,
+    runZohoSyncWorker,
+    getZohoSyncJob,
+    loadZohoRecordPage
+  },
+  __leadsTest: {
+    loadLeadPage,
+    loadLeadDetailDb,
+    loadTaskPage,
+    loadEventPage,
+    loadBootstrapPayload,
+    buildLeadPageQuery,
+    bootstrapPayloadQuery,
+    explainBootstrapAndLeads,
+    loadDashboardSummaryDb,
+    loadDashboardTotalsDb,
+    loadDashboardMonitoringDb,
+    refreshMonitoringSnapshotDb,
+    ensureMonitoringSnapshotSchema,
+    readMonitoringSnapshotState,
+    refreshMonitoringSnapshotInBackground,
+    loadEmailPage,
+    buildFilteredEmailPageQuery,
+    emailFilterSql,
+    emailFiltersSqlCapable,
+    normalizeEmailPageOptions,
+    loadContactPage,
+    loadApplicationListDb,
+    loadZoomEventPageDb,
+    explainRemainingPageQueries,
+    databaseSafeMetadata
+  }
 };
