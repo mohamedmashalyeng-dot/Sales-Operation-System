@@ -174,24 +174,73 @@ async function loadZoomEventPageDb(options = {}, trace = null) {
   return { items: page, events: page, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, limit };
 }
 
+const ZOOM_CALL_PAGE_MAX = 100;
+
+// A stored call also carries the provider's raw record and the participants. The import needs
+// them; the calls list does not show them, and they are about half of every call.
+function zoomCallListItem(call) {
+  const { raw, participants, ...item } = hydrateZoomStoredCall({ leads: [] }, call);
+  return item;
+}
+
+// The calls live in one JSON array inside app_workspace.meta (about 500 KB). Reading the whole
+// array for every page cost more than the page itself, so PostgreSQL cuts the page out and only
+// that travels. A call without both numbers keeps its raw record: it is rebuilt from it below.
+async function loadZoomCallPageSql(limit, offset) {
+  const result = await State.postgresPool.query(
+    `with state as (
+       select coalesce(meta->'zoom', '{}'::jsonb) as zoom from app_workspace where id = $1
+     ), calls as (
+       select item.call, item.position,
+              case when item.call->>'started_at' ~ '^\\d{4}-\\d{2}-\\d{2}' then (item.call->>'started_at')::timestamptz end as started
+       from state
+       cross join lateral jsonb_array_elements(
+         case when jsonb_typeof(state.zoom->'calls') = 'array' then state.zoom->'calls' else '[]'::jsonb end
+       ) with ordinality as item(call, position)
+     )
+     select
+       (select count(*)::int from calls) as total,
+       (select zoom->>'last_call_sync_at' from state) as last_sync_at,
+       coalesce((
+         select jsonb_agg(
+           case when coalesce(page.call->>'caller_number', '') <> '' and coalesce(page.call->>'callee_number', '') <> ''
+             then page.call - 'raw' - 'participants' else page.call end
+           order by page.started desc nulls last, page.position)
+         from (select call, started, position from calls order by started desc nulls last, position limit $2 offset $3) page
+       ), '[]'::jsonb) as calls`,
+    ['main', limit, offset]
+  );
+  const row = result.rows[0] || {};
+  return { calls: (row.calls || []).map(zoomCallListItem), total: Number(row.total || 0), last_sync_at: row.last_sync_at || null };
+}
+
 async function loadZoomCallPageDb(limit = 50, offset = 0) {
   await Storage.ensureStorage();
-  const safeLimit = Math.max(1, Math.min(Number(limit || 50), 250));
+  const safeLimit = Math.max(1, Math.min(Number(limit || 50), ZOOM_CALL_PAGE_MAX));
   const safeOffset = Math.max(0, Number(offset || 0));
-  const zoomState = await loadZoomStateForPaging();
-  const allCalls = (zoomState.calls || [])
-    .map(call => hydrateZoomStoredCall({ leads: [] }, call))
-    .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
-  const calls = allCalls.slice(safeOffset, safeOffset + safeLimit);
+  let page;
+  if (State.postgresPool && Storage.usesPostgresStorage() && !State.dbCache?.zoom?.calls?.length) {
+    page = await loadZoomCallPageSql(safeLimit, safeOffset);
+  } else {
+    const zoomState = await loadZoomStateForPaging();
+    const allCalls = (zoomState.calls || [])
+      .map(call => hydrateZoomStoredCall({ leads: [] }, call))
+      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
+    page = {
+      calls: allCalls.slice(safeOffset, safeOffset + safeLimit).map(zoomCallListItem),
+      total: allCalls.length,
+      last_sync_at: zoomState.last_call_sync_at || null
+    };
+  }
   return {
-    calls,
-    total: allCalls.length,
+    calls: page.calls,
+    total: page.total,
     offset: safeOffset,
     limit: safeLimit,
-    loaded: safeOffset + calls.length,
-    has_more: safeOffset + calls.length < allCalls.length,
-    next_offset: safeOffset + calls.length,
-    last_sync_at: zoomState.last_call_sync_at || null
+    loaded: safeOffset + page.calls.length,
+    has_more: safeOffset + page.calls.length < page.total,
+    next_offset: safeOffset + page.calls.length,
+    last_sync_at: page.last_sync_at
   };
 }
 

@@ -579,16 +579,21 @@ async function loadZohoRecordPage(options = {}) {
   return { module: moduleName, search, records, total, limit, offset, has_more: offset + records.length < total, next_offset: offset + records.length };
 }
 
-async function zohoRecordsPayloadDbUnsafe(db = {}) {
-  if (!State.postgresPool || !Storage.usesPostgresStorage()) return zohoRecordsPayload(db);
-  await ensureZohoRecordsTable();
-  const records = await State.postgresPool.query(
+function queryZohoPreviewRecords() {
+  return State.postgresPool.query(
     `select data
      from app_zoho_records
      order by modified_time desc nulls last, synced_at desc nulls last, key
      limit $1`,
     [Config.ZOHO_RECORDS_PREVIEW_LIMIT]
   );
+}
+
+// pendingRecords: the records query when the caller has already sent it (see loadZohoRecordsPreviewDb).
+async function zohoRecordsPayloadDbUnsafe(db = {}, pendingRecords = null) {
+  if (!State.postgresPool || !Storage.usesPostgresStorage()) return zohoRecordsPayload(db);
+  await ensureZohoRecordsTable();
+  const records = await (pendingRecords || queryZohoPreviewRecords());
   const byModule = new Map();
   for (const row of records.rows.map(item => item.data).filter(Boolean)) {
     const moduleName = row.module || 'Zoho CRM';
@@ -608,10 +613,21 @@ async function zohoRecordsPayloadDbUnsafe(db = {}) {
   return payload;
 }
 
-async function zohoRecordsPayloadDb(db = {}) {
+// GET /api/integrations/zoho/records. The Zoho state and the newest records do not depend on
+// each other, so both reads are sent together: one round trip to the database instead of two.
+async function loadZohoRecordsPreviewDb() {
+  if (!State.postgresPool || !Storage.usesPostgresStorage()) return zohoRecordsPayloadDb(await loadZohoWorkspaceState());
+  await Promise.all([Storage.ensureStorage(), ensureZohoRecordsTable()]);
+  const pendingRecords = queryZohoPreviewRecords();
+  // A failure is reported where the result is awaited, inside zohoRecordsPayloadDb.
+  pendingRecords.catch(() => {});
+  return zohoRecordsPayloadDb(await loadZohoWorkspaceState(), pendingRecords);
+}
+
+async function zohoRecordsPayloadDb(db = {}, pendingRecords = null) {
   try {
     return await promiseTimeout(
-      zohoRecordsPayloadDbUnsafe(db),
+      zohoRecordsPayloadDbUnsafe(db, pendingRecords),
       Config.ZOHO_RECORDS_PREVIEW_TIMEOUT_MS,
       'Zoho records preview timed out while connecting to the database.'
     );
@@ -1640,6 +1656,7 @@ exports.zohoConfigured = zohoConfigured;
 exports.zohoAuthUrl = zohoAuthUrl;
 exports.exchangeZohoCode = exchangeZohoCode;
 exports.loadZohoRecordPage = loadZohoRecordPage;
+exports.loadZohoRecordsPreviewDb = loadZohoRecordsPreviewDb;
 exports.zohoRecordsPayloadDb = zohoRecordsPayloadDb;
 exports.loadZohoWorkspaceState = loadZohoWorkspaceState;
 exports.zohoSyncJobPayload = zohoSyncJobPayload;

@@ -61,7 +61,7 @@ async function zohoRoutes(ctx) {
   }
   if (route === '/api/integrations/zoho/records' && method === 'GET') {
     await Auth.currentSessionUser(req);
-    return Http.sendJson(res, await Zoho.zohoRecordsPayloadDb(await Zoho.loadZohoWorkspaceState()));
+    return Http.sendJson(res, await Zoho.loadZohoRecordsPreviewDb());
   }
   return NOT_HANDLED;
 }

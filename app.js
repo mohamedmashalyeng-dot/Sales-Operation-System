@@ -1,5 +1,5 @@
 'use strict';
-const APP_BUILD_ID='20261006-security-hardening';
+const APP_BUILD_ID='20261006-hotspots';
 window.KBC_APP_BUILD=APP_BUILD_ID;
 window.__KBC_DIAGNOSTICS__ ||= {build:APP_BUILD_ID,requests:[]};
 const diagEnabled=()=>localStorage.getItem('KBC_DIAG')==='1'||new URLSearchParams(location.search).get('debug_frontend')==='true';
@@ -659,7 +659,7 @@ function mergeZoomCalls(calls=[]){
 async function loadZoomCalls(reset=false){
  data.zoom ||= {};
  const page=data.zoom.call_paging||{},offset=reset?0:Number(page.next_offset||0);
- const result=await api(`/api/zoom/calls?limit=250&offset=${offset}`,undefined,'GET',{silent:true});
+ const result=await api(`/api/zoom/calls?limit=100&offset=${offset}`,undefined,'GET',{silent:true});
  if(reset)data.zoom.calls=[];
  mergeZoomCalls(result.calls||[]);
  data.zoom.last_call_sync_at=result.last_sync_at||data.zoom.last_call_sync_at;

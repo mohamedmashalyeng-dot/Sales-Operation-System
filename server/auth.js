@@ -753,24 +753,35 @@ async function loadDeveloperConfigDb() {
     const db = await Storage.loadDb();
     return { ...seeded, users: db.users, gmail: db.gmail, eventbrite: db.eventbrite, meta: db.meta };
   }
-  await removeLegacyPostgresDeveloperUsers();
   const table = Storage.sqlIdentifier(Config.POSTGRES_USERS_TABLE, 'app_users');
-  const users = (await State.postgresPool.query(
-    `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} order by created_at, id`
-  )).rows;
-  let workspace = null;
-  try {
-    workspace = (await State.postgresPool.query(`select gmail, eventbrite, meta from app_workspace where id = $1`, ['main'])).rows[0] || null;
-  } catch {
-    workspace = null;
-  }
+  // Two reads that do not depend on each other, sent together. The workspace row is read
+  // without its long id lists, stored records and Zoom state (over 600 KB the panel never shows).
+  const [userRows, workspaceRows] = await Promise.all([
+    State.postgresPool.query(
+      `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} order by created_at, id`
+    ),
+    State.postgresPool.query(
+      `select coalesce(gmail, '{}'::jsonb) - 'imported_message_ids' as gmail,
+              coalesce(eventbrite, '{}'::jsonb) - 'imported_event_ids' - 'imported_attendee_ids' as eventbrite,
+              jsonb_build_object(
+                'zoho', coalesce(meta->'zoho', '{}'::jsonb) - 'records' - 'imported_record_ids',
+                'apollo', coalesce(meta->'apollo', '{}'::jsonb) - 'imported_person_ids'
+              ) as meta
+       from app_workspace where id = $1`,
+      ['main']
+    ).catch(() => ({ rows: [] }))
+  ]);
+  // Reading the panel does not write: retired developer accounts are left out here and are
+  // deleted where the workspace is loaded.
+  const users = userRows.rows.filter(user => !isLegacyDeveloperEmail(user.email));
+  const workspace = workspaceRows.rows[0] || null;
   return Workspace.recalculate({
     ...seeded,
     users,
-    gmail: workspace?.gmail || { connected: false, imported_message_ids: [] },
-    eventbrite: workspace?.eventbrite || { connected: false, imported_event_ids: [], imported_attendee_ids: [] },
-    meta: workspace?.meta || { imported_lead_ids: [], imported_form_ids: [] },
-    apollo: workspace?.meta?.apollo || { imported_person_ids: [] }
+    gmail: { connected: false, ...(workspace?.gmail || {}), imported_message_ids: [] },
+    eventbrite: { connected: false, ...(workspace?.eventbrite || {}), imported_event_ids: [], imported_attendee_ids: [] },
+    meta: { imported_lead_ids: [], imported_form_ids: [], ...(workspace?.meta || {}) },
+    apollo: { ...(workspace?.meta?.apollo || {}), imported_person_ids: [] }
   });
 }
 
