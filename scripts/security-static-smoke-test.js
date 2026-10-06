@@ -11,7 +11,8 @@ const allowed = [
   ['/app.js', 'app.js'],
   ['/styles.css', 'styles.css'],
   ['/manifest.webmanifest', 'manifest.webmanifest'],
-  ['/logo.png', 'logo.png'],
+  ['/assets/images/kent-logo-full-dark.png', 'assets/images/kent-logo-full-dark.png'],
+  ['/assets/images/Kent%20Business%20College%20logo.svg', 'assets/images/Kent Business College logo.svg'],
   ['/font.woff2', 'font.woff2']
 ];
 
@@ -32,6 +33,7 @@ const blocked = [
   '/EmployerAgreementForm%20-%20Generic.pdf',
   '/Apprenticeship-WrittenAgreement%20V1.1%20(2).pdf',
   '/ApprenticeshipAgreement-Apprenticeship%20Agreement%20v5%20(3).pdf',
+  '/assets/documents/TrainingPlan-Training%20Plan%20v3%20(5).pdf',
   '/README.md',
   '/../server.js',
   '/hostinger-deploy-20260926-174900/app.js',
@@ -115,4 +117,69 @@ const payloadJson = JSON.stringify(payload);
   assert(!payloadJson.includes(value), `bootstrap payload should not include ${value}`);
 });
 
-console.log('Static and bootstrap security smoke tests passed.');
+const {
+  authThrottle,
+  assertAuthThrottle,
+  recordAuthThrottle,
+  loginThrottleLimits,
+  contentSecurityPolicy,
+  applySecurityHeaders,
+  hashPassword,
+  verifyPassword,
+  initialAdminPassword,
+  AUTH_THROTTLE_WINDOW_MS,
+  LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS
+} = require('../server.js').__securityTest;
+const { publicErrorMessage } = require('../server.js');
+
+// Sign-in throttle: the allowance, the 429 with Retry-After, and the window running out.
+authThrottle.clear();
+const fakeRequest = { headers: { 'x-forwarded-for': '203.0.113.9' }, socket: {} };
+const limits = loginThrottleLimits(fakeRequest, 'someone@example.com');
+const startedAt = Date.now();
+for (let attempt = 0; attempt < LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS; attempt += 1) {
+  assertAuthThrottle(limits, startedAt);
+  recordAuthThrottle(limits, startedAt);
+}
+assert.throws(() => assertAuthThrottle(limits, startedAt), error => error.status === 429 && Number(error.headers['Retry-After']) > 0, 'sign-in should be blocked after the allowed failures');
+assert.doesNotThrow(() => assertAuthThrottle(loginThrottleLimits({ headers: { 'x-forwarded-for': '203.0.113.10' }, socket: {} }, 'someone@example.com'), startedAt), 'another address should not be blocked yet');
+assert.doesNotThrow(() => assertAuthThrottle(limits, startedAt + AUTH_THROTTLE_WINDOW_MS + 1), 'the block should end with the window');
+authThrottle.clear();
+
+// Error text: intended messages pass through, internal ones are replaced.
+assert.strictEqual(publicErrorMessage(Object.assign(new Error('Email and password are required.'), { status: 400 })), 'Email and password are required.');
+assert.strictEqual(publicErrorMessage(new Error('Gmail SMTP is not configured.')), 'Gmail SMTP is not configured.');
+[
+  new TypeError("Cannot read properties of null (reading 'email')"),
+  Object.assign(new Error('relation "app_users" does not exist'), { code: '42P01', severity: 'ERROR' }),
+  Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:5432'), { code: 'ECONNREFUSED', syscall: 'connect' })
+].forEach(error => {
+  assert(!publicErrorMessage(error).includes(error.message), `internal error text should not reach the browser: ${error.message}`);
+});
+
+// Content-Security-Policy: own scripts only, inline scripts by hash with LF line endings.
+const policy = contentSecurityPolicy('<html><script src="/app.js"></script><script>\r\nrun();\r\n</script></html>');
+const inlineHash = require('crypto').createHash('sha256').update('\nrun();\n').digest('base64');
+assert(policy.includes(`script-src 'self' 'sha256-${inlineHash}'`), 'inline scripts should be allowed by hash only');
+assert(!/script-src[^;]*unsafe-inline/.test(policy), 'inline scripts must not be allowed in general');
+assert(policy.includes("frame-ancestors 'none'") && policy.includes("object-src 'none'"), 'framing and plugins should be blocked');
+assert.strictEqual(contentSecurityPolicy(require('fs').readFileSync(require('path').join(__dirname, '..', 'index.html'), 'utf8')).includes('sha256-'), false, 'index.html should carry no inline script');
+
+const sentHeaders = {};
+applySecurityHeaders({ headers: { 'x-forwarded-proto': 'https' }, socket: {} }, { setHeader: (name, value) => { sentHeaders[name] = value; } });
+['X-Content-Type-Options', 'X-Frame-Options', 'Referrer-Policy', 'Strict-Transport-Security'].forEach(name => {
+  assert(sentHeaders[name], `${name} should be sent`);
+});
+
+// The published default admin password is gone: an unset INITIAL_ADMIN_PASSWORD gives a random one.
+const configuredAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+const warn = console.warn;
+console.warn = () => {};
+delete process.env.INITIAL_ADMIN_PASSWORD;
+const generated = [initialAdminPassword(), initialAdminPassword()];
+console.warn = warn;
+if (configuredAdminPassword !== undefined) process.env.INITIAL_ADMIN_PASSWORD = configuredAdminPassword;
+assert(generated[0] !== generated[1] && generated[0].length >= 24 && !generated.includes('ChangeMeNow!2026'), 'an unset admin password should be random');
+assert(verifyPassword('correct horse', hashPassword('correct horse')) && !verifyPassword('wrong', hashPassword('correct horse')), 'password hashing should still verify');
+
+console.log('Static, bootstrap and sign-in security smoke tests passed.');

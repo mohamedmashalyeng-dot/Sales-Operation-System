@@ -68,9 +68,13 @@ const EMAIL_RESPONSE_SLA_MS = 48 * 60 * 60 * 1000;
 const EMAIL_LIST_STATEMENT_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.EMAIL_LIST_STATEMENT_TIMEOUT_MS || 5000), 30000));
 const DEFAULT_DEVELOPER_EMAIL = 'mohamedmashalyeng@gmail.com';
 const LEGACY_DEVELOPER_EMAILS = ['alteam.kbc@gmail.com'];
+const AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS = String(process.env.AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS ?? process.env.AUTO_CREATE_APPLICATIONS_FOR_LEADS ?? 'true').toLowerCase() !== 'false';
+const ENROLLED_LEAD_APPLICATION_BACKFILL_ENABLED = AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && String(process.env.ENROLLED_LEAD_APPLICATION_BACKFILL ?? process.env.LEAD_APPLICATION_BACKFILL ?? 'true').toLowerCase() !== 'false';
+const ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT = Math.max(1, Math.min(Number(process.env.ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT || process.env.LEAD_APPLICATION_BACKFILL_LIMIT || 10000), 50000));
+const BACKGROUND_JOBS_ENABLED = String(process.env.BACKGROUND_JOBS_ENABLED || 'false').toLowerCase() === 'true';
 const GMAIL_IMPORT_ENABLED = String(process.env.GMAIL_IMPORT || 'true').toLowerCase() !== 'false';
 const GMAIL_INCREMENTAL_ONLY = String(process.env.GMAIL_INCREMENTAL_ONLY || 'false').toLowerCase() === 'true';
-const GMAIL_AUTO_SYNC_ENABLED = String(process.env.GMAIL_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const GMAIL_AUTO_SYNC_ENABLED = BACKGROUND_JOBS_ENABLED && String(process.env.GMAIL_AUTO_SYNC || 'true').toLowerCase() !== 'false';
 const GMAIL_AUTO_SYNC_MODE = ['daily', 'interval'].includes(String(process.env.GMAIL_AUTO_SYNC_MODE || 'daily').toLowerCase())
   ? String(process.env.GMAIL_AUTO_SYNC_MODE || 'daily').toLowerCase()
   : 'daily';
@@ -81,13 +85,13 @@ const GMAIL_AUTO_SYNC_IDLE_MS = Math.max(1000, Number(process.env.GMAIL_AUTO_SYN
 const GMAIL_AUTO_SYNC_DAILY_BATCHES = Math.max(1, Math.min(Number(process.env.GMAIL_AUTO_SYNC_DAILY_BATCHES || 20), 100));
 const GMAIL_TRASH_SYNC_LIMIT = Math.max(0, Math.min(Number(process.env.GMAIL_TRASH_SYNC_LIMIT || 100), 500));
 const GMAIL_TRASH_SYNC_INTERVAL_MS = Math.max(5000, Number(process.env.GMAIL_TRASH_SYNC_INTERVAL_MS || 60 * 1000));
-const EVENT_AUTO_SYNC_ENABLED = String(process.env.EVENT_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const EVENT_AUTO_SYNC_ENABLED = BACKGROUND_JOBS_ENABLED && String(process.env.EVENT_AUTO_SYNC || 'true').toLowerCase() !== 'false';
 const EVENTS_INCREMENTAL_ONLY = String(process.env.EVENTS_INCREMENTAL_ONLY || 'false').toLowerCase() === 'true';
 const EVENT_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.EVENT_AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000));
 const EVENT_AUTO_SYNC_MAX_EVENTS = Math.max(1, Math.min(Number(process.env.EVENT_AUTO_SYNC_MAX_EVENTS || 10), 50));
 const EVENTBRITE_DELETE_SCAN_PAGES = Math.max(1, Math.min(Number(process.env.EVENTBRITE_DELETE_SCAN_PAGES || 10), 50));
 const EVENTS_SHEET_URL = process.env.EVENTS_SHEET_URL || '';
-const ZOOM_AUTO_SYNC_ENABLED = String(process.env.ZOOM_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const ZOOM_AUTO_SYNC_ENABLED = BACKGROUND_JOBS_ENABLED && String(process.env.ZOOM_AUTO_SYNC || 'true').toLowerCase() !== 'false';
 const ZOOM_AUTO_SYNC_MEETINGS = String(process.env.ZOOM_AUTO_SYNC_MEETINGS || 'true').toLowerCase() !== 'false';
 const ZOOM_AUTO_SYNC_CALLS = String(process.env.ZOOM_AUTO_SYNC_CALLS || 'true').toLowerCase() !== 'false';
 const ZOOM_AUTO_SYNC_INTERVAL_MS = Math.max(2 * 60 * 1000, Number(process.env.ZOOM_AUTO_SYNC_INTERVAL_MS || 10 * 60 * 1000));
@@ -103,10 +107,12 @@ const ZOHO_SYNC_MODULE_CONCURRENCY = Math.max(1, Math.min(Number(process.env.ZOH
 const ZOHO_FETCH_ATTEMPTS = 5;
 const ZOHO_JOB_LEASE_MS = 3 * 60 * 1000;
 const ZOHO_WORKER_ID = `${require('os').hostname()}:${process.pid}:${crypto.randomBytes(3).toString('hex')}`;
+const ZOHO_RECORDS_PREVIEW_LIMIT = Math.max(1, Math.min(Number(process.env.ZOHO_RECORDS_PREVIEW_LIMIT || 100), 500));
+const ZOHO_RECORDS_PREVIEW_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.ZOHO_RECORDS_PREVIEW_TIMEOUT_MS || 3000), 15000));
 // ZOHO_SYNC_WORKER=false keeps this process from pulling Zoho jobs (for example a local
 // server sharing the production database); jobs are still created and read normally.
 const ZOHO_SYNC_WORKER_ENABLED = String(process.env.ZOHO_SYNC_WORKER || 'true').toLowerCase() !== 'false';
-const ZOHO_AUTO_SYNC_ENABLED = ZOHO_SYNC_WORKER_ENABLED && String(process.env.ZOHO_AUTO_SYNC || 'true').toLowerCase() !== 'false';
+const ZOHO_AUTO_SYNC_ENABLED = BACKGROUND_JOBS_ENABLED && ZOHO_SYNC_WORKER_ENABLED && String(process.env.ZOHO_AUTO_SYNC || 'true').toLowerCase() !== 'false';
 const ZOHO_AUTO_SYNC_INTERVAL_MS = Math.max(5 * 60 * 1000, Math.min(Number(process.env.ZOHO_AUTO_SYNC_INTERVAL_MS || 15 * 60 * 1000), 24 * 60 * 60 * 1000));
 // Incremental runs re-read a small overlap before the last mark so edits made while that
 // sync was running are not missed.
@@ -148,7 +154,7 @@ const POSTGRES_POOL_CONNECTION_TIMEOUT_MS = Math.max(1000, Math.min(Number(proce
 const MONITORING_STATEMENT_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.env.MONITORING_STATEMENT_TIMEOUT_MS || 5000), 30000));
 const MONITORING_SNAPSHOT_TTL_MS = Math.max(5000, Math.min(Number(process.env.MONITORING_SNAPSHOT_TTL_MS || 120000), 5 * 60 * 1000));
 const MONITORING_SNAPSHOT_ENABLED = String(process.env.MONITORING_SNAPSHOT_ENABLED || 'true').toLowerCase() !== 'false';
-const MONITORING_SNAPSHOT_PROACTIVE_ENABLED = String(process.env.MONITORING_SNAPSHOT_PROACTIVE_ENABLED || 'true').toLowerCase() !== 'false';
+const MONITORING_SNAPSHOT_PROACTIVE_ENABLED = BACKGROUND_JOBS_ENABLED && String(process.env.MONITORING_SNAPSHOT_PROACTIVE_ENABLED || 'true').toLowerCase() !== 'false';
 const MONITORING_SNAPSHOT_REFRESH_INTERVAL_MS = Math.max(30000, Math.min(Number(process.env.MONITORING_SNAPSHOT_REFRESH_INTERVAL_MS || 60000), 5 * 60 * 1000));
 const MONITORING_SNAPSHOT_REFRESH_LOCK_MS = Math.max(30000, Math.min(Number(process.env.MONITORING_SNAPSHOT_REFRESH_LOCK_MS || 2 * 60 * 1000), 10 * 60 * 1000));
 const MONITORING_SNAPSHOT_MEMORY_CACHE_MS = Math.max(0, Math.min(Number(process.env.MONITORING_SNAPSHOT_MEMORY_CACHE_MS || 1000), 5000));
@@ -258,9 +264,21 @@ function initialUsers() {
     name: process.env.INITIAL_ADMIN_NAME || 'Kent Alteam',
     email: process.env.INITIAL_ADMIN_EMAIL || 'alteam.kbc@gmail.com',
     role: process.env.INITIAL_ADMIN_ROLE || 'admin',
-    password_hash: hashPassword(process.env.INITIAL_ADMIN_PASSWORD || 'ChangeMeNow!2026')
+    password_hash: hashPassword(initialAdminPassword())
   }];
   return initialUsersCache.map(user => ({ ...user }));
+}
+
+// Older versions seeded the admin with this password when INITIAL_ADMIN_PASSWORD was missing.
+// It is public, so it is never accepted at sign-in, whatever account still carries it.
+const LEGACY_DEFAULT_ADMIN_PASSWORD = 'ChangeMeNow!2026';
+
+// Without INITIAL_ADMIN_PASSWORD the seeded admin gets a random password that nobody knows.
+function initialAdminPassword() {
+  const configured = String(process.env.INITIAL_ADMIN_PASSWORD || '');
+  if (configured) return configured;
+  console.warn('INITIAL_ADMIN_PASSWORD is not set. The seeded admin account gets a random password; set INITIAL_ADMIN_PASSWORD or DEV_PANEL_PASSWORD to sign in.');
+  return crypto.randomBytes(24).toString('base64url');
 }
 
 function developerBootstrapConfig() {
@@ -295,7 +313,6 @@ function ensureConfiguredDeveloperUser(db) {
       email: config.email,
       role: normalizeWorkspaceRole(config.role) || 'admin',
       password_hash: hashPassword(config.password),
-      temporary_password: config.password,
       invited_at: new Date().toISOString(),
       password_changed_at: null
     };
@@ -312,7 +329,6 @@ function ensureConfiguredDeveloperUser(db) {
   }
   if (String(process.env.DEV_PANEL_FORCE_PASSWORD || 'true').toLowerCase() !== 'false') {
     user.password_hash = hashPassword(config.password);
-    user.temporary_password = config.password;
     user.password_changed_at = null;
     changed = true;
   }
@@ -357,6 +373,8 @@ function temporaryPassword() {
 
 const DEFAULT_STAGES = ['New lead', 'Qualified', 'Application Submitted', 'Eligibility', 'Ready for Enrolment', 'Enrolled', 'Not Eligible', 'Lost'];
 const DEFAULT_SOURCES = ['Website', 'Referral', 'Event', 'Meta', 'LinkedIn', 'Cold outreach'];
+const GMAIL_ENROLMENT_LABELS = new Set(['apprenticeship intersted', 'apprenticeship interested']);
+const GMAIL_ENROLMENT_LABEL_PREFIXES = ['apprenticeship interests'];
 
 function seedDatabase() {
   const users = initialUsers();
@@ -567,6 +585,7 @@ async function postgresQuery(sql, params = [], attempts = 2) {
 async function connectPostgresStorage(trace = null) {
   await getPostgresPool();
   if (String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') {
+    await refreshLeadSoftDelete(trace, { force: true });
     postgresSchemaReady = true;
     postgresUserSchemaReady = true;
     return postgresPool;
@@ -649,6 +668,8 @@ async function ensurePostgresUserSchema(trace = null) {
     )
   `);
   await tracedPostgresPoolQuery(trace, 'schema_users_temporary_password_column', `alter table ${usersTable} add column if not exists temporary_password text`);
+  // Temporary passwords are no longer stored as plain text: clear the ones older versions saved.
+  await tracedPostgresPoolQuery(trace, 'schema_users_clear_temporary_passwords', `update ${usersTable} set temporary_password = null where temporary_password is not null`);
   await tracedPostgresPoolQuery(trace, 'schema_users_invited_at_column', `alter table ${usersTable} add column if not exists invited_at timestamptz`);
   await tracedPostgresPoolQuery(trace, 'schema_users_password_changed_at_column', `alter table ${usersTable} add column if not exists password_changed_at timestamptz`);
   await tracedPostgresPoolQuery(trace, 'schema_sessions_table', `
@@ -676,13 +697,13 @@ async function ensurePostgresUserSchema(trace = null) {
 // set LEAD_SOFT_DELETE_ENABLED=true after the migration, so normal requests never query
 // information_schema. When schema setup is explicitly enabled, the capability is detected once.
 let leadSoftDelete = {
-  enabled: LEAD_SOFT_DELETE_CONFIG === 'true',
-  checkedAt: ['true', 'false'].includes(LEAD_SOFT_DELETE_CONFIG) ? Number.POSITIVE_INFINITY : 0,
+  enabled: false,
+  checkedAt: LEAD_SOFT_DELETE_CONFIG === 'false' ? Number.POSITIVE_INFINITY : 0,
   pending: null
 };
 function refreshLeadSoftDelete(trace = null, { force = false } = {}) {
   if (!postgresPool) return leadSoftDelete.enabled;
-  if (['true', 'false'].includes(LEAD_SOFT_DELETE_CONFIG)) return leadSoftDelete.enabled;
+  if (LEAD_SOFT_DELETE_CONFIG === 'false') return false;
   if (!force && String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') return leadSoftDelete.enabled;
   if (!force && leadSoftDelete.checkedAt) return leadSoftDelete.enabled;
   leadSoftDelete.pending ||= tracedPostgresPoolQuery(trace, 'storage_lead_soft_delete_column',
@@ -2064,18 +2085,17 @@ async function upsertPostgresUsers(users = []) {
     if (!user?.email || !user?.password_hash) continue;
     await postgresPool.query(
       `
-        insert into ${table} (id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at, created_at, updated_at)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+        insert into ${table} (id, name, email, role, password_hash, invited_at, password_changed_at, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, $6, $7, now(), now())
         on conflict (email) do update
         set name = excluded.name,
             role = excluded.role,
             password_hash = excluded.password_hash,
-            temporary_password = excluded.temporary_password,
             invited_at = coalesce(${table}.invited_at, excluded.invited_at),
             password_changed_at = excluded.password_changed_at,
             updated_at = now()
       `,
-      [user.id, user.name, normalizeEmail(user.email), user.role || 'sales', user.password_hash, user.temporary_password || null, dateValue(user.invited_at), dateValue(user.password_changed_at)]
+      [user.id, user.name, normalizeEmail(user.email), user.role || 'sales', user.password_hash, dateValue(user.invited_at), dateValue(user.password_changed_at)]
     );
   }
 }
@@ -2085,7 +2105,7 @@ async function hydratePostgresUsers(db) {
   const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const count = await postgresPool.query(`select count(*)::int as count from ${table}`);
   if (!count.rows[0]?.count && db.users?.length) await upsertPostgresUsers(db.users);
-  const result = await postgresPool.query(`select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} order by created_at, id`);
+  const result = await postgresPool.query(`select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} order by created_at, id`);
   if (result.rows.length) db.users = result.rows;
   return db;
 }
@@ -2099,7 +2119,6 @@ function configuredDeveloperUserRecord() {
     email: config.email,
     role: normalizeWorkspaceRole(config.role) || 'admin',
     password_hash: hashPassword(config.password),
-    temporary_password: config.password,
     invited_at: new Date().toISOString(),
     password_changed_at: null
   };
@@ -2112,7 +2131,7 @@ async function findLoginUser(email) {
     if (developerUser) await upsertPostgresUsers([developerUser]);
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
     const result = await postgresQuery(
-      `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
+      `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
       [normalizeEmail(email)]
     );
     return result.rows[0] || null;
@@ -2124,7 +2143,7 @@ async function findLoginUser(email) {
 async function forceConfiguredDeveloperLogin(email, password) {
   if (!isDeveloperEmail(email)) return null;
   const configuredPassword = configuredDeveloperPassword();
-  if (!configuredPassword || password !== configuredPassword) return null;
+  if (!configuredPassword || !safeEqualText(password, configuredPassword)) return null;
   const developerUser = configuredDeveloperUserRecord();
   if (!developerUser) return null;
   await ensureUserStorage();
@@ -2132,7 +2151,7 @@ async function forceConfiguredDeveloperLogin(email, password) {
     await upsertPostgresUsers([developerUser]);
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
     const result = await postgresQuery(
-      `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
+      `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} where email = $1 limit 1`,
       [normalizeEmail(email)]
     );
     return result.rows[0] || developerUser;
@@ -2150,7 +2169,7 @@ async function findUserById(id) {
   if (postgresPool) {
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
     const result = await postgresQuery(
-      `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} where id = $1 limit 1`,
+      `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} where id = $1 limit 1`,
       [id]
     );
     return result.rows[0] || null;
@@ -2293,7 +2312,7 @@ async function currentSessionUser(req, trace = null) {
              s.id as session_id,
              s.expires_at,
              s.updated_at as session_updated_at,
-             u.id, u.name, u.email, u.role, u.password_hash, u.temporary_password, u.invited_at, u.password_changed_at
+             u.id, u.name, u.email, u.role, u.password_hash, u.invited_at, u.password_changed_at
            from ${sessionsTable} s
            join ${usersTable} u on u.id = s.user_id
            where (s.id = $1 or s.token_hash = $2)
@@ -2371,6 +2390,122 @@ async function clearUserSessions(userId) {
   for (const [sid, session] of memorySessions.entries()) {
     if (session.user_id === userId) memorySessions.delete(sid);
   }
+}
+
+// Password guessing is slowed down in memory. Each key (email + address, address, email or
+// user) may fail a limited number of times inside one window, then gets 429 until the window
+// ends. Counts belong to this process and a restart clears them.
+const AUTH_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
+const AUTH_THROTTLE_MAX_KEYS = 20000;
+const LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS = 5;
+const LOGIN_FAILURES_PER_ADDRESS = 20;
+// Stops one account being guessed from many addresses.
+const LOGIN_FAILURES_PER_EMAIL = 20;
+const PASSWORD_FORGOT_REQUESTS_PER_ADDRESS = 5;
+const PASSWORD_FORGOT_REQUESTS_PER_EMAIL = 3;
+const PASSWORD_RESET_ATTEMPTS_PER_ADDRESS = 10;
+const PASSWORD_CHANGE_FAILURES_PER_USER = 5;
+const authThrottle = new Map();
+
+function authThrottleEntry(key, now = Date.now()) {
+  const entry = authThrottle.get(key);
+  if (!entry) return null;
+  if (entry.resetAt > now) return entry;
+  authThrottle.delete(key);
+  return null;
+}
+
+// limits is a list of [key, allowed count]. Throws 429 when any key has used its allowance.
+function assertAuthThrottle(limits, now = Date.now()) {
+  let retryMs = 0;
+  for (const [key, allowed] of limits) {
+    const entry = authThrottleEntry(key, now);
+    if (entry && entry.count >= allowed) retryMs = Math.max(retryMs, entry.resetAt - now);
+  }
+  if (!retryMs) return;
+  const minutes = Math.max(1, Math.ceil(retryMs / 60000));
+  const error = statusError(429, `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+  error.headers = { 'Retry-After': String(Math.ceil(retryMs / 1000)) };
+  throw error;
+}
+
+function recordAuthThrottle(limits, now = Date.now()) {
+  for (const [key] of limits) {
+    const entry = authThrottleEntry(key, now);
+    if (entry) entry.count += 1;
+    else authThrottle.set(key, { count: 1, resetAt: now + AUTH_THROTTLE_WINDOW_MS });
+  }
+  if (authThrottle.size <= AUTH_THROTTLE_MAX_KEYS) return;
+  for (const [key, entry] of authThrottle) {
+    if (entry.resetAt <= now) authThrottle.delete(key);
+  }
+  // Still full of live keys: drop the oldest so the map cannot grow without limit.
+  for (const key of authThrottle.keys()) {
+    if (authThrottle.size <= AUTH_THROTTLE_MAX_KEYS) break;
+    authThrottle.delete(key);
+  }
+}
+
+function loginThrottleLimits(req, email) {
+  const address = requestIp(req);
+  return [
+    [`login:${email}|${address}`, LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS],
+    [`login-address:${address}`, LOGIN_FAILURES_PER_ADDRESS],
+    [`login-email:${email}`, LOGIN_FAILURES_PER_EMAIL]
+  ];
+}
+
+function safeEqualText(left, right) {
+  const leftHash = crypto.createHash('sha256').update(String(left)).digest();
+  const rightHash = crypto.createHash('sha256').update(String(right)).digest();
+  return crypto.timingSafeEqual(leftHash, rightHash);
+}
+
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 128;
+
+// POST /api/password. The session user is a copy, so the password is checked and written
+// against the stored user. Every session of that user is signed out afterwards.
+async function changeOwnPassword(user, body) {
+  if (isDeveloperEmail(user.email) && developerPasswordConfigured()) {
+    throw statusError(400, 'The developer account password is set by DEV_PANEL_PASSWORD on the server. Change it there.');
+  }
+  const currentPassword = String(body.current_password || '');
+  const newPassword = String(body.new_password || '');
+  if (newPassword.length < PASSWORD_MIN_LENGTH) throw statusError(400, `Password must be at least ${PASSWORD_MIN_LENGTH} characters.`);
+  if (newPassword.length > PASSWORD_MAX_LENGTH) throw statusError(400, `Password must be at most ${PASSWORD_MAX_LENGTH} characters.`);
+  const limits = [[`password-change:${user.id}`, PASSWORD_CHANGE_FAILURES_PER_USER]];
+  assertAuthThrottle(limits);
+  await ensureUserStorage();
+  if (postgresPool) {
+    const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
+    const stored = await postgresQuery(`select password_hash from ${table} where id = $1 limit 1`, [user.id]);
+    if (!verifyPassword(currentPassword, stored.rows[0]?.password_hash)) {
+      recordAuthThrottle(limits);
+      throw statusError(400, 'Current password is incorrect.');
+    }
+    await postgresQuery(
+      `update ${table} set password_hash = $2, temporary_password = null, password_changed_at = now(), updated_at = now() where id = $1`,
+      [user.id, hashPassword(newPassword)]
+    );
+    await clearUserSessions(user.id);
+    authThrottle.delete(limits[0][0]);
+    dbCache = null;
+    return { ok: true };
+  }
+  const db = await loadDb();
+  const target = db.users.find(item => item.id === user.id);
+  if (!target || !verifyPassword(currentPassword, target.password_hash)) {
+    recordAuthThrottle(limits);
+    throw statusError(400, 'Current password is incorrect.');
+  }
+  target.password_hash = hashPassword(newPassword);
+  target.password_changed_at = new Date().toISOString();
+  addAudit(db, target, 'Password changed', 'user', target.email);
+  await saveDb(db);
+  await clearUserSessions(target.id);
+  authThrottle.delete(limits[0][0]);
+  return { ok: true };
 }
 
 function tokenHash(token) {
@@ -2659,7 +2794,12 @@ function emailServerLabelTexts(email) {
   if (gmailLabels.length) return gmailLabels;
   const text = [email.subject, email.body, email.snippet].join(' ').toLowerCase();
   const labels = [];
-  if (/zoho|zoho crm|zoho contracts?/.test(text)) labels.push('Zoho');
+  if (/zoho.*contracts?|contracts?.*zoho/.test(text)) {
+    labels.push('Enrolled');
+    labels.push('Zoho');
+  } else if (/zoho|zoho crm/.test(text)) {
+    labels.push('Zoho');
+  }
   if (/eventbrite|attendee|attendance|webinar|open day|booking|bookings/.test(text)) labels.push('Events');
   if (/contract|agreement|sign|commitment/.test(text)) labels.push('Contract Matter');
   if (/das|digital apprenticeship service/.test(text)) labels.push('DAS Matter');
@@ -3220,6 +3360,8 @@ function runIdentityCleanupInMemory(db, user) {
 
 function recalculate(db) {
   db.users ||= initialUsers();
+  // Temporary passwords are no longer stored as plain text: drop the ones older versions saved.
+  for (const user of db.users) delete user.temporary_password;
   db.owners = db.users.map(publicUser);
   ensureProgrammeCatalog(db);
   db.sources ||= seedDatabase().sources;
@@ -4344,6 +4486,59 @@ function addDashboardDateClauses(clauses, params, expression, filters) {
   }
 }
 
+function safeTimestampExpression(expression) {
+  return `(case when nullif((${expression})::text, '') ~ '^\\d{4}-\\d{2}-\\d{2}' then nullif((${expression})::text, '')::timestamptz end)`;
+}
+
+function firstTimestampExpression(...expressions) {
+  return `coalesce(${expressions.filter(Boolean).map(safeTimestampExpression).join(', ')})`;
+}
+
+function jsonArrayMinTimestampExpression(arrayExpression, field) {
+  return `(select min(${safeTimestampExpression(`item->>'${field}'`)}) from jsonb_array_elements(case when jsonb_typeof(coalesce(${arrayExpression}, '[]'::jsonb)) = 'array' then coalesce(${arrayExpression}, '[]'::jsonb) else '[]'::jsonb end) item)`;
+}
+
+function dashboardLeadDateExpression(alias = 'l') {
+  return firstTimestampExpression(
+    jsonArrayMinTimestampExpression(`${alias}.data->'source_history'`, 'captured_at'),
+    `${alias}.data->>'Created_Time'`,
+    `${alias}.data->>'created_time'`,
+    `${alias}.data->>'captured_at'`,
+    `${alias}.data->>'received_at'`,
+    `${alias}.data->>'event_start_at'`,
+    `${alias}.created_at`
+  );
+}
+
+function dashboardApplicationDateExpression(alias = 'a') {
+  return firstTimestampExpression(
+    `${alias}.learner->>'enrolled_at'`,
+    `${alias}.data->'learner'->>'enrolled_at'`,
+    `${alias}.data->>'Created_Time'`,
+    `${alias}.data->>'created_time'`,
+    `${alias}.created_at`
+  );
+}
+
+function dashboardEventDateExpression(alias = 'ev') {
+  return firstTimestampExpression(
+    `${alias}.data->>'start_at'`,
+    `${alias}.data->>'Start_DateTime'`,
+    `${alias}.data->>'event_start_at'`,
+    `${alias}.start_at`
+  );
+}
+
+function dashboardEmailDateExpression(alias = 'e') {
+  return firstTimestampExpression(
+    `${alias}.data->>'received_at'`,
+    `${alias}.data->>'internal_date'`,
+    `${alias}.data->>'message_date'`,
+    `${alias}.data->>'date'`,
+    `${alias}.received_at`
+  );
+}
+
 function dashboardWhere(filters, fields = {}) {
   const clauses = [];
   const params = [];
@@ -4365,7 +4560,7 @@ function appendSqlCondition(whereSql, condition) {
   return whereSql ? `${whereSql} and ${condition}` : `where ${condition}`;
 }
 
-function leadDashboardWhere(filters, dateExpression = 'l.created_at') {
+function leadDashboardWhere(filters, dateExpression = dashboardLeadDateExpression('l')) {
   const where = dashboardWhere(filters, {
     date: dateExpression,
     college: "coalesce(l.data->>'college_id', l.data->>'college', '')",
@@ -4389,7 +4584,7 @@ function taskDashboardWhere(filters, dateExpression = 't.due_at') {
   });
 }
 
-function applicationDashboardWhere(filters, dateExpression = 'a.created_at') {
+function applicationDashboardWhere(filters, dateExpression = dashboardApplicationDateExpression('a')) {
   return dashboardWhere(filters, {
     date: dateExpression,
     college: "coalesce(l.data->>'college_id', l.data->>'college', a.data->>'college_id', '')",
@@ -4400,7 +4595,7 @@ function applicationDashboardWhere(filters, dateExpression = 'a.created_at') {
   });
 }
 
-function emailDashboardWhere(filters, dateExpression = 'e.received_at') {
+function emailDashboardWhere(filters, dateExpression = dashboardEmailDateExpression('e')) {
   return dashboardWhere(filters, {
     date: dateExpression,
     college: "coalesce(l.data->>'college_id', l.data->>'college', '')",
@@ -4424,6 +4619,22 @@ function dashboardEmailUnreadSql(alias = 'e') {
     coalesce(${alias}.data->'gmail_labels', '[]'::jsonb) ? 'UNREAD'
     or coalesce(${alias}.data->'gmail_label_names', '[]'::jsonb) ? 'Unread'
     or coalesce(${alias}.data->>'is_read', '') = 'false'
+  )`;
+}
+
+function dashboardApprenticeshipInterestSql(alias = 'e') {
+  return `exists (
+    select 1
+    from jsonb_array_elements_text(
+      case
+        when jsonb_typeof(coalesce(${alias}.data->'gmail_label_names', '[]'::jsonb)) = 'array'
+          then coalesce(${alias}.data->'gmail_label_names', '[]'::jsonb)
+        else '[]'::jsonb
+      end
+    ) as label(name)
+    where trim(lower(label.name)) in ('apprenticeship intersted', 'apprenticeship interested')
+       or trim(lower(label.name)) = 'apprenticeship interests'
+       or trim(lower(label.name)) like 'apprenticeship interests/%'
   )`;
 }
 
@@ -4511,6 +4722,290 @@ async function loadDashboardCockpitSummaryDb(filters, user) {
       { id: 'apps_review', label: `${stats.applications_need_review} applications need review`, value: stats.applications_need_review, route: 'applications', kind: stats.applications_need_review ? 'amber' : 'green' },
       { id: 'unread_emails', label: `${stats.unread_emails} unread emails`, value: stats.unread_emails, route: 'inbox', kind: stats.unread_emails ? 'amber' : 'green' },
       { id: 'integration_issues', label: `${stats.integration_issues} integrations have sync issues`, value: stats.integration_issues, route: 'settings', kind: stats.integration_issues ? 'amber' : 'green' }
+    ]
+  };
+}
+
+function loadDashboardAdminOverviewLocal(db, user) {
+  const summary = dashboardSummaryFromDb(db);
+  const emails = (db.emails || []).filter(email => !emailIsTrashed(email));
+  const tasks = db.tasks || [];
+  const leads = uniqueLeadsByIdentity(db.leads || []);
+  const applications = db.applications || [];
+  const events = db.events || [];
+  const outboundEmails = emails.filter(email => String(email.direction || 'inbound').toLowerCase() === 'outbound');
+  const responseTimes = emails
+    .filter(email => String(email.direction || 'inbound').toLowerCase() !== 'outbound')
+    .map(email => {
+      const start = new Date(email.received_at || email.created_at || 0).getTime();
+      if (!start) return null;
+      const recipient = normalizeEmail(email.email);
+      const subjectKey = emailSubjectKey(email.subject);
+      const threadId = String(email.gmail_thread_id || '').trim();
+      const reply = outboundEmails
+        .filter(sent => {
+          const sentAt = new Date(sent.received_at || sent.created_at || 0).getTime();
+          if (!sentAt || sentAt < start) return false;
+          if (threadId && String(sent.gmail_thread_id || '').trim() === threadId) return true;
+          return recipient && normalizeEmail(sent.email) === recipient && subjectKey && emailSubjectKey(sent.subject) === subjectKey;
+        })
+        .sort((a, b) => new Date(a.received_at || a.created_at || 0) - new Date(b.received_at || b.created_at || 0))[0];
+      const end = new Date(reply?.received_at || reply?.created_at || email.response_at || 0).getTime();
+      return end && end >= start ? end - start : null;
+    })
+    .filter(value => Number.isFinite(value));
+  const apprenticeshipInterested = new Set();
+  for (const email of emails) {
+    if (!gmailEnrolmentLabel(email)) continue;
+    apprenticeshipInterested.add(String(email.lead_id || email.email || email.id));
+  }
+  const sourceRows = [...leads.reduce((map, lead) => {
+    const key = lead.source_lead_capture || lead.source_first_touch || 'Other';
+    const row = map.get(key) || { source: key, leads: 0, enrolled: 0 };
+    row.leads += 1;
+    if (isEnrolledStage(lead.stage)) row.enrolled += 1;
+    map.set(key, row);
+    return map;
+  }, new Map()).values()].sort((a, b) => b.leads - a.leads).slice(0, 6);
+  const chartRows = (items, labelFn, valueFn = () => 1, limit = 8) => [...items.reduce((map, item) => {
+    const label = labelFn(item) || 'Other';
+    map.set(label, (map.get(label) || 0) + valueFn(item));
+    return map;
+  }, new Map()).entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value || String(a.label).localeCompare(String(b.label)))
+    .slice(0, limit);
+  const newLeads = summary.leads?.total || leads.length;
+  const enrolled = summary.applications?.enrolled || leads.filter(lead => isEnrolledStage(lead.stage)).length;
+  const overdueTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && new Date(task.due_at || 0).getTime() < Date.now()).length;
+  const openTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open').length;
+  const todayTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && taskDueBucket(task) === 'Today').length;
+  const upcomingTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && taskDueBucket(task) === 'Upcoming').length;
+  const unreadEmails = emails.filter(emailIsUnread).length;
+  const zoomMeetings = events.filter(event => event.zoom_meeting_id || event.zoom_meeting_uuid || String(event.location || '').toLowerCase() === 'zoom').length;
+  const upcomingEvents = events.filter(event => new Date(event.start_at || 0).getTime() >= Date.now()).length;
+  const sortedResponseTimes = responseTimes.slice().sort((a, b) => a - b);
+  const middle = Math.floor(sortedResponseTimes.length / 2);
+  const average = sortedResponseTimes.length
+    ? sortedResponseTimes.length % 2
+      ? sortedResponseTimes[middle]
+      : (sortedResponseTimes[middle - 1] + sortedResponseTimes[middle]) / 2
+    : 0;
+  return {
+    generated_at: new Date().toISOString(),
+    role: dashboardRole(user),
+    kpis: [
+      { id: 'reply_average', label: 'Reply Average', value: Math.round(average), format: 'duration', route: 'inbox', icon: 'clock' },
+      { id: 'unanswered_emails', label: 'Unanswered Emails', value: summary.emails?.unanswered || 0, route: 'inbox', icon: 'mail' },
+      { id: 'apprenticeship_interested', label: 'Apprenticeship Interested', value: apprenticeshipInterested.size, route: 'inbox', icon: 'spark' },
+      { id: 'new_leads', label: 'New Leads', value: newLeads, route: 'leads', icon: 'users' },
+      { id: 'enrolled', label: 'Enrolled', value: enrolled, route: 'applications', icon: 'shield' }
+    ],
+    summary_cards: [
+      { label: 'Leads', value: newLeads, detail: `${enrolled} enrolled`, route: 'leads', icon: 'users' },
+      { label: 'Inbox', value: emails.length, detail: `${summary.emails?.unanswered || 0} unanswered, ${unreadEmails} unread`, route: 'inbox', icon: 'mail' },
+      { label: 'Events & Zoom', value: events.length, detail: `${upcomingEvents} upcoming, ${zoomMeetings} Zoom`, route: 'events', icon: 'calendar' },
+      { label: 'Enrolled', value: enrolled, detail: 'Confirmed learner records', route: 'applications', icon: 'shield' }
+    ],
+    funnel: [
+      { label: 'New leads', value: newLeads },
+      { label: 'Interested', value: apprenticeshipInterested.size },
+      { label: 'Enrolled', value: enrolled }
+    ],
+    email_health: [
+      { label: 'Total messages', value: emails.length },
+      { label: 'Unanswered', value: summary.emails?.unanswered || 0 },
+      { label: 'Replied', value: responseTimes.length },
+      { label: 'Avg reply', value: Math.round(average), display: average ? `${Math.round(average / 3600000)}h` : '0m' }
+    ],
+    lead_sources: sourceRows,
+    charts: [
+      { title: 'Lead funnel', type: 'bar', rows: [{ label: 'New leads', value: newLeads }, { label: 'Interested', value: apprenticeshipInterested.size }, { label: 'Enrolled', value: enrolled }] },
+      { title: 'Lead stages', type: 'bar', rows: chartRows(leads, lead => lead.stage || 'Unstaged') },
+      { title: 'Lead sources', type: 'bar', rows: sourceRows.map(row => ({ label: row.source || 'Other', value: row.leads, display: `${row.leads} / ${row.enrolled} enrolled` })) },
+      { title: 'Email health', type: 'pie', rows: [{ label: 'Unanswered', value: summary.emails?.unanswered || 0 }, { label: 'Replied', value: responseTimes.length }, { label: 'Unread', value: unreadEmails }] },
+      { title: 'Events & Zoom', type: 'pie', rows: [{ label: 'Events', value: Math.max(0, events.length - zoomMeetings) }, { label: 'Zoom', value: zoomMeetings }, { label: 'Upcoming', value: upcomingEvents }] },
+      { title: 'Enrolled by programme', type: 'bar', rows: chartRows(applications.filter(app => app.learner || String(app.status || '').toLowerCase() === 'enrolled'), app => app.programme || 'No programme') }
+    ]
+  };
+}
+
+async function loadDashboardAdminOverviewDb(filters, user) {
+  await ensureStorage();
+  if (!postgresPool || !usesPostgresStorage()) return loadDashboardAdminOverviewLocal(await loadDb(), user);
+  const leadWhere = leadDashboardWhere(filters);
+  const emailWhere = emailDashboardWhere(filters);
+  const appWhere = applicationDashboardWhere(filters);
+  const eventWhere = dashboardWhere(filters, { date: dashboardEventDateExpression('ev') });
+  const enrolledAppWhereSql = appendSqlCondition(appWhere.sql, "(a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled')");
+  const [leadStats, emailStats, appStats, sourceStats, stageStats, eventStats, enrolledProgrammeStats, qualityStats] = await Promise.all([
+    postgresPool.query(`
+      select
+        count(distinct ${dashboardLeadIdentitySql('l')})::int as new_leads,
+        count(distinct ${dashboardLeadIdentitySql('l')}) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled')::int as enrolled_leads
+      from app_leads l
+      ${leadWhere.sql}
+    `, leadWhere.params),
+    postgresPool.query(`
+      select
+        count(*) filter (where ${dashboardEmailNotTrashedSql('e')})::int as total_messages,
+        count(*) filter (where ${dashboardEmailNotTrashedSql('e')} and ${dashboardEmailUnreadSql('e')})::int as unread_messages,
+        count(*) filter (where ${dashboardEmailNotTrashedSql('e')} and lower(coalesce(e.data->>'direction', 'inbound')) = 'outbound')::int as outbound_messages,
+        count(*) filter (where ${dashboardEmailNotTrashedSql('e')} and lower(coalesce(e.data->>'direction', 'inbound')) <> 'outbound')::int as inbound_messages,
+        count(*) filter (
+          where ${dashboardEmailNotTrashedSql('e')}
+            and lower(coalesce(e.data->>'direction', 'inbound')) <> 'outbound'
+            and e.response_at is null
+        )::int as unanswered_emails,
+        count(*) filter (
+          where ${dashboardEmailNotTrashedSql('e')}
+            and lower(coalesce(e.data->>'direction', 'inbound')) <> 'outbound'
+            and e.response_at is not null
+            and e.received_at is not null
+            and e.response_at >= e.received_at
+        )::int as replied_messages,
+        coalesce(percentile_cont(0.5) within group (order by extract(epoch from (e.response_at - e.received_at)) * 1000) filter (
+          where ${dashboardEmailNotTrashedSql('e')}
+            and lower(coalesce(e.data->>'direction', 'inbound')) <> 'outbound'
+            and e.response_at is not null
+            and e.received_at is not null
+            and e.response_at >= e.received_at
+        ), 0)::float as reply_average_ms,
+        count(distinct coalesce(nullif(e.lead_id, ''), nullif(lower(e.email), ''), e.id)) filter (
+          where ${dashboardEmailNotTrashedSql('e')}
+            and ${dashboardApprenticeshipInterestSql('e')}
+        )::int as apprenticeship_interested
+      from app_emails e
+      left join app_leads l on l.id = e.lead_id
+      ${emailWhere.sql}
+    `, emailWhere.params),
+    postgresPool.query(`
+      select
+        count(*)::int as applications,
+        count(*) filter (where a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled')::int as enrolled
+      from app_applications a
+      left join app_leads l on l.id = a.lead_id
+      ${appWhere.sql}
+    `, appWhere.params),
+    postgresPool.query(`
+      select
+        coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other') as source,
+        count(distinct ${dashboardLeadIdentitySql('l')})::int as leads,
+        count(distinct ${dashboardLeadIdentitySql('l')}) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled')::int as enrolled
+      from app_leads l
+      ${leadWhere.sql}
+      group by source
+      order by leads desc, source
+      limit 6
+    `, leadWhere.params),
+    postgresPool.query(`
+      select
+        coalesce(l.stage, l.data->>'stage', 'Unstaged') as label,
+        count(distinct ${dashboardLeadIdentitySql('l')})::int as value
+      from app_leads l
+      ${leadWhere.sql}
+      group by label
+      order by value desc, label
+      limit 8
+    `, leadWhere.params),
+    postgresPool.query(`
+      select
+        count(*)::int as total_events,
+        count(*) filter (
+          where coalesce(ev.data->>'zoom_meeting_id', '') <> ''
+             or coalesce(ev.data->>'zoom_meeting_uuid', '') <> ''
+             or lower(coalesce(ev.location, ev.data->>'location', '')) = 'zoom'
+        )::int as zoom_meetings,
+        count(*) filter (where ev.start_at >= now())::int as upcoming,
+        count(*) filter (where ev.start_at < now())::int as past,
+        coalesce(sum(coalesce(ev.registrations, 0)), 0)::int as registrations,
+        coalesce(sum(coalesce(ev.attendance, 0)), 0)::int as attendance
+      from app_events ev
+      ${eventWhere.sql}
+    `, eventWhere.params),
+    postgresPool.query(`
+      select
+        coalesce(a.programme, l.programme, a.data->>'programme', 'No programme') as label,
+        count(distinct coalesce(nullif(a.lead_id, ''), a.id))::int as value
+      from app_applications a
+      left join app_leads l on l.id = a.lead_id
+      ${enrolledAppWhereSql}
+      group by label
+      order by value desc, label
+      limit 8
+    `, appWhere.params),
+    postgresPool.query(`
+      with filtered as (
+        select l.*
+        from app_leads l
+        ${leadWhere.sql}
+      )
+      select
+        count(*) filter (where coalesce(nullif(email, ''), nullif(phone, '')) is null)::int as missing_contact,
+        count(*) filter (where coalesce(nullif(programme_id, ''), nullif(programme, ''), nullif(data->>'programme_id', '')) is null)::int as missing_programme,
+        count(*) filter (where coalesce(nullif(source_lead_capture, ''), nullif(source_first_touch, ''), nullif(data->>'source_lead_capture', ''), nullif(data->>'source_first_touch', '')) is null)::int as missing_source,
+        (select count(*)::int from (
+          select lower(email) as email_key
+          from filtered
+          where coalesce(email, '') <> ''
+          group by lower(email)
+          having count(*) > 1
+        ) duplicate_emails) as duplicate_email_groups
+      from filtered l
+    `, leadWhere.params)
+  ]);
+  const leads = leadStats.rows[0] || {};
+  const emails = emailStats.rows[0] || {};
+  const apps = appStats.rows[0] || {};
+  const eventRow = eventStats.rows[0] || {};
+  const quality = qualityStats.rows[0] || {};
+  const newLeads = Number(leads.new_leads || 0);
+  const apprenticeshipInterested = Number(emails.apprenticeship_interested || 0);
+  const enrolled = Math.max(Number(apps.enrolled || 0), Number(leads.enrolled_leads || 0));
+  const totalMessages = Number(emails.total_messages || 0);
+  const unansweredEmails = Number(emails.unanswered_emails || 0);
+  const unreadEmails = Number(emails.unread_messages || 0);
+  const totalEvents = Number(eventRow.total_events || 0);
+  const zoomMeetings = Number(eventRow.zoom_meetings || 0);
+  const upcomingEvents = Number(eventRow.upcoming || 0);
+  const qualityIssues = Number(quality.missing_contact || 0) + Number(quality.missing_programme || 0) + Number(quality.missing_source || 0) + Number(quality.duplicate_email_groups || 0);
+  return {
+    generated_at: new Date().toISOString(),
+    role: dashboardRole(user),
+    kpis: [
+      { id: 'reply_average', label: 'Reply Average', value: Math.round(Number(emails.reply_average_ms || 0)), format: 'duration', route: 'inbox', icon: 'clock' },
+      { id: 'unanswered_emails', label: 'Unanswered Emails', value: unansweredEmails, route: 'inbox', icon: 'mail' },
+      { id: 'apprenticeship_interested', label: 'Apprenticeship Interested', value: apprenticeshipInterested, route: 'inbox', icon: 'spark' },
+      { id: 'new_leads', label: 'New Leads', value: newLeads, route: 'leads', icon: 'users' },
+      { id: 'enrolled', label: 'Enrolled', value: enrolled, route: 'applications', icon: 'shield' }
+    ],
+    summary_cards: [
+      { label: 'Leads', value: newLeads, detail: `${enrolled} enrolled`, route: 'leads', icon: 'users' },
+      { label: 'Inbox', value: totalMessages, detail: `${unansweredEmails} unanswered, ${unreadEmails} unread`, route: 'inbox', icon: 'mail' },
+      { label: 'Events & Zoom', value: totalEvents, detail: `${upcomingEvents} upcoming, ${zoomMeetings} Zoom`, route: 'events', icon: 'calendar' },
+      { label: 'Enrolled', value: enrolled, detail: 'Confirmed learner records', route: 'applications', icon: 'shield' },
+      { label: 'Data quality', value: qualityIssues, detail: 'Missing fields and duplicate email groups', route: 'leads', icon: 'shield' }
+    ],
+    funnel: [
+      { label: 'New leads', value: newLeads },
+      { label: 'Interested', value: apprenticeshipInterested },
+      { label: 'Enrolled', value: enrolled }
+    ],
+    email_health: [
+      { label: 'Total messages', value: totalMessages },
+      { label: 'Unanswered', value: unansweredEmails },
+      { label: 'Replied', value: Number(emails.replied_messages || 0) },
+      { label: 'Avg reply', value: Math.round(Number(emails.reply_average_ms || 0)), display: Math.round(Number(emails.reply_average_ms || 0)) }
+    ],
+    lead_sources: sourceStats.rows,
+    charts: [
+      { title: 'Lead funnel', type: 'bar', rows: [{ label: 'New leads', value: newLeads }, { label: 'Interested', value: apprenticeshipInterested }, { label: 'Enrolled', value: enrolled }] },
+      { title: 'Lead stages', type: 'bar', rows: stageStats.rows },
+      { title: 'Lead sources', type: 'bar', rows: sourceStats.rows.map(row => ({ label: row.source || 'Other', value: Number(row.leads || 0), display: `${Number(row.leads || 0)} / ${Number(row.enrolled || 0)} enrolled` })) },
+      { title: 'Email health', type: 'pie', rows: [{ label: 'Inbound', value: Number(emails.inbound_messages || 0) }, { label: 'Outbound', value: Number(emails.outbound_messages || 0) }, { label: 'Unanswered', value: unansweredEmails }, { label: 'Unread', value: unreadEmails }, { label: 'Replied', value: Number(emails.replied_messages || 0) }] },
+      { title: 'Events & Zoom', type: 'pie', rows: [{ label: 'Events', value: Math.max(0, totalEvents - zoomMeetings) }, { label: 'Zoom', value: zoomMeetings }, { label: 'Upcoming', value: upcomingEvents }, { label: 'Past', value: Number(eventRow.past || 0) }] },
+      { title: 'Enrolled by programme', type: 'bar', rows: enrolledProgrammeStats.rows },
+      { title: 'Data quality', type: 'pie', rows: [{ label: 'Missing contact', value: Number(quality.missing_contact || 0) }, { label: 'Missing programme', value: Number(quality.missing_programme || 0) }, { label: 'Missing source', value: Number(quality.missing_source || 0) }, { label: 'Duplicate emails', value: Number(quality.duplicate_email_groups || 0) }] }
     ]
   };
 }
@@ -5525,7 +6020,7 @@ async function refreshMonitoringSnapshotDb(options = {}, trace = null) {
 // cursor; every row is still checked with emailMatchesFilters, so results match the old
 // in-memory path. Label filters, name sorts and searches that could match a label text that
 // is derived in JavaScript (for example "Zoho" or "Inbox") keep the in-memory path.
-const EMAIL_DERIVED_LABEL_WORDS = ['zoho', 'events', 'contract matter', 'das matter', 'aptem matter', 'resolved', 'inbox', 'trash'];
+const EMAIL_DERIVED_LABEL_WORDS = ['zoho', 'enrolled', 'events', 'contract matter', 'das matter', 'aptem matter', 'resolved', 'inbox', 'trash'];
 
 function emailFiltersSqlCapable(filters) {
   if (filters.label && filters.label !== 'All') return false;
@@ -5881,7 +6376,7 @@ async function loadDeveloperConfigDb() {
   await removeLegacyPostgresDeveloperUsers();
   const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
   const users = (await postgresPool.query(
-    `select id, name, email, role, password_hash, temporary_password, invited_at, password_changed_at from ${table} order by created_at, id`
+    `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} order by created_at, id`
   )).rows;
   let workspace = null;
   try {
@@ -5919,7 +6414,6 @@ async function createWorkspaceUser(body, actor) {
       email,
       role,
       password_hash: hashPassword(password),
-      temporary_password: password,
       invited_at: new Date().toISOString(),
       password_changed_at: null
     };
@@ -5929,7 +6423,7 @@ async function createWorkspaceUser(body, actor) {
   }
   const db = await loadDb();
   if (db.users.some(item => normalizeEmail(item.email) === email)) throw statusError(400, 'A user with this email already exists.');
-  const user = { id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), temporary_password: password, invited_at: new Date().toISOString(), password_changed_at: null };
+  const user = { id: nextId('U', [db.users]), name, email, role, password_hash: hashPassword(password), invited_at: new Date().toISOString(), password_changed_at: null };
   db.users.push(user);
   addAudit(db, actor, 'Team member invited', 'user', email);
   await saveDb(db);
@@ -5944,10 +6438,10 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
     const table = sqlIdentifier(POSTGRES_USERS_TABLE, 'app_users');
     const result = await postgresPool.query(
       `update ${table}
-       set password_hash = $2, temporary_password = $3, password_changed_at = null, invited_at = coalesce(invited_at, now()), updated_at = now()
+       set password_hash = $2, temporary_password = null, password_changed_at = null, invited_at = coalesce(invited_at, now()), updated_at = now()
        where id = $1
-       returning id, name, email, role, temporary_password, invited_at, password_changed_at`,
-      [userId, hashPassword(password), password]
+       returning id, name, email, role, invited_at, password_changed_at`,
+      [userId, hashPassword(password)]
     );
     if (!result.rows[0]) throw statusError(404, 'User not found.');
     await clearUserSessions(userId);
@@ -5958,7 +6452,6 @@ async function resetWorkspaceUserPassword(userId, body, actor) {
   const target = db.users.find(item => item.id === userId);
   if (!target) throw statusError(404, 'User not found.');
   target.password_hash = hashPassword(password);
-  target.temporary_password = password;
   target.password_changed_at = null;
   target.invited_at ||= new Date().toISOString();
   await clearUserSessions(target.id);
@@ -5996,7 +6489,7 @@ async function resetPasswordWithTokenFastDb(body) {
     await client.query(
       `update ${usersTable}
        set password_hash = $2,
-           temporary_password = '',
+           temporary_password = null,
            password_changed_at = now(),
            updated_at = now()
        where id = $1`,
@@ -6037,7 +6530,7 @@ async function updateWorkspaceUserRole(userId, body, actor) {
     const target = current.rows[0];
     assertUserCanBeManaged(target, actor, 'change the role for', role);
     const result = await postgresPool.query(
-      `update ${table} set role = $2, updated_at = now() where id = $1 returning id, name, email, role, temporary_password, invited_at, password_changed_at`,
+      `update ${table} set role = $2, updated_at = now() where id = $1 returning id, name, email, role, invited_at, password_changed_at`,
       [userId, role]
     );
     await clearUserSessions(userId);
@@ -6183,7 +6676,8 @@ function developerConfig(req, db) {
       is_configured_developer: isConfiguredDeveloperUser(user),
       invited_at: user.invited_at || '',
       password_changed_at: user.password_changed_at || '',
-      temporary_password: user.temporary_password || ''
+      // True while an invited or reset user still signs in with the password they were given.
+      password_temporary: Boolean(user.invited_at) && !user.password_changed_at && !isConfiguredDeveloperUser(user)
     })),
     server: [
       envKeyStatus('PORT', 'Backend port', false),
@@ -6290,7 +6784,11 @@ function publicApplication(app) {
 }
 
 function loadApplicationList(db) {
+  const enrolledLeadIds = new Set((db.leads || [])
+    .filter(lead => lead?.id && !lead.deleted_at && isEnrolledStage(lead.stage))
+    .map(lead => String(lead.id)));
   return (db.applications || [])
+    .filter(app => enrolledLeadIds.has(String(app.lead_id || '')))
     .slice()
     .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
     .map(publicApplication);
@@ -6326,9 +6824,12 @@ async function loadApplicationListDb(options = {}, trace = null) {
     createdFrom: parseOptionalIsoDate(options.created_from, 'created_from'),
     createdTo: parseOptionalIsoDate(options.created_to, 'created_to')
   };
+  if (!options.cursor) await runEnrolledLeadApplicationBackfill();
   if (postgresPool) {
     const values = [];
-    const conditions = [];
+    const conditions = [
+      `${activeLeadCondition('l')} and lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled'`
+    ];
     const bind = value => { values.push(value); return `$${values.length}`; };
     if (filters.status) conditions.push(`a.status = ${bind(filters.status)}`);
     if (filters.programme) conditions.push(`(a.programme = ${bind(filters.programme)} or a.data->>'programme_id' = $${values.length})`);
@@ -6428,17 +6929,17 @@ async function nextPostgresId(client, table, prefix) {
 }
 
 const APPLICATION_DOCUMENT_TEMPLATES = [
-  ['training_plan', 'Training Plan', 'TrainingPlan-Training Plan v3 (5).pdf'],
-  ['onboarding_ilr', 'OnBoarding ILR', 'OnBoarding-ILR (3).pdf'],
-  ['employer_agreement', 'Employer Agreement Form', 'EmployerAgreementForm - Generic.pdf'],
-  ['written_agreement', 'Apprenticeship Written Agreement', 'Apprenticeship-WrittenAgreement V1.1 (2).pdf'],
-  ['apprenticeship_agreement', 'Apprenticeship Agreement', 'ApprenticeshipAgreement-Apprenticeship Agreement v5 (3).pdf']
+  ['training_plan', 'Training Plan', 'TrainingPlan-Training Plan v3 (5).pdf', 'assets/documents/TrainingPlan-Training Plan v3 (5).pdf'],
+  ['onboarding_ilr', 'OnBoarding ILR', 'OnBoarding-ILR (3).pdf', 'assets/documents/OnBoarding-ILR (3).pdf'],
+  ['employer_agreement', 'Employer Agreement Form', 'EmployerAgreementForm - Generic.pdf', 'assets/documents/EmployerAgreementForm - Generic.pdf'],
+  ['written_agreement', 'Apprenticeship Written Agreement', 'Apprenticeship-WrittenAgreement V1.1 (2).pdf', 'assets/documents/Apprenticeship-WrittenAgreement V1.1 (2).pdf'],
+  ['apprenticeship_agreement', 'Apprenticeship Agreement', 'ApprenticeshipAgreement-Apprenticeship Agreement v5 (3).pdf', 'assets/documents/ApprenticeshipAgreement-Apprenticeship Agreement v5 (3).pdf']
 ];
 
 async function seedDocumentTemplatesFromDisk() {
   if (!postgresPool) return;
-  for (const [key, title, filename] of APPLICATION_DOCUMENT_TEMPLATES) {
-    const filePath = path.join(ROOT, filename);
+  for (const [key, title, filename, assetPath] of APPLICATION_DOCUMENT_TEMPLATES) {
+    const filePath = path.join(ROOT, assetPath || filename);
     let content = null;
     try {
       content = await fs.promises.readFile(filePath);
@@ -6489,6 +6990,64 @@ function applicationLearnerFromBody(body) {
     note: body.enrolment_note || 'Added as an existing enrolled learner.'
   };
 }
+
+function isEnrolledStage(stage) {
+  return String(stage || '').trim().toLowerCase() === 'enrolled';
+}
+
+function automaticEnrolledLearner(lead, now = new Date().toISOString()) {
+  return {
+    external_reference: lead.learner_reference || lead.external_reference || `AUTO-${lead.id}`,
+    enrolled_at: lead.enrolled_at || now,
+    note: 'Application created automatically because the lead is enrolled.'
+  };
+}
+
+function automaticApplicationFromLead(appId, lead, user, now = new Date().toISOString()) {
+  const learner = automaticEnrolledLearner(lead, now);
+  return {
+    id: appId,
+    lead_id: lead.id,
+    first_name: lead.first_name,
+    last_name: lead.last_name,
+    programme: lead.programme,
+    intake: lead.intake || 'Next intake',
+    status: 'Enrolled',
+    manager: user?.name || lead.owner || 'System',
+    member: lead.first_name,
+    created_at: now,
+    contract: { status: 'Verified', note: 'Lead was already enrolled; application was created automatically.' },
+    requirements: applicationRequirements(appId, [], { verified: true, reviewer: user?.name || 'System' }),
+    learner
+  };
+}
+
+const automaticApplicationFromEnrolledLead = automaticApplicationFromLead;
+
+async function ensureApplicationForLeadFastDb(client, lead, user, options = {}) {
+  if (!AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS || !lead?.id || !isEnrolledStage(lead.stage)) return null;
+  await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [`auto-application:${lead.id}`]);
+  const existing = await client.query(`select data from app_applications where lead_id = $1 limit 1`, [lead.id]);
+  if (existing.rows[0]) return null;
+  const now = options.now || new Date().toISOString();
+  const appId = await nextPostgresId(client, 'app_applications', 'A');
+  const app = automaticApplicationFromLead(appId, lead, user, now);
+  await client.query(
+    `insert into app_applications (id, lead_id, first_name, last_name, programme, intake, status, manager, member, created_at, contract, requirements, learner, data)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb)`,
+    [app.id, app.lead_id, app.first_name, app.last_name, app.programme, app.intake, app.status, app.manager, app.member, app.created_at, jsonValue(app.contract), jsonValue(app.requirements), jsonValue(app.learner), jsonValue(app)]
+  );
+  const snapshot = { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture };
+  const attribution = { ...lead, programme: app.programme, snapshot };
+  await client.query(
+    `insert into app_attribution (lead_id, email, programme, data) values ($1, $2, $3, $4::jsonb)`,
+    [lead.id, lead.email, app.programme, jsonValue(attribution)]
+  );
+  await appendAuditFast(client, user || { name: 'System' }, options.auditAction || 'Application auto-created for lead', 'lead', lead.id, app.id);
+  return { application: app, attribution };
+}
+
+const ensureApplicationForEnrolledLeadFastDb = ensureApplicationForLeadFastDb;
 
 async function createApplicationFastDb(body, user) {
   if (!postgresPool) return null;
@@ -6600,10 +7159,13 @@ async function updateLeadFastDb(id, body, user) {
       `update app_leads set stage = $2, owner_id = $3, priority = $4, data = $5::jsonb where id = $1`,
       [lead.id, lead.stage || null, lead.owner_id || null, lead.priority || null, jsonValue(lead)]
     );
+    const automaticApplication = await ensureApplicationForLeadFastDb(client, lead, user, {
+      auditAction: 'Application auto-created for lead'
+    });
     await appendAuditFast(client, user, 'Opportunity updated', 'lead', lead.id, body.reason);
     await client.query('commit');
     dbCache = null;
-    return { ok: true, lead };
+    return { ok: true, lead, application: automaticApplication ? publicApplication(automaticApplication.application) : null, attribution: automaticApplication?.attribution || null };
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -6777,10 +7339,13 @@ async function createLeadFastDb(body, user) {
         [task.id, task.title, task.lead_id, task.kind, task.status, task.due_at, task.priority, task.owner_id, jsonValue(task)]
       );
     }
+    const automaticApplication = await ensureApplicationForLeadFastDb(client, lead, user, {
+      auditAction: created ? 'Application auto-created for new lead' : 'Application auto-created for duplicate lead'
+    });
     await appendAuditFast(client, user, created ? 'Lead created' : 'Lead updated from duplicate submission', 'lead', lead.id);
     await client.query('commit');
     dbCache = null;
-    return { id: lead.id, lead, task, created };
+    return { id: lead.id, lead, task, created, application: automaticApplication ? publicApplication(automaticApplication.application) : null, attribution: automaticApplication?.attribution || null };
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -7103,7 +7668,7 @@ async function sendDocumentTemplateFile(key, res) {
     return true;
   }
   const filename = template[2];
-  const filePath = path.resolve(ROOT, filename);
+  const filePath = path.resolve(ROOT, template[3] || filename);
   const rootPath = path.resolve(ROOT);
   if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) throw statusError(404, 'Document template not found.');
   const content = await fs.promises.readFile(filePath).catch(() => null);
@@ -8166,6 +8731,20 @@ function uniqueStrings(values) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
+function normalizedGmailLabelName(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isGmailEnrolmentLabelName(value) {
+  const label = normalizedGmailLabelName(value);
+  return GMAIL_ENROLMENT_LABELS.has(label) || GMAIL_ENROLMENT_LABEL_PREFIXES.some(prefix => label === prefix || label.startsWith(`${prefix}/`));
+}
+
+function gmailEnrolmentLabel(email) {
+  return uniqueStrings(email?.gmail_label_names || [])
+    .find(isGmailEnrolmentLabelName) || '';
+}
+
 function isInternalGmailLabelName(value) {
   return /^Label_[A-Za-z0-9_-]+$/i.test(String(value || '').trim());
 }
@@ -8343,6 +8922,32 @@ function leadForEmailAddress(db, email) {
   return normalized ? db.leads.find(item => normalizeEmail(item.email) === normalized) || null : null;
 }
 
+function applyGmailEnrolmentLabels(db, user, changed) {
+  let enrolled = 0;
+  for (const email of db.emails || []) {
+    const label = gmailEnrolmentLabel(email);
+    if (!label) continue;
+    const linkedLead = email.lead_id ? (db.leads || []).find(lead => lead.id === email.lead_id) : null;
+    const lead = linkedLead || leadForEmailAddress(db, email.email);
+    if (!lead) continue;
+    if (email.lead_id !== lead.id) {
+      email.lead_id = lead.id;
+      changed?.emailIds?.add(email.id);
+    }
+    if (lead.stage === 'Enrolled') continue;
+    lead.stage = 'Enrolled';
+    lead.enrolled_from_gmail_label = label;
+    lead.enrolled_from_gmail_label_at = new Date().toISOString();
+    changed?.leadIds?.add(lead.id);
+    if (db.audit && user) {
+      addAudit(db, user, 'Lead enrolled from Gmail label', 'lead', lead.id, label);
+      changed?.auditIds?.add(db.audit[0]?.id);
+    }
+    enrolled += 1;
+  }
+  return enrolled;
+}
+
 function externalRecipients(db, message) {
   const companyEmails = new Set(companyMailboxEmails(db));
   return parseAddressList(`${headerValue(message, 'To')},${headerValue(message, 'Cc')}`)
@@ -8518,7 +9123,9 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   const labelsRefreshed = refreshStoredGmailLabelNames(db, labelMap, changed);
   const historyResult = options.skipTrash ? { history_trash: 0, history_restored: 0, history_skipped: true } : await syncGmailHistoryChanges(db, auth, changed);
   const trashResult = options.skipTrash ? { trashed: 0, scanned_trash: 0, trash_sync_skipped: true } : await syncGmailTrashLabels(db, auth, changed, { force: options.forceTrash });
+  let enrolledFromLabels = 0;
   const quotaResponse = async () => {
+    enrolledFromLabels += applyGmailEnrolmentLabels(db, user, changed);
     if (latestOnly) {
       db.gmail.sync_2026_page_token = null;
       db.gmail.sent_sync_2026_page_token = null;
@@ -8534,7 +9141,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0) }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
       await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
     }
-    return { imported, imported_inbox: importedInbox, imported_sent: importedSent, labels_refreshed: labelsRefreshed, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), quota_limited: true, retry_after_ms: 70000, last_sync_at: db.gmail.last_sync_at };
+    return { imported, imported_inbox: importedInbox, imported_sent: importedSent, labels_refreshed: labelsRefreshed, labels_enrolled: enrolledFromLabels, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), quota_limited: true, retry_after_ms: 70000, last_sync_at: db.gmail.last_sync_at };
   };
 
   async function importSource(source, labelId) {
@@ -8673,6 +9280,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   await importSource('inbox', 'INBOX');
   await importSource('sent', 'SENT');
   const repliesResolved = reconcileGmailSentReplies(db, changed);
+  enrolledFromLabels += applyGmailEnrolmentLabels(db, user, changed);
   sortEmailsNewest(db);
   if (latestOnly) {
     db.gmail.sync_2026_page_token = null;
@@ -8689,7 +9297,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
     await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
   }
-  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, labels_refreshed: labelsRefreshed, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
+  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, labels_refreshed: labelsRefreshed, labels_enrolled: enrolledFromLabels, scanned, restored, ...historyResult, ...trashResult, since: GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
 }
 
 function autoSyncUser(db) {
@@ -8917,6 +9525,13 @@ async function runZoomAutoSync() {
 }
 
 function startAutoSync() {
+  if (!BACKGROUND_JOBS_ENABLED) {
+    gmailAutoSyncState = { ...gmailAutoSyncState, enabled: false, mode: GMAIL_AUTO_SYNC_MODE, daily_time: GMAIL_AUTO_SYNC_DAILY_TIME, running: false, next_run_at: null };
+    eventAutoSyncState = { ...eventAutoSyncState, enabled: false, running: false, next_run_at: null };
+    zoomAutoSyncState = { ...zoomAutoSyncState, enabled: false, running: false, next_run_at: null };
+    console.log('Background auto sync disabled. Set BACKGROUND_JOBS_ENABLED=true to resume scheduled sync jobs.');
+    return;
+  }
   resumeZohoSyncJobs().catch(error => console.error(`Zoho sync resume failed: ${zohoSafeJobError(error)}`));
   scheduleZohoAutoSync(60 * 1000);
   if (!GMAIL_AUTO_SYNC_ENABLED && !EVENT_AUTO_SYNC_ENABLED && !ZOOM_AUTO_SYNC_ENABLED) {
@@ -8947,6 +9562,101 @@ function startAutoSync() {
   } else {
     zoomAutoSyncState = { ...zoomAutoSyncState, enabled: false, running: false, next_run_at: null };
   }
+}
+
+let leadApplicationBackfillRunning = false;
+
+async function runEnrolledLeadApplicationBackfill() {
+  if (!ENROLLED_LEAD_APPLICATION_BACKFILL_ENABLED || leadApplicationBackfillRunning) return;
+  leadApplicationBackfillRunning = true;
+  let created = 0;
+  try {
+    await ensureStorage();
+    if (!postgresPool || !usesPostgresStorage()) {
+      const db = await loadDb();
+      db.applications ||= [];
+      db.leads ||= [];
+      db.audit ||= [];
+      const leadById = new Map(db.leads.map(lead => [String(lead.id), lead]));
+      const beforeCleanup = db.applications.length;
+      db.applications = db.applications.filter(app => {
+        const lead = leadById.get(String(app.lead_id));
+        const autoDraft = app?.contract?.note === 'Application created automatically from lead.' && !app?.learner;
+        return !(autoDraft && lead && !isEnrolledStage(lead.stage));
+      });
+      const missingLeads = db.leads
+        .filter(lead => lead?.id && !lead.deleted_at && isEnrolledStage(lead.stage))
+        .filter(lead => !db.applications.some(app => String(app.lead_id) === String(lead.id)))
+        .slice(0, ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT);
+      for (const lead of missingLeads) {
+        const appId = nextId('A', [db.applications]);
+        const app = automaticApplicationFromLead(appId, lead, { name: 'System' });
+        db.applications.push(app);
+        db.attribution ||= [];
+        db.attribution.unshift({ ...lead, programme: app.programme, snapshot: { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture } });
+        addAudit(db, { name: 'System' }, 'Application auto-created during lead backfill', 'lead', lead.id, app.id);
+        created += 1;
+      }
+      if (created || beforeCleanup !== db.applications.length) {
+        await saveDb(db);
+        console.log(`Lead application backfill created ${created} local application(s).`);
+      }
+      return created;
+    }
+    const cleanup = await postgresPool.query(
+      `delete from app_applications a
+       using app_leads l
+       where a.lead_id = l.id
+         and a.data->'contract'->>'note' = 'Application created automatically from lead.'
+         and coalesce(a.data->'learner', 'null'::jsonb) = 'null'::jsonb
+         and lower(coalesce(l.stage, l.data->>'stage', '')) <> 'enrolled'`
+    );
+    if (cleanup.rowCount) {
+      dbCache = null;
+      console.log(`Lead application backfill removed ${cleanup.rowCount} non-enrolled auto-created application(s).`);
+    }
+    const result = await postgresPool.query(
+      `select l.id
+       from app_leads l
+       where ${activeLeadCondition('l')}
+         and lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled'
+         and not exists (select 1 from app_applications a where a.lead_id = l.id)
+       order by l.created_at nulls last, l.id
+       limit $1`,
+      [ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT]
+    );
+    for (const row of result.rows) {
+      const client = await postgresPool.connect();
+      try {
+        await client.query('begin');
+        const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [row.id]);
+        const lead = leadResult.rows[0]?.data;
+        const auto = await ensureApplicationForLeadFastDb(client, lead, { name: 'System' }, {
+          auditAction: 'Application auto-created during lead backfill'
+        });
+        if (auto) created += 1;
+        await client.query('commit');
+      } catch (error) {
+        await client.query('rollback');
+        console.error(`Lead application backfill failed for ${row.id}: ${error.message || error}`);
+      } finally {
+        client.release();
+      }
+    }
+    if (created) {
+      dbCache = null;
+      console.log(`Lead application backfill created ${created} application(s).`);
+    } else if (result.rows.length) {
+      console.log('Lead application backfill found no missing applications after locking leads.');
+    } else {
+      console.log('Lead application backfill found no leads missing applications.');
+    }
+  } catch (error) {
+    console.error(`Lead application backfill failed: ${error.message || error}`);
+  } finally {
+    leadApplicationBackfillRunning = false;
+  }
+  return created;
 }
 
 function programmeForEvent(db, eventName = '') {
@@ -10431,6 +11141,39 @@ function zohoRecordsPayload(db = {}) {
   };
 }
 
+function promiseTimeout(promise, timeoutMs, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(message);
+      error.code = 'KBC_TIMEOUT';
+      reject(error);
+    }, Math.max(1, Number(timeoutMs) || 1));
+    if (timer.unref) timer.unref();
+  });
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    timeout
+  ]);
+}
+
+function zohoRecordsPreviewFallback(db = {}, error = null) {
+  const payload = zohoRecordsPayload(db);
+  payload.modules = zohoSyncModules().map(moduleName => ({
+    module: moduleName,
+    total: 0,
+    loaded: 0,
+    records: []
+  }));
+  payload.total = 0;
+  payload.error = error?.code === 'KBC_TIMEOUT'
+    ? 'Zoho records preview timed out while connecting to the database. Try again in a moment.'
+    : 'Zoho records preview is temporarily unavailable. Try again in a moment.';
+  return payload;
+}
+
 // One page of stored Zoho records, read straight from app_zoho_records so the UI never
 // has to hold a whole module in memory.
 // Zoho Contacts as a list: only the columns a list renders plus the linked lead id, never the
@@ -10539,24 +11282,16 @@ async function loadZohoRecordPage(options = {}) {
   return { module: moduleName, search, records, total, limit, offset, has_more: offset + records.length < total, next_offset: offset + records.length };
 }
 
-async function zohoRecordsPayloadDb(db = {}) {
+async function zohoRecordsPayloadDbUnsafe(db = {}) {
   if (!postgresPool || !usesPostgresStorage()) return zohoRecordsPayload(db);
   await ensureZohoRecordsTable();
-  const [counts, records] = await Promise.all([
-    postgresPool.query(`select module, count(*)::int as total from app_zoho_records group by module`),
-    postgresPool.query(`
-      select data from (
-        select data, module, modified_time, synced_at, key, row_number() over (
-          partition by module
-          order by modified_time desc nulls last, synced_at desc nulls last, key
-        ) as rn
-        from app_zoho_records
-      ) ranked
-      where rn <= 50
-      order by module, modified_time desc nulls last, key
-    `)
-  ]);
-  const totals = new Map(counts.rows.map(row => [row.module, Number(row.total || 0)]));
+  const records = await postgresPool.query(
+    `select data
+     from app_zoho_records
+     order by modified_time desc nulls last, synced_at desc nulls last, key
+     limit $1`,
+    [ZOHO_RECORDS_PREVIEW_LIMIT]
+  );
   const byModule = new Map();
   for (const row of records.rows.map(item => item.data).filter(Boolean)) {
     const moduleName = row.module || 'Zoho CRM';
@@ -10567,10 +11302,41 @@ async function zohoRecordsPayloadDb(db = {}) {
   const payload = zohoRecordsPayload({ ...db, zoho: { ...(db.zoho || {}), records: Object.fromEntries(byModule) } });
   payload.modules = zohoSyncModules().map(moduleName => {
     const rows = byModule.get(moduleName) || [];
-    return { module: moduleName, total: totals.get(moduleName) || rows.length, loaded: rows.length, records: rows };
+    return { module: moduleName, total: rows.length, loaded: rows.length, records: rows };
   });
-  payload.total = [...totals.values()].reduce((sum, value) => sum + value, 0);
+  payload.total = records.rows.length;
+  payload.loaded = records.rows.length;
+  payload.limit = ZOHO_RECORDS_PREVIEW_LIMIT;
+  payload.preview_limited = true;
   return payload;
+}
+
+async function zohoRecordsPayloadDb(db = {}) {
+  try {
+    return await promiseTimeout(
+      zohoRecordsPayloadDbUnsafe(db),
+      ZOHO_RECORDS_PREVIEW_TIMEOUT_MS,
+      'Zoho records preview timed out while connecting to the database.'
+    );
+  } catch (error) {
+    if (error?.code === 'KBC_TIMEOUT' || postgresConnectionLost(error)) {
+      console.error(`Zoho records preview unavailable: ${error.message || error}`);
+      return zohoRecordsPreviewFallback(db, error);
+    }
+    throw error;
+  }
+}
+
+async function loadZohoWorkspaceState() {
+  if (!usesPostgresStorage()) return loadDb();
+  await ensureStorage();
+  const result = await postgresPool.query(
+    `select coalesce(meta->'zoho', '{}'::jsonb) - 'records' - 'imported_record_ids' as zoho
+     from app_workspace
+     where id = $1`,
+    ['main']
+  );
+  return { zoho: result.rows[0]?.zoho || {} };
 }
 
 function createOrUpdateZohoLead(db, user, moduleName, record) {
@@ -11581,7 +12347,9 @@ function readBody(req) {
     req.on('end', () => {
       if (!body) return resolve({});
       try {
-        resolve(JSON.parse(body));
+        const parsed = JSON.parse(body);
+        // Handlers read fields off the body, so null and bare values count as an empty one.
+        resolve(parsed !== null && typeof parsed === 'object' ? parsed : {});
       } catch {
         reject(statusError(400, 'Invalid JSON body.'));
       }
@@ -11959,6 +12727,8 @@ function recordApiTiming(req, status, startedAt) {
 const PUBLIC_STATIC_EXTENSIONS = new Set(['.html', '.js', '.css', '.webmanifest', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2']);
 const PUBLIC_STATIC_BLOCKED_NAMES = new Set(['server.js']);
 const PUBLIC_STATIC_DEFAULT_FILE = 'index.html';
+const PUBLIC_ASSET_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2']);
+const PUBLIC_ASSET_PREFIX = 'assets/images/';
 
 function publicStaticFile(pathname) {
   let decoded = '';
@@ -11970,7 +12740,14 @@ function publicStaticFile(pathname) {
   if (!decoded || decoded === '/') return PUBLIC_STATIC_DEFAULT_FILE;
   if (!decoded.startsWith('/')) return null;
   const segments = decoded.slice(1).split('/');
-  if (segments.length !== 1) return null;
+  if (segments.length > 1) {
+    const assetName = segments.join('/');
+    if (assetName.startsWith(PUBLIC_ASSET_PREFIX) && !segments.some(segment => !segment || segment.startsWith('.') || segment.includes('\\'))) {
+      const ext = path.extname(assetName).toLowerCase();
+      return PUBLIC_ASSET_EXTENSIONS.has(ext) ? assetName : null;
+    }
+    return null;
+  }
   const name = segments[0];
   if (!name || name.startsWith('.') || PUBLIC_STATIC_BLOCKED_NAMES.has(name.toLowerCase())) return null;
   const ext = path.extname(name).toLowerCase();
@@ -11978,7 +12755,36 @@ function publicStaticFile(pathname) {
   return name;
 }
 
+// Sent with every response. HTML pages also get the Content-Security-Policy in serveStatic.
+function applySecurityHeaders(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  if (requestIsSecure(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+}
+
+// Pages run their own script files only. An inline script (offline.html has one) is allowed by
+// its hash, taken from the HTML being sent so it always matches. Browsers hash the script text
+// with LF line endings, whatever the file on disk uses.
+function contentSecurityPolicy(html) {
+  const inlineScripts = [...String(html).matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    .map(match => `'sha256-${crypto.createHash('sha256').update(match[1].replace(/\r\n?/g, '\n')).digest('base64')}'`);
+  return [
+    "default-src 'self'",
+    `script-src ${["'self'", ...inlineScripts].join(' ')}`,
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ');
+}
+
 function serveStatic(req, res) {
+  applySecurityHeaders(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, { error: 'Not found.' }, 404);
   const url = new URL(req.url, `http://${req.headers.host}`);
   const name = publicStaticFile(url.pathname);
@@ -11988,12 +12794,31 @@ function serveStatic(req, res) {
   if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) return sendJson(res, { error: 'Not found.' }, 404);
   fs.readFile(filePath, (error, content) => {
     if (error) return sendJson(res, { error: 'Not found.' }, 404);
-    res.writeHead(200, { 'Content-Type': mime[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
+    const ext = path.extname(filePath).toLowerCase();
+    const headers = { 'Content-Type': mime[ext] || 'application/octet-stream' };
+    if (ext === '.html') headers['Content-Security-Policy'] = contentSecurityPolicy(content.toString('utf8'));
+    res.writeHead(200, headers);
     res.end(content);
   });
 }
 
+// Errors raised on purpose (statusError) and plain messages are shown to the user. Database,
+// network and programming errors describe the inside of the server, so the caller gets a
+// generic message and the real one goes to the log.
+function isInternalError(error) {
+  if (!error || error.status) return false;
+  if (error instanceof TypeError || error instanceof ReferenceError || error instanceof RangeError || error instanceof SyntaxError) return true;
+  return Boolean(error.code || error.errno || error.syscall || error.severity);
+}
+
+function publicErrorMessage(error) {
+  return isInternalError(error) ? 'Server error. Please try again.' : error?.message || 'Server error.';
+}
+
 async function handleApi(req, res) {
+  applySecurityHeaders(req, res);
+  // API answers hold workspace data; a handler that wants caching sets its own header.
+  res.setHeader('Cache-Control', 'no-store');
   const handlerEntry = performance.now();
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = url.pathname;
@@ -12035,16 +12860,21 @@ async function handleApi(req, res) {
     const email = normalizeEmail(body.email);
     const password = String(body.password || '');
     if (!email || !password) throw statusError(400, 'Email and password are required.');
-    let user = await findLoginUser(email);
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    const loginLimits = loginThrottleLimits(req, email);
+    assertAuthThrottle(loginLimits);
+    const publishedDefault = password === LEGACY_DEFAULT_ADMIN_PASSWORD;
+    let user = publishedDefault ? null : await findLoginUser(email);
+    if (!publishedDefault && (!user || !verifyPassword(password, user.password_hash))) {
       user = await forceConfiguredDeveloperLogin(email, password);
     }
     if (!user || !verifyPassword(password, user.password_hash)) {
+      recordAuthThrottle(loginLimits);
       if (isDeveloperEmail(email) && !developerPasswordConfigured()) {
         throw statusError(500, 'Developer password is not configured on this deployment. Add DEV_PANEL_PASSWORD and redeploy.');
       }
       throw statusError(401, 'Email or password is incorrect.');
     }
+    authThrottle.delete(loginLimits[0][0]);
     const sid = await createSession(user);
     sendJson(res, { ok: true, user: publicUser(user) }, 200, { 'Set-Cookie': sessionCookie(req, sid) });
     recordPostgresLogin(user, req).catch(error => console.error(`Login audit failed: ${error.message || error}`));
@@ -12102,6 +12932,10 @@ async function handleApi(req, res) {
   if (route === '/api/dashboard/summary' && method === 'GET') {
     const user = await currentSessionUser(req);
     return sendJson(res, await loadDashboardCockpitSummaryDb(parseDashboardFilters(url, user), user));
+  }
+  if (route === '/api/dashboard/admin-overview' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await loadDashboardAdminOverviewDb(parseDashboardFilters(url, user), user));
   }
   if (route === '/api/dashboard/totals' && method === 'GET') {
     await currentSessionUser(req);
@@ -12488,6 +13322,9 @@ async function handleApi(req, res) {
     return sendJson(res, { attribution: await loadAttributionListDb(url.searchParams.get('limit')) });
   }
   if (route === '/api/password/reset' && method === 'POST') {
+    const resetLimits = [[`reset-address:${requestIp(req)}`, PASSWORD_RESET_ATTEMPTS_PER_ADDRESS]];
+    assertAuthThrottle(resetLimits);
+    recordAuthThrottle(resetLimits);
     return sendJson(res, await resetPasswordWithTokenFastDb(body));
   }
   if (route === '/api/logout' && method === 'POST') {
@@ -12495,6 +13332,10 @@ async function handleApi(req, res) {
     const sid = parseCookies(req).sid;
     await deleteSession(sid);
     return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
+  }
+  if (route === '/api/password' && method === 'POST') {
+    const user = await currentSessionUser(req);
+    return sendJson(res, await changeOwnPassword(user, body), 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
   }
   if (route === '/api/integrations/zoho/sync' && method === 'POST') {
     const user = await currentSessionUser(req);
@@ -12532,6 +13373,29 @@ async function handleApi(req, res) {
     const job = await cancelZohoSyncJob(decodeURIComponent(lightweightMatch[1]));
     if (!job) throw statusError(404, 'Zoho sync job not found.');
     return sendJson(res, { success: true, ...zohoSyncJobPayload(job) });
+  }
+  if (route === '/api/integrations/zoho/status' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, zohoSafeStatus(req, await loadZohoWorkspaceState()));
+  }
+  if (route === '/api/integrations/zoho/diagnostics' && method === 'GET') {
+    const user = await currentSessionUser(req);
+    const canInspect = permissionsForUser(user).developer || permissions(user.role).admin;
+    if (!canInspect) throw statusError(403, 'Developer access is required.');
+    return sendJson(res, zohoConnectionDiagnostics(req, await loadZohoWorkspaceState()));
+  }
+  if (route === '/api/integrations/zoho/records' && method === 'GET') {
+    await currentSessionUser(req);
+    return sendJson(res, await zohoRecordsPayloadDb(await loadZohoWorkspaceState()));
+  }
+  if (route === '/api/password/forgot' && method === 'POST') {
+    // Checked here, before the full workspace load that the handler below needs.
+    const forgotLimits = [
+      [`forgot-address:${requestIp(req)}`, PASSWORD_FORGOT_REQUESTS_PER_ADDRESS],
+      [`forgot-email:${normalizeEmail(body.email)}`, PASSWORD_FORGOT_REQUESTS_PER_EMAIL]
+    ];
+    assertAuthThrottle(forgotLimits);
+    recordAuthThrottle(forgotLimits);
   }
   const loadDbStart = performance.now();
   const db = await loadDb();
@@ -12901,16 +13765,33 @@ async function handleApi(req, res) {
       taskKind: 'Call'
     });
     if (!result.lead) throw statusError(400, 'This sender is excluded from lead creation.');
+    let automaticApplication = null;
+    if (AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && isEnrolledStage(result.lead.stage) && !(db.applications || []).some(app => app.lead_id === result.lead.id)) {
+      const appId = nextId('A', [db.applications]);
+      automaticApplication = automaticApplicationFromLead(appId, result.lead, user);
+      db.applications.push(automaticApplication);
+      db.attribution.unshift({ ...result.lead, programme: automaticApplication.programme, snapshot: { first_touch: result.lead.source_first_touch, lead_capture: result.lead.source_lead_capture, conversion_source: result.lead.source_lead_capture } });
+      addAudit(db, user, 'Application auto-created for lead', 'lead', result.lead.id, appId);
+    }
     addAudit(db, user, result.created ? 'Lead created' : 'Lead updated from duplicate submission', 'lead', result.lead.id);
     await saveDb(db);
-    return sendJson(res, { id: result.lead.id, created: result.created }, result.created ? 201 : 200);
+    return sendJson(res, { id: result.lead.id, lead: result.lead, created: result.created, application: automaticApplication ? publicApplication(automaticApplication) : null }, result.created ? 201 : 200);
   }
   if (match && method === 'PATCH') {
     const lead = leadFor(db, match[1]);
     Object.assign(lead, { stage: body.stage, owner_id: body.owner_id, priority: body.priority });
+    let automaticApplication = null;
+    const existingApplication = (db.applications || []).find(app => app.lead_id === lead.id);
+    if (AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && isEnrolledStage(lead.stage) && !existingApplication) {
+      const appId = nextId('A', [db.applications]);
+      automaticApplication = automaticApplicationFromLead(appId, lead, user);
+      db.applications.push(automaticApplication);
+      db.attribution.unshift({ ...lead, programme: automaticApplication.programme, snapshot: { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture } });
+      addAudit(db, user, 'Application auto-created for lead', 'lead', lead.id, appId);
+    }
     addAudit(db, user, 'Opportunity updated', 'lead', lead.id, body.reason);
     await saveDb(db);
-    return sendJson(res, { ok: true });
+    return sendJson(res, { ok: true, lead, application: automaticApplication ? publicApplication(automaticApplication) : null });
   }
 
   match = route.match(/^\/api\/leads\/([^/]+)\/opportunities$/);
@@ -13133,15 +14014,6 @@ async function handleApi(req, res) {
     return sendJson(res, { ok: true });
   }
 
-  if (route === '/api/password' && method === 'POST') {
-    if (!verifyPassword(body.current_password || '', user.password_hash)) throw statusError(400, 'Current password is incorrect.');
-    user.password_hash = hashPassword(body.new_password || '');
-    user.temporary_password = '';
-    user.password_changed_at = new Date().toISOString();
-    await saveDb(db);
-    return sendJson(res, { ok: true }, 200, { 'Set-Cookie': sessionCookie(req, '', 0) });
-  }
-
   throw statusError(404, 'API route not found.');
 }
 
@@ -13155,7 +14027,10 @@ const server = http.createServer(async (req, res) => {
     return serveStatic(req, res);
   } catch (error) {
     if (apiRequest) recordApiError(req, error);
-    sendJson(res, { error: error.message || 'Server error.' }, error.status || 500, {}, req.__perfTrace || null);
+    const status = error.status || 500;
+    if (status >= 500) console.error(`[error] ${req.method} ${requestPath(req)} ${status}: ${isInternalError(error) ? error.stack || error.message : error.message}`);
+    if (res.headersSent) return res.end();
+    sendJson(res, { error: publicErrorMessage(error) }, status, error.headers || {}, req.__perfTrace || null);
   }
 });
 
@@ -13164,6 +14039,7 @@ if (process.env.NEST_COMPAT_MODE !== 'true') {
     console.log(`Kent Business College backend running on port ${PORT}`);
     startAutoSync();
     startMonitoringSnapshotScheduler();
+    setTimeout(() => runEnrolledLeadApplicationBackfill(), 5000);
   });
 }
 
@@ -13173,6 +14049,7 @@ module.exports = {
   publicStaticFile,
   withoutIntegrationSecrets,
   startAutoSync,
+  runEnrolledLeadApplicationBackfill,
   server,
   bootstrap,
   loadDb,
@@ -13189,6 +14066,20 @@ module.exports = {
   programmeForText,
   programmeForEvent,
   recalculate,
+  publicErrorMessage,
+  __securityTest: {
+    authThrottle,
+    assertAuthThrottle,
+    recordAuthThrottle,
+    loginThrottleLimits,
+    contentSecurityPolicy,
+    applySecurityHeaders,
+    hashPassword,
+    verifyPassword,
+    initialAdminPassword,
+    AUTH_THROTTLE_WINDOW_MS,
+    LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS
+  },
   __zohoTest: {
     zohoAccessTokenValid,
     zohoTokenUsable,

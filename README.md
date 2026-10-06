@@ -2,6 +2,15 @@
 
 Node.js workspace for Kent Business College admissions, email queue, events, leads, and integrations.
 
+## Project Layout
+
+- `assets/images/` stores logos and browser image assets.
+- `assets/documents/` stores PDF application document templates.
+- `docs/reports/` stores implementation, audit, and performance notes.
+- `src/` stores the NestJS source modules.
+- `scripts/` stores maintenance, smoke test, and diagnostic scripts.
+- `sql/` stores database schema and migration helpers.
+
 ## Local Run
 
 ```bash
@@ -62,6 +71,8 @@ GMAIL_CLIENT_SECRET=...
 GMAIL_REDIRECT_URI=https://your-domain.com/api/integrations/gmail/callback
 EVENTBRITE_REDIRECT_URI=https://your-domain.com/api/integrations/eventbrite/callback
 ```
+
+`INITIAL_ADMIN_PASSWORD` has no default. Without it the seeded admin account gets a random password, so set it (or `DEV_PANEL_PASSWORD`) before the first start.
 
 7. In Google OAuth, add the same Gmail redirect URL used above.
 8. Visit `/api/health` after deployment. A healthy app returns JSON with the storage mode.

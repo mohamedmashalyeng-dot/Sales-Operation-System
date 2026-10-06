@@ -72,6 +72,20 @@ const email = { id: 'E-1', lead_id: 'L-1', first_name: 'Sam', last_name: 'Learne
 const application = { id: 'A-1', lead_id: 'L-1', first_name: 'Sam', last_name: 'Learner', programme: 'Business Administration', intake: 'October', status: 'In review', manager: 'Admin One', created_at: '2026-10-01T09:00:00.000Z', contract: { status: 'Draft' }, requirements: [] };
 const event = { id: 'EV-1', name: 'Open day', start_at: '2026-10-10T10:00:00.000Z', attendees: [], registrations: 1 };
 const zoomEvent = { ...event, id: 'ZM-1', name: 'Zoom intro', source: 'Zoom', zoom_meeting_id: '123', join_url: 'https://zoom.example/123' };
+const adminOverview = {
+  kpis: [{ id: 'due_today', label: 'Due Today', value: 2, route: 'planner', icon: 'calendar' }],
+  summary_cards: [
+    { label: 'Leads', value: 12, detail: '3 enrolled', route: 'leads', icon: 'users' },
+    { label: 'Inbox', value: 4, detail: '1 unanswered', route: 'inbox', icon: 'mail' }
+  ],
+  funnel: [{ label: 'Leads', value: 12 }, { label: 'Enrolled', value: 3 }],
+  email_health: [{ label: 'Unanswered', value: 1 }],
+  lead_sources: [{ source: 'Website', leads: 12, enrolled: 3 }],
+  charts: [
+    { title: 'Lead funnel', type: 'bar', rows: [{ label: 'Leads', value: 12 }, { label: 'Enrolled', value: 3 }] },
+    { title: 'Email health', type: 'pie', rows: [{ label: 'Unanswered', value: 1 }, { label: 'Replied', value: 3 }] }
+  ]
+};
 
 function jsonResponse(body) {
   const text = JSON.stringify(body);
@@ -122,7 +136,9 @@ async function fetch(url) {
   if (p === '/api/applications') return jsonResponse({ applications: [application], total: 1, loaded: 1, has_more: false });
   if (p === '/api/zoom/events') return jsonResponse({ events: [zoomEvent], total: 1, has_more: false });
   if (p === '/api/zoom/calls') return jsonResponse({ calls: [], total: 0, loaded: 0, has_more: false, next_offset: 0 });
+  if (p === '/api/dashboard/admin-overview') return jsonResponse(adminOverview);
   if (p === '/api/integrations/zoho/records') return jsonResponse({ connected: true, total: 1, modules: [{ module: 'Leads', total: 1, records: [{ id: 'Z-1', module: 'Leads', title: 'Sam Learner', status: 'Open', owner: 'Admin One' }] }] });
+  if (p === '/api/integrations/zoho/status') return jsonResponse({ configured: true, connected: true, client_id_hint: '1000...abcd', api_domain: 'https://www.zohoapis.com', email: 'team@example.com' });
   if (p === '/api/developer/config') return jsonResponse({ storage: 'postgres', local_only: false, users: [user], server: [] });
   return jsonResponse({});
 }
@@ -198,7 +214,8 @@ const testCode = `
     ['tasks', 'planner', /Planner|task/],
     ['applications', 'applications', /Ready for their next chapter|Application/],
     ['meetings', 'zoom', /Zoom meetings|Synced meetings/],
-    ['monitoring', 'monitoring', /Monitoring|Pipeline risk|Lead trend/]
+    ['zoho', 'zoho', /Zoho CRM sync|Connection status/],
+    ['admin dashboard', 'monitoring', /Admin dashboard|Funnel|Lead Sources/]
   ];
   for (const [label, routeName, pattern] of routes) {
     location.hash = '#/' + routeName;
@@ -208,7 +225,7 @@ const testCode = `
     assert(pattern.test(html), label + ' rendered unexpected content');
   }
   if (failures.length) throw new Error(failures.join('\\n'));
-  console.log('Frontend route smoke passed: login, dashboard, leads, inbox, tasks, applications, meetings, monitoring.');
+  console.log('Frontend route smoke passed: login, dashboard, leads, inbox, tasks, applications, meetings, zoho, admin dashboard.');
 })().catch(error => {
   console.error(error.message || error);
   process.exitCode = 1;

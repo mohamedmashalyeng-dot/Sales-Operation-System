@@ -10,7 +10,7 @@
   "theme_color": "#2b1640",
   "icons": [
     {
-      "src": "/Kent%20Business%20College%20logo.svg",
+      "src": "/assets/images/Kent%20Business%20College%20logo.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any maskable"

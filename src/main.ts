@@ -30,7 +30,7 @@ async function bootstrap() {
     if (!pathname.startsWith('/api/')) return next();
     Promise.resolve(legacy.handleApi(req, res)).catch((error: any) => {
       if (res.headersSent) return;
-      res.status(error?.status || 500).json({ error: error?.message || 'Server error.' });
+      res.status(error?.status || 500).set(error?.headers || {}).json({ error: legacy.publicErrorMessage(error) });
     });
   });
 

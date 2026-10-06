@@ -1,5 +1,5 @@
 'use strict';
-const APP_BUILD_ID='20261001-inbox-local-rootcause';
+const APP_BUILD_ID='20261006-security-hardening';
 window.KBC_APP_BUILD=APP_BUILD_ID;
 window.__KBC_DIAGNOSTICS__ ||= {build:APP_BUILD_ID,requests:[]};
 const diagEnabled=()=>localStorage.getItem('KBC_DIAG')==='1'||new URLSearchParams(location.search).get('debug_frontend')==='true';
@@ -15,7 +15,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const paths={home:'M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75 M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2',mail:'M3 5h18v14H3z M3 5l9 7 9-7',grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',arrow:'M5 12h14 M14 7l5 5-5 5',back:'M19 12H5 M10 7l-5 5 5 5',plus:'M12 5v14 M5 12h14',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',check:'M5 12l4 4L19 6',bell:'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',close:'M6 6l12 12 M6 18 18 6',phone:'M22 16v3a2 2 0 0 1-2 2C10 21 3 14 3 4a2 2 0 0 1 2-2h3l2 5-3 2c1 3 3 5 6 6l2-3z',file:'M14 2H4v20h16V8z M14 2v6h6 M8 13h8 M8 17h5',chart:'M4 3v18h17 M8 15v-4 M13 15V7 M18 15V4',shield:'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6z M8 12l3 3 5-6',clock:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M12 6v6l4 2',settings:'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M9 2h6l1 4 4 1 2 5-3 3v5l-5 2-3-3-5 1-3-5 2-4-1-5 5-1z',logout:'M9 21H3V3h6 M8 12h14 M17 7l5 5-5 5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',download:'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',spark:'M12 3l2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6z',chevron:'m9 6 6 6-6 6',eye:'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12 M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6',eyeOff:'M3 3l18 18 M10.6 10.6A3 3 0 0 0 13.4 13.4 M9.9 5.1A10.4 10.4 0 0 1 12 5c6 0 10 7 10 7a17.8 17.8 0 0 1-3.1 3.9 M6.1 6.1C3.5 7.8 2 12 2 12s4 7 10 7c1.2 0 2.4-.3 3.5-.7'};
 paths.video='M15 10l6-4v12l-6-4v4H3V6h12z';
 const icon=(name,cls='')=>`<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.grid}"/></svg>`;
-const logo=()=>'<div class="logo"><img src="/kent-logo-full-dark.png" alt="Kent Business College"></div>';
+const logo=()=>'<div class="logo"><img src="/assets/images/kent-logo-full-dark.png" alt="Kent Business College"></div>';
 const initials=p=>esc(((p.first_name||p.name||'').split(' ')[0][0]||'')+((p.last_name||p.name?.split(' ')[1]||'')[0]||''));
 const avatar=(p,n=0,large=false)=>`<span class="avatar ${['sage','blue','rose',''][n%4]} ${large?'large':''}">${initials(p)}</span>`;
 const badge=(s,cls)=>`<span class="badge ${cls||(/Overdue|Rejected|Not Eligible/.test(s)?'red':/Verified|Eligible|Enrolled|Qualified|Ready|Done/.test(s)?'green':/Pending|Review|New|Call Booked/.test(s)?'amber':'')}">${esc(s)}</span>`;
@@ -183,15 +183,16 @@ function hydrateSelectMenus(root=document){
 const dueLabel=t=>t.status==='Done'?'Done':new Date(t.due_at)<new Date()?'Overdue':date(t.due_at)===date(new Date())?time(t.due_at):date(t.due_at);
 const empty=(title,detail='')=>`<div class="empty">${icon('check')}<h3>${esc(title)}</h3>${esc(detail)}</div>`;
 const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="${act}" data-id="${esc(id)}">${esc(label)}</button>`;
-let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,dashboardFilterTimer=null,globalSearchTimer=null,globalSearchController=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',dashboard:{preset:'last30',from:'',to:'',college_id:'',programme_id:'',intake_id:'',owner_id:'',lead_source:''}},deferredInstall=null;
+const cardSection=()=>'';
+let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,dashboardFilterTimer=null,globalSearchTimer=null,globalSearchController=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',dashboard:{preset:'last30',from:'',to:'',programme_id:'',intake_id:'',owner_id:'',lead_source:''}},deferredInstall=null;
 let pageLoadState={leads:false,tasks:false,events:false};
 let dashboardState={version:0,controllers:[],widgets:{}};
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300,PLANNER_LIST_LIMIT=120,PLANNER_DONE_LIMIT=30;
 const GMAIL_IMPORT_ENABLED=true;
-const labels={today:'Command centre',monitoring:'Monitoring dashboard',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
-const navs=[['today','home','Today'],['monitoring','chart','Monitoring'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom']];
+const labels={today:'Command centre',monitoring:'Admin dashboard',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',zoho:'Zoho CRM sync',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
+const navs=[['today','home','Today'],['monitoring','chart','Admin'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom'],['zoho','link','Zoho CRM']];
 const localUserKey='pathway_local_user';
 const localDataKey='pathway_local_data';
 const seenPages=['leads','planner','inbox','applications','events','zoom'];
@@ -399,6 +400,21 @@ function localApplicationRequirements(appId,files=[],verified=false){
   return {id:`R-${appId}-${index+1}`,key,title,latest:file?.content_base64?{id:`ER-${appId}-${index+1}-${Date.now()}`,filename:file.filename||title,version:1,status:verified?'Verified':'Pending',reviewer:verified?data?.user?.name:null,content_base64:file.content_base64}:null};
  });
 }
+function localAutomaticApplicationFromLead(d,lead,now=new Date().toISOString()){
+ const appId=nextId('A',[d.applications]);
+ return {id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:lead.intake||'Next intake',status:'Enrolled',manager:d.user?.name||lead.owner||'System',member:lead.first_name,created_at:now,contract:{status:'Verified',note:'Lead was already enrolled; application was created automatically.'},requirements:localApplicationRequirements(appId,[],true),learner:{external_reference:lead.learner_reference||lead.external_reference||`AUTO-${lead.id}`,enrolled_at:lead.enrolled_at||now,note:'Application created automatically because the lead is enrolled.'}};
+}
+function ensureLocalApplicationForLead(d,lead,now=new Date().toISOString()){
+ if(!lead?.id)return null;
+ if(String(lead.stage||'').trim().toLowerCase()!=='enrolled')return null;
+ const existing=(d.applications||[]).find(app=>String(app.lead_id)===String(lead.id));
+ if(existing)return null;
+ const app=localAutomaticApplicationFromLead(d,lead,now);
+ d.applications.push(app);
+ d.attribution.unshift({...lead,programme:app.programme,snapshot:{first_touch:lead.source_first_touch,lead_capture:lead.source_lead_capture,conversion_source:lead.source_lead_capture}});
+ addAudit(d,'Application auto-created for lead','lead',lead.id,app.id);
+ return app;
+}
 async function localApi(path,body={},method='POST'){
  const clean=path.split('?')[0],user=data?.user||getStoredUser(),now=new Date().toISOString();
  if(clean==='/api/health')return {demo:false};
@@ -410,11 +426,13 @@ async function localApi(path,body={},method='POST'){
  if(match&&method==='DELETE'){const lead=leadFor(d,match[1]);d.leads=d.leads.filter(l=>l.id!==lead.id);d.tasks=d.tasks.filter(t=>t.lead_id!==lead.id);d.emails=d.emails.filter(e=>e.lead_id!==lead.id);d.applications=d.applications.filter(a=>a.lead_id!==lead.id);d.attribution=d.attribution.filter(a=>a.lead_id!==lead.id);addAudit(d,'Lead deleted','lead',lead.id,fullName(lead));saveLocalData(d);return {ok:true,deleted:{leads:[lead.id],tasks_for_lead:lead.id,emails_for_lead:lead.id,applications_for_lead:lead.id}};}
  if(clean==='/api/leads'){
   const programme=d.programmes.find(p=>p.id===body.programme_id),owner=d.owners.find(o=>o.id===body.owner_id)||d.user,id=numericEmailId(body.email);
-  d.leads.push({id,first_name:body.first_name,last_name:body.last_name,full_name:`${body.first_name} ${body.last_name}`,programme:programme.name,programme_id:programme.id,email:body.email,employer:body.employer,phone:body.phone||'',city:body.city||'',owner:owner.name,owner_id:owner.id,stage:'New lead',priority:body.priority,source_first_touch:body.source,source_lead_capture:body.source,contact_permission:body.contact_permission,level:programme.level,person_id:id,created_at:now,next_action_at:null});
+  const lead={id,first_name:body.first_name,last_name:body.last_name,full_name:`${body.first_name} ${body.last_name}`,programme:programme.name,programme_id:programme.id,email:body.email,employer:body.employer,phone:body.phone||'',city:body.city||'',owner:owner.name,owner_id:owner.id,stage:'New lead',priority:body.priority,source_first_touch:body.source,source_lead_capture:body.source,contact_permission:body.contact_permission,level:programme.level,person_id:id,created_at:now,next_action_at:null};
+  d.leads.push(lead);
   d.tasks.push({id:nextId('T',[d.tasks]),title:`First contact with ${body.first_name} ${body.last_name}`,lead_id:id,kind:'Call',status:'Open',created_at:now,due_at:new Date(Date.now()+86400000).toISOString(),priority:body.priority,owner_id:owner.id});
-  addAudit(d,'Lead created','lead',id);saveLocalData(d);return {id};
+  const application=ensureLocalApplicationForLead(d,lead,now);
+  addAudit(d,'Lead created','lead',id);saveLocalData(d);return {id,lead,application};
  }
- if(match&&method==='PATCH'){const lead=leadFor(d,match[1]);Object.assign(lead,{stage:body.stage,owner_id:body.owner_id,priority:body.priority});addAudit(d,'Opportunity updated','lead',lead.id,body.reason);saveLocalData(d);return {ok:true};}
+ if(match&&method==='PATCH'){const lead=leadFor(d,match[1]);Object.assign(lead,{stage:body.stage,owner_id:body.owner_id,priority:body.priority});const application=ensureLocalApplicationForLead(d,lead,now);addAudit(d,'Opportunity updated','lead',lead.id,body.reason);saveLocalData(d);return {ok:true,lead,application};}
  match=clean.match(/^\/api\/leads\/([^/]+)\/opportunities$/);
  if(match){const original=leadFor(d,match[1]),programme=d.programmes.find(p=>p.id===body.programme_id);original.programme_history ||= [];if(!original.programme_history.some(item=>item.programme_id===programme.id))original.programme_history.push({programme_id:programme.id,programme:programme.name,level:programme.level,added_at:now});Object.assign(original,{programme_id:programme.id,programme:programme.name,level:programme.level,stage:'New lead',next_action_at:null});addAudit(d,'Programme opportunity linked','lead',original.id,programme.name);saveLocalData(d);return {id:original.id,created:false};}
  match=clean.match(/^\/api\/leads\/([^/]+)\/notes$/);
@@ -504,7 +522,7 @@ function showGlobalLoader(){
  loadingCount+=1;
  if(gmailSyncRunning)return;
  clearTimeout(loadingTimer);
- loadingTimer=setTimeout(()=>$('#global-loader')?.classList.add('show'),180);
+ loadingTimer=setTimeout(()=>{if(!$('.loading-screen'))$('#global-loader')?.classList.add('show');},180);
 }
 function hideGlobalLoader(){
  loadingCount=Math.max(0,loadingCount-1);
@@ -604,12 +622,7 @@ function scheduleInboxFilterRefresh(){
 }
 function scheduleLeadFilterRefresh(){
  clearTimeout(leadFilterTimer);
- leadFilterTimer=setTimeout(()=>{
-  const results=$('#lead-results');
-  if(!results)return;
-  results.innerHTML=leadResults();
-  hydrateSelectMenus(results);
- },180);
+ leadFilterTimer=setTimeout(()=>refreshLeadResults(true).catch(error=>toast(error.message)),180);
 }
 function scheduleEventFilterRefresh(){
  clearTimeout(eventFilterTimer);
@@ -662,14 +675,41 @@ function mergeLeadRows(rows=[],reset=false){
 }
 async function ensureLeadsLoaded(reset=false){
  if(!data||(!reset&&pageLoadState.leads&&data.leads?.length))return;
- const params=new URLSearchParams({limit:'100',include_total:'true'});
+ await loadLeadPage(true,100);
+ pageLoadState.leads=true;
+}
+function leadFilterKey(){
+ return JSON.stringify({search:filters.search.trim(),stage:filters.stage,programme:filters.programme,source:filters.source});
+}
+function leadQueryParams(limit='100',cursor=''){
+ const params=new URLSearchParams({limit:String(limit)});
+ if(cursor)params.set('cursor',cursor);
+ else params.set('include_total','true');
+ if(filters.search.trim())params.set('search',filters.search.trim());
+ if(filters.stage&&filters.stage!=='All'&&filters.stage!=='All stages')params.set('stage',filters.stage);
+ if(filters.programme&&filters.programme!=='All')params.set('programme_id',filters.programme);
+ if(filters.source&&filters.source!=='All')params.set('lead_source',filters.source);
+ return params;
+}
+async function loadLeadPage(reset=false,limit='100'){
+ const key=leadFilterKey(),page=data.lead_paging||{},cursor=reset||page.filter_key!==key?'':page.next_cursor||'';
+ const params=leadQueryParams(limit,cursor);
  const result=await api(`/api/leads?${params.toString()}`,undefined,'GET',{silent:true});
  const rows=listItems(result);
- mergeLeadRows(rows,true);
- data.lead_paging={loaded:data.leads.length,total:Number(result.total??data.leads.length),limit:Number(result.limit||100),has_more:Boolean(result.has_more??result.hasMore),next_cursor:result.next_cursor||result.nextCursor||''};
+ mergeLeadRows(rows,reset||page.filter_key!==key);
+ data.lead_paging={loaded:data.leads.length,total:Number(result.total??data.leads.length),limit:Number(result.limit||limit),has_more:Boolean(result.has_more??result.hasMore),next_cursor:result.next_cursor||result.nextCursor||'',filter_key:key};
  data.dashboard||={};
- data.dashboard.leads={...(data.dashboard.leads||{}),total:Number(result.total??data.dashboard.leads?.total??data.leads.length)};
- pageLoadState.leads=true;
+ if(!filters.search.trim()&&(filters.stage==='All'||filters.stage==='All stages')&&filters.programme==='All'&&filters.source==='All'){
+  data.dashboard.leads={...(data.dashboard.leads||{}),total:Number(result.total??data.dashboard.leads?.total??data.leads.length)};
+ }
+ return rows;
+}
+async function refreshLeadResults(reset=false){
+ const results=$('#lead-results');
+ if(results)results.innerHTML='<div class="empty"><h3>Loading leads...</h3></div>';
+ await loadLeadPage(reset,100);
+ const updated=$('#lead-results');
+ if(updated){updated.innerHTML=leadResults();hydrateSelectMenus(updated);}
 }
 async function ensureTasksLoaded(reset=false){
  if(!data||(!reset&&pageLoadState.tasks&&data.tasks?.length))return;
@@ -694,13 +734,7 @@ function leadPageState(){
  return {loaded,total,limit:50,has_more:total>loaded,next_cursor:''};
 }
 async function loadMoreLeads(){
- const page=leadPageState(),params=new URLSearchParams({limit:'50'});
- if(page.next_cursor)params.set('cursor',page.next_cursor);
- const result=await api(`/api/leads?${params.toString()}`,undefined,'GET',{silent:true});
- const rows=listItems(result);
- mergeLeadRows(rows,false);
- data.lead_paging={loaded:data.leads.length,total:Number(result.total??data.lead_paging?.total??data.leads.length),limit:Number(result.limit||50),has_more:Boolean(result.has_more??result.hasMore),next_cursor:result.next_cursor||result.nextCursor||''};
- return rows;
+ return loadLeadPage(false,50);
 }
 function leadsMore(){
  const page=leadPageState();
@@ -731,7 +765,7 @@ function shell(content,current){
  const navCurrent=current.split('/')[0],user=data.user,bell=`${icon('bell')}${overdueEmailCount()?`<span class="alert-count">${overdueEmailCount()}</span>`:''}`;
  return `<aside class="sidebar">${logo()}<div class="eyebrow">Workspace</div>${navs.map(n=>navButton(n,navCurrent)).join('')}<div class="eyebrow">Manage</div>${navButton(['settings','settings','Settings'],navCurrent)}${['admin','qa','director'].includes(user.role)?navButton(['audit','shield','Audit trail'],navCurrent):''}<div class="sidebar-footer"><div class="workspace-tag"><b>${data.demo?'Demo workspace':'Team workspace'}</b>${data.demo?'Fictional records · Explore freely':'Apprenticeship operations'}</div><div class="sidebar-user">${avatar(user)}<div><b>${esc(user.name)}</b><div class="muted small">${esc(user.role)}</div></div><button class="text-button" data-act="logout" aria-label="Sign out">${icon('logout')}</button></div></div></aside>
  <div class="main-shell"><header class="topbar">${logo()}<div class="breadcrumb">WORKSPACE <span>/</span> <b>${esc(labels[navCurrent]||'Lead 360')}</b></div><div class="global-search">${icon('search')}<input id="global-search" aria-label="Search workspace" autocomplete="off" placeholder="Search leads, emails, applications..." value=""><div id="global-search-results" class="global-search-results" hidden></div></div><div class="top-actions"><span class="small muted"><span class="status-dot"></span>${data.demo?'Demo workspace':'Connected to workspace'}</span><button class="icon-button" data-act="notifications" aria-label="View overdue actions">${icon('bell')}</button>${avatar(user)}</div></header>${navigator.onLine?'':'<div class="offline-banner">Offline — reconnect to view and save changes.</div>'}<main class="workspace">${content}</main></div>
- <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['monitoring','chart','Monitor'],['leads','users','Leads'],['planner','calendar','Planner'],['more','grid','More']].map(n=>{const count=navCurrent===n[0]?0:pageNewCount(n[0]);return `<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','monitoring','leads','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;}).join('')}</nav>`;
+ <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['monitoring','chart','Admin'],['leads','users','Leads'],['planner','calendar','Planner'],['more','grid','More']].map(n=>{const count=navCurrent===n[0]?0:pageNewCount(n[0]);return `<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','monitoring','leads','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;}).join('')}</nav>`;
 }
 function taskRow(t){return `<div class="task-row"><button class="check-button ${t.status==='Done'?'done':''}" data-act="complete" data-id="${t.id}" ${!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${t.status==='Done'?icon('check'):''}</button><div class="task-copy ${t.status==='Done'?'done':''}"><strong>${esc(t.title)}</strong><p><button class="text-button" data-go="leads/${t.lead_id}">${esc(fullName(t))}</button> · ${esc(t.kind)}</p></div>${badge(dueLabel(t),dueLabel(t)==='Overdue'?'red':'')}${data.permissions.sales?`<button class="icon-button danger" data-act="delete-task" data-id="${esc(t.id)}" aria-label="Delete ${esc(t.title)}">${icon('close')}</button>`:''}</div>`;}
 function plannerLead(t){return data.leads.find(l=>l.id===t.lead_id)||t;}
@@ -753,7 +787,7 @@ function plannerTasks(){
 }
 function plannerTaskCard(t,n=0){
  const lead=plannerLead(t),bucket=taskDueBucket(t),done=t.status==='Done';
- return `<article class="planner-task ${done?'done':''}"><button class="check-button ${done?'done':''}" data-act="complete" data-id="${esc(t.id)}" ${done||!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${done?icon('check'):''}</button><div class="planner-task-main"><div class="planner-task-top"><strong>${esc(t.title)}</strong>${badge(bucket,bucket==='Overdue'?'red':bucket==='Done'?'green':bucket==='Today'?'amber':'blue')}</div><p><button class="text-button" data-go="leads/${esc(t.lead_id)}">${esc(fullName(lead))}</button> · ${esc(lead.programme||'No programme')}</p><div class="planner-task-meta"><span>${icon(t.kind==='Call'?'phone':t.kind==='Email'?'mail':t.kind==='Review'?'file':'clock')}${esc(t.kind||'Follow-up')}</span><span>${icon('calendar')}${timestamp(t.due_at)}</span><span>${esc(t.priority||lead.priority||'P2')} priority</span></div></div><div class="compact-actions">${data.permissions.sales?`<button class="icon-button danger" data-act="delete-task" data-id="${esc(t.id)}" aria-label="Delete ${esc(t.title)}">${icon('close')}</button>`:''}<button class="icon-button" data-go="leads/${esc(t.lead_id)}" aria-label="Open ${esc(fullName(lead))}">${icon('chevron')}</button></div></article>`;
+ return `<article class="planner-task ${done?'done':''}"${cardSection('Planner task')}><button class="check-button ${done?'done':''}" data-act="complete" data-id="${esc(t.id)}" ${done||!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${done?icon('check'):''}</button><div class="planner-task-main"><div class="planner-task-top"><strong>${esc(t.title)}</strong>${badge(bucket,bucket==='Overdue'?'red':bucket==='Done'?'green':bucket==='Today'?'amber':'blue')}</div><p><button class="text-button" data-go="leads/${esc(t.lead_id)}">${esc(fullName(lead))}</button> · ${esc(lead.programme||'No programme')}</p><div class="planner-task-meta"><span>${icon(t.kind==='Call'?'phone':t.kind==='Email'?'mail':t.kind==='Review'?'file':'clock')}${esc(t.kind||'Follow-up')}</span><span>${icon('calendar')}${timestamp(t.due_at)}</span><span>${esc(t.priority||lead.priority||'P2')} priority</span></div></div><div class="compact-actions">${data.permissions.sales?`<button class="icon-button danger" data-act="delete-task" data-id="${esc(t.id)}" aria-label="Delete ${esc(t.title)}">${icon('close')}</button>`:''}<button class="icon-button" data-go="leads/${esc(t.lead_id)}" aria-label="Open ${esc(fullName(lead))}">${icon('chevron')}</button></div></article>`;
 }
 async function completeTaskOptimistic(id){
  const task=data?.tasks?.find(t=>t.id===id);
@@ -778,18 +812,18 @@ async function completeTaskOptimistic(id){
 }
 function plannerColumn(title,detail,tasks,kind){
  const visible=tasks.slice(0,80);
- return `<section class="panel planner-column planner-${kind}"><div class="panel-header"><div><h2>${esc(title)}</h2><p>${esc(detail)}</p></div><span class="badge ${kind==='overdue'?'red':kind==='done'?'green':kind==='today'?'amber':'blue'}">${tasks.length}</span></div><div class="panel-body planner-scroll">${visible.map(plannerTaskCard).join('')||empty('Nothing here')}</div>${tasks.length>80?`<div class="crm-more">${tasks.length-80} more hidden here. Use filters to narrow the planner.</div>`:''}</section>`;
+ return `<section class="panel planner-column planner-${kind}"${cardSection('Planner column')}><div class="panel-header"><div><h2>${esc(title)}</h2><p>${esc(detail)}</p></div><span class="badge ${kind==='overdue'?'red':kind==='done'?'green':kind==='today'?'amber':'blue'}">${tasks.length}</span></div><div class="panel-body planner-scroll">${visible.map(plannerTaskCard).join('')||empty('Nothing here')}</div>${tasks.length>80?`<div class="crm-more">${tasks.length-80} more hidden here. Use filters to narrow the planner.</div>`:''}</section>`;
 }
 function plannerEmailCard(e){
  const lead=emailLead(e);
- return `<article class="planner-mini-row"><div>${icon('mail')}</div><div><strong>${esc(e.subject||'No subject')}</strong><p>${esc(fullName(e))} · ${esc(emailWaitLabel(e))}</p></div><button class="icon-button" data-act="open-email" data-id="${esc(e.id)}" aria-label="Open email">${icon('chevron')}</button></article>`;
+ return `<article class="planner-mini-row"${cardSection('Inbox follow-up')}><div>${icon('mail')}</div><div><strong>${esc(e.subject||'No subject')}</strong><p>${esc(fullName(e))} · ${esc(emailWaitLabel(e))}</p></div><button class="icon-button" data-act="open-email" data-id="${esc(e.id)}" aria-label="Open email">${icon('chevron')}</button></article>`;
 }
 function plannerEventCard(e){
  const m=eventMetrics(e);
- return `<article class="planner-mini-row"><div>${icon('calendar')}</div><div><strong>${esc(shortEventName(e.name))}</strong><p>${timestamp(e.start_at)} · ${m.pending} pending follow-up</p></div><button class="icon-button" data-act="event-open" data-id="${esc(e.id)}" aria-label="Open event">${icon('chevron')}</button></article>`;
+ return `<article class="planner-mini-row"${cardSection('Event follow-up')}><div>${icon('calendar')}</div><div><strong>${esc(shortEventName(e.name))}</strong><p>${timestamp(e.start_at)} · ${m.pending} pending follow-up</p></div><button class="icon-button" data-act="event-open" data-id="${esc(e.id)}" aria-label="Open event">${icon('chevron')}</button></article>`;
 }
 function personRow(l,n){return `<div class="person-row">${avatar(l,n)}<div class="person-main"><strong>${esc(fullName(l))}</strong><p>${esc(l.programme)}</p></div>${badge(l.stage)}<button class="icon-button" data-go="leads/${l.id}" aria-label="Open ${esc(fullName(l))}">${icon('chevron')}</button></div>`;}
-function stat(label,value,foot,ic){return `<div class="stat"><div class="stat-head">${label}${icon(ic)}</div><div class="stat-value">${value}</div><div class="stat-foot">${foot}</div></div>`;}
+function stat(label,value,foot,ic,section='Metric'){return `<div class="stat"${cardSection(section)}><div class="stat-head">${label}${icon(ic)}</div><div class="stat-value">${value}</div><div class="stat-foot">${foot}</div></div>`;}
 // Database aggregates keep dashboard numbers accurate even though bootstrap only ships the
 // first page of leads/tasks/emails/events. Local mode falls back to the in-memory stats.
 function dashboardNumbers(){
@@ -816,26 +850,24 @@ function dashboardPresetDates(preset){
 }
 function ensureDashboardFilters(){
  const f=filters.dashboard;
- if(!f.from||!f.to||f.preset!=='custom')Object.assign(f,dashboardPresetDates(f.preset||'last30'));
+ if(f.preset==='custom')f.preset='last30';
+ Object.assign(f,dashboardPresetDates(f.preset||'last30'));
  return f;
 }
 function dashboardParams(){
  const f=ensureDashboardFilters(),params=new URLSearchParams();
- ['from','to','college_id','programme_id','intake_id','owner_id','lead_source'].forEach(key=>{if(f[key])params.set(key,f[key]);});
+ ['from','to','programme_id','intake_id','owner_id','lead_source'].forEach(key=>{if(f[key])params.set(key,f[key]);});
  return params.toString();
 }
 function dashboardUrl(path){const q=dashboardParams();return q?`${path}?${q}`:path;}
 function dashboardFilterBar(){
  const f=ensureDashboardFilters();
- const programmeOptions=[['','All programmes'],...(data.programmes||[]).map(p=>[p.id,p.name])];
+ const programmeOptions=[['','All programmes'],['PCP','PCP'],['APM','APM'],['MM','MM'],['ME','ME']];
  const intakeOptions=[['','All intakes'],...(data.intakes||[]).map(i=>[i.id,`${i.name}${i.programme_id?'':''}`])];
  const ownerOptions=[['','All owners'],...(data.owners||[]).map(o=>[o.id,o.name])];
  const sourceOptions=[['','All sources'],...(data.sources||[]).map(s=>[s,s])];
  return `<section class="dashboard-filters" aria-label="Dashboard filters">
-  <label class="field"><span>Date Range</span><select id="dash-preset">${[['today','Today'],['last7','Last 7 Days'],['last30','Last 30 Days'],['this_month','This Month'],['last_month','Last Month'],['custom','Custom']].map(([v,l])=>`<option value="${v}" ${f.preset===v?'selected':''}>${l}</option>`).join('')}</select></label>
-  <label class="field"><span>From</span><input id="dash-from" type="date" value="${esc(f.from)}" ${f.preset!=='custom'?'disabled':''}></label>
-  <label class="field"><span>To</span><input id="dash-to" type="date" value="${esc(f.to)}" ${f.preset!=='custom'?'disabled':''}></label>
-  <label class="field"><span>College</span><select id="dash-college"><option value="">All colleges</option><option value="kent-business-college" ${f.college_id==='kent-business-college'?'selected':''}>Kent Business College</option></select></label>
+  <label class="field"><span>Date Range</span><select id="dash-preset">${[['today','Today'],['last7','Last 7 Days'],['last30','Last 30 Days'],['this_month','This Month'],['last_month','Last Month']].map(([v,l])=>`<option value="${v}" ${f.preset===v?'selected':''}>${l}</option>`).join('')}</select></label>
   <label class="field"><span>Programme</span><select id="dash-programme">${selectOptions(programmeOptions,f.programme_id)}</select></label>
   <label class="field"><span>Intake</span><select id="dash-intake">${selectOptions(intakeOptions,f.intake_id)}</select></label>
   <label class="field"><span>Owner</span><select id="dash-owner">${selectOptions(ownerOptions,f.owner_id)}</select></label>
@@ -843,18 +875,136 @@ function dashboardFilterBar(){
  </section>`;
 }
 function dashboardCard(id,title,sub,priority=''){
- return `<section class="panel dashboard-widget ${priority}" id="dash-${id}" aria-live="polite"><div class="panel-header"><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div>${icon(id==='pipeline'?'chart':id==='work'?'calendar':id==='priority'?'users':id==='source'?'link':id==='integrations'?'settings':id==='activity'?'clock':'bell')}</div><div class="panel-body">${dashboardLoading()}</div></section>`;
+ return `<section class="panel dashboard-widget ${priority}" id="dash-${id}" aria-live="polite"${cardSection('Dashboard section')}><div class="panel-header"><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div>${icon(id==='pipeline'||id==='admin'?'chart':id==='work'?'calendar':id==='priority'?'users':id==='source'?'link':id==='integrations'?'settings':id==='activity'?'clock':'bell')}</div><div class="panel-body">${dashboardLoading()}</div></section>`;
 }
 function dashboardLoading(){return '<div class="dashboard-skeleton"><span></span><span></span><span></span></div>';}
 function dashboardWidgetError(label){return `<div class="empty">${icon('close')}<h3>Unable to load ${esc(label)}.</h3><button class="button soft" data-act="dashboard-retry">Retry</button></div>`;}
 function dashSet(id,html){const el=document.querySelector(`#dash-${id} .panel-body`);if(el)el.innerHTML=html;}
 function dashboardKpiCard(kpi){
- return `<button class="stat dashboard-kpi" data-go="${esc(kpi.route||'today')}" aria-label="Open ${esc(kpi.label)}"><div class="stat-head">${esc(kpi.label)}${icon(kpi.icon||'grid')}</div><div class="stat-value">${fmtNumber(kpi.value)}</div><div class="stat-foot">${esc(kpi.route?'Open matching records':'Current filters')}</div></button>`;
+ return `<button class="stat dashboard-kpi" data-go="${esc(kpi.route||'today')}" aria-label="Open ${esc(kpi.label)}"${cardSection('Dashboard KPI')}><div class="stat-head">${esc(kpi.label)}${icon(kpi.icon||'grid')}</div><div class="stat-value">${fmtNumber(kpi.value)}</div><div class="stat-foot">${esc(kpi.route?'Open matching records':'Current filters')}</div></button>`;
 }
 function renderDashboardSummary(result){
  const kpis=result.kpis||[],attention=result.attention||[];
  dashSet('kpis',`<div class="stats-grid dashboard-kpis">${kpis.map(dashboardKpiCard).join('')}</div>`);
  dashSet('attention',attention.map(row=>`<button class="attention-row" data-go="${esc(row.route||'today')}"><span>${esc(row.label)}</span>${badge(row.value?String(row.value):'Clear',row.kind||'green')}</button>`).join('')||empty('No attention items','Nothing urgent in the selected filters.'));
+}
+function dashboardAdminKpiValue(kpi){
+ if(kpi.format==='duration')return durationLabel(Number(kpi.value||0));
+ return fmtNumber(kpi.value);
+}
+function dashboardAdminKpiCard(kpi){
+ return `<button class="stat dashboard-admin-kpi" data-go="${esc(kpi.route||'today')}" aria-label="Open ${esc(kpi.label)}"${cardSection('Admin KPI')}><div class="stat-head">${esc(kpi.label)}${icon(kpi.icon||'grid')}</div><div class="stat-value">${esc(dashboardAdminKpiValue(kpi))}</div><div class="stat-foot">${esc(kpi.format==='duration'?'Typical first response':'Selected filters')}</div></button>`;
+}
+function dashboardMetricRows(rows=[],displayFn=null){
+ const max=Math.max(1,...rows.map(row=>Number(row.value??row.leads??0)));
+ return metricList(rows.map(row=>({label:row.label||row.source||'Other',value:Number(row.value??row.leads??0),max,display:displayFn?displayFn(row):row.display})));
+}
+const adminChartColors=['#8b5cf6','#64748b','#a78bfa','#cbd5e1','#7c3aed','#e2e8f0','#d8b4fe','#475569'];
+function dashboardAdminSummaryCard(item){
+ return `<button class="dashboard-admin-summary-card" data-go="${esc(item.route||'today')}" aria-label="Open ${esc(item.label)}"${cardSection('Admin summary')}><div>${icon(item.icon||'grid')}<span>${esc(item.label)}</span></div><strong>${esc(item.format==='duration'?durationLabel(Number(item.value||0)):fmtNumber(item.value||0))}</strong><p>${esc(item.detail||'Selected filters')}</p></button>`;
+}
+function adminGroupName(label=''){
+ const text=String(label||'').toLowerCase();
+ if(/email|message|reply|inbox|gmail/.test(text))return 'Emails';
+ if(/event|zoom|meeting|attendance|booking/.test(text))return 'Events & Zoom';
+ if(/zoho|source|crm|integration/.test(text))return 'Zoho & Sources';
+ if(/planner|task|follow|due today|upcoming|completed/.test(text))return 'Planner';
+ if(/quality|duplicate|missing|invalid/.test(text))return 'Data Quality';
+ if(/lead|application|enrol|learner|interest|funnel|programme|intake/.test(text))return 'Leads & Enrolments';
+ return 'Overview';
+}
+function adminIsPlannerItem(item={}){
+ return adminGroupName(`${item.label||''} ${item.title||''} ${item.id||''}`)==='Planner';
+}
+function adminGroupedGrid(items,render,gridClass){
+ const order=['Overview','Emails','Events & Zoom','Zoho & Sources','Leads & Enrolments','Data Quality'];
+ const groups=new Map();
+ items.forEach(item=>{
+  const key=adminGroupName(`${item.label||''} ${item.title||''} ${item.id||''}`);
+  if(key==='Planner')return;
+  if(!groups.has(key))groups.set(key,[]);
+  groups.get(key).push(item);
+ });
+ return [...order,...[...groups.keys()].filter(key=>!order.includes(key))]
+  .filter(key=>groups.has(key))
+  .map(key=>`<section class="dashboard-admin-group dashboard-admin-group--${esc(gridClass.replace('dashboard-admin-',''))}"><h3 class="dashboard-admin-group-title">${esc(key)}</h3><div class="${esc(gridClass)}">${groups.get(key).map(render).join('')}</div></section>`)
+  .join('');
+}
+function adminUnifiedGroups(summaryCards=[],kpis=[],charts=[]){
+ const order=['Overview','Emails','Events & Zoom','Zoho & Sources','Leads & Enrolments','Data Quality'];
+ const groups=new Map();
+ const add=(item,type,render)=>{
+  const key=adminGroupName(`${item.label||''} ${item.title||''} ${item.id||''}`);
+  if(key==='Planner')return;
+  if(!groups.has(key))groups.set(key,{summary:[],kpis:[],charts:[]});
+  groups.get(key)[type].push(render(item));
+ };
+ summaryCards.forEach(item=>add(item,'summary',dashboardAdminSummaryCard));
+ kpis.forEach(item=>add(item,'kpis',dashboardAdminKpiCard));
+ charts.forEach(item=>add(item,'charts',dashboardAdminChart));
+ return [...order,...[...groups.keys()].filter(key=>!order.includes(key))]
+  .filter(key=>groups.has(key))
+  .map(key=>{
+   const group=groups.get(key),hasCharts=group.charts.length,hasMetrics=group.summary.length||group.kpis.length;
+   const sizeClass=hasCharts>1?' dashboard-admin-group--wide':'';
+   const itemCount=group.summary.length+group.kpis.length+group.charts.length;
+   const compactClass=itemCount===1?' dashboard-admin-group--compact':'';
+   return `<section class="dashboard-admin-group ${hasCharts?'dashboard-admin-group--charts':''}${sizeClass}${compactClass}">
+    <h3 class="dashboard-admin-group-title">${esc(key)}</h3>
+    ${hasMetrics?`<div class="dashboard-admin-metrics">${group.summary.join('')}${group.kpis.join('')}</div>`:''}
+    ${hasCharts?`<div class="dashboard-admin-charts">${group.charts.join('')}</div>`:''}
+   </section>`;
+  })
+  .join('');
+}
+function normalizeAdminSummaryCards(cards=[],result={}){
+ const dueToday=(result.kpis||[]).find(kpi=>String(kpi.id||'')==='due_today'||String(kpi.label||'').toLowerCase()==='due today');
+ return cards.map(item=>{
+  if(String(item.label||'').toLowerCase()!=='planner')return item;
+  const todayMatch=String(item.detail||'').match(/([\d,]+)\s*today/i);
+  const openMatch=String(item.detail||'').match(/([\d,]+)\s*open actions/i);
+  const todayValue=Number(String(dueToday?.value??todayMatch?.[1]??item.value??0).replace(/,/g,''));
+  const openActions=Number(String(openMatch?.[1]??item.value??0).replace(/,/g,''));
+  return {...item,value:Number.isFinite(todayValue)?todayValue:0,detail:`${fmtNumber(openActions)} open actions`,icon:'calendar'};
+ });
+}
+function adminChartRows(rows=[]){
+ return (rows||[])
+  .filter(row=>!/overdue|late follow/i.test(String(row.label||'')))
+  .map((row,index)=>({label:row.label||row.source||row.stage||'Other',value:Number(row.value??row.leads??row.count??0),display:row.display,color:adminChartColors[index%adminChartColors.length]})).filter(row=>Number.isFinite(row.value));
+}
+function dashboardAdminBarChart(chart){
+ const rows=adminChartRows(chart.rows),max=Math.max(1,...rows.map(row=>row.value));
+ return `<div class="admin-column-chart">${rows.map(row=>`<div class="admin-column-item"><div class="admin-column-track"><span style="height:${Math.max(3,Math.min(100,row.value/max*100))}%;background:${row.color}"></span></div><b>${esc(row.display||fmtNumber(row.value))}</b><small title="${esc(row.label)}">${esc(row.label)}</small></div>`).join('')||empty('No data')}</div>`;
+}
+function dashboardAdminPieChart(chart){
+ const rows=adminChartRows(chart.rows).filter(row=>row.value>0),total=rows.reduce((sum,row)=>sum+row.value,0);
+ if(!total)return empty('No data');
+ let cursor=0;
+ const gradient=rows.map(row=>{const start=cursor,totalPct=row.value/total*100;cursor+=totalPct;return `${row.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;}).join(',');
+ return `<div class="admin-pie-wrap"><div class="admin-pie" style="background:conic-gradient(${gradient})"><span>${fmtNumber(total)}</span></div><div class="admin-pie-legend">${rows.map(row=>`<div><i style="background:${row.color}"></i><span>${esc(row.label)}</span><b>${fmtNumber(row.value)}</b></div>`).join('')}</div></div>`;
+}
+function dashboardAdminChart(chart){
+ return `<section class="dashboard-admin-chart-card"${cardSection('Admin chart')}><h3>${esc(chart.title||'Summary')}</h3>${chart.type==='pie'?dashboardAdminPieChart(chart):dashboardAdminBarChart(chart)}</section>`;
+}
+function adminKpiVisible(kpi){
+ const id=String(kpi.id||'').toLowerCase(),label=String(kpi.label||'').toLowerCase();
+ return !adminIsPlannerItem(kpi)&&!['total_messages','overdue','late_followups','overdue_tasks'].includes(id)&&!/^total messages\b/.test(label)&&!/^overdue\b/.test(label)&&!/^late follow-ups\b/.test(label);
+}
+function renderDashboardAdmin(result){
+ const kpis=(result.kpis||[]).filter(adminKpiVisible);
+ const emailRows=(result.email_health||[]).filter(row=>row.label!=='Avg reply');
+ const sourceRows=(result.lead_sources||[]).map(row=>({label:row.source||'Other',value:Number(row.leads||0),display:`${fmtNumber(row.leads)} / ${fmtNumber(row.enrolled||0)} enrolled`}));
+ const fallbackCharts=[
+  {title:'Funnel',type:'bar',rows:result.funnel||[]},
+  {title:'Email Health',type:'pie',rows:emailRows},
+  {title:'Lead Sources',type:'bar',rows:sourceRows}
+ ];
+ const charts=(result.charts&&result.charts.length?result.charts:fallbackCharts).filter(chart=>(chart.rows||[]).length&&!adminIsPlannerItem(chart));
+ const summaryCards=normalizeAdminSummaryCards(result.summary_cards||[],result).filter(item=>!adminIsPlannerItem(item));
+ dashSet('admin',`<div class="dashboard-admin-wrap">
+  ${adminUnifiedGroups(summaryCards,kpis,charts)}
+ </div>`);
 }
 function renderDashboardPipeline(result){
  const stages=result.stages||[],max=Math.max(1,...stages.map(s=>Number(s.count||0)));
@@ -884,6 +1034,7 @@ function renderDashboardActivity(result){
 }
 const dashboardWidgets=[
  ['summary','/api/dashboard/summary',renderDashboardSummary,'summary'],
+ ['admin','/api/dashboard/admin-overview',renderDashboardAdmin,'admin dashboard'],
  ['pipeline','/api/dashboard/pipeline',renderDashboardPipeline,'pipeline data'],
  ['work','/api/dashboard/my-work',renderDashboardWork,'work'],
  ['priority','/api/dashboard/priority-leads',renderDashboardPriority,'priority leads'],
@@ -891,12 +1042,14 @@ const dashboardWidgets=[
  ['integrations','/api/dashboard/integrations',renderDashboardIntegrations,'integration health'],
  ['activity','/api/dashboard/activity?limit=15',renderDashboardActivity,'recent activity']
 ];
+const DASHBOARD_INITIAL_WIDGETS=['summary','work','priority'];
 function loadDashboardWidgets(only=null){
- if(route()!=='today')return;
+ const currentRoute=route().split('/')[0];
+ if(!['today','monitoring'].includes(currentRoute))return;
  const version=++dashboardState.version;
  dashboardState.controllers.forEach(controller=>controller.abort());
  dashboardState.controllers=[];
- const wanted=new Set(only||dashboardWidgets.map(item=>item[0]));
+ const wanted=new Set(currentRoute==='monitoring'?['admin']:(only||dashboardWidgets.map(item=>item[0])));
  const jobs=dashboardWidgets.filter(([id])=>wanted.has(id)).map(([id,path,renderFn,label])=>{
   const controller=new AbortController();
   dashboardState.controllers.push(controller);
@@ -911,7 +1064,7 @@ function scheduleDashboardLoad(only=null){
 }
 function cockpitToday(){
  const greeting=new Date().getHours()<12?'Good morning':'Good afternoon';
- setTimeout(()=>{if(route()==='today')loadDashboardWidgets();},0);
+ setTimeout(()=>{if(route()==='today')loadDashboardWidgets(DASHBOARD_INITIAL_WIDGETS);},0);
  return heading(`${greeting}, ${data.user.name.split(' ')[0]}`,'Sales + Operations Cockpit',data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
  `${dashboardFilterBar()}<div class="dashboard-cockpit">
   ${dashboardCard('attention','Needs Your Attention','The operational queue to clear first','dashboard-primary')}
@@ -923,6 +1076,13 @@ function cockpitToday(){
   ${dashboardCard('integrations','Integration Health','Safe sync status only')}
   ${dashboardCard('activity','Recent Activity','Latest audit events')}
  </div><p class="bottom-note">Dashboard widgets load independently from PostgreSQL and do not use bootstrap analytics.</p>`;
+}
+function ensureAdminDashboardLoad(){
+ if(route().split('/')[0]!=='monitoring')return;
+ loadDashboardWidgets(['admin']);
+ setTimeout(()=>{
+  if(route().split('/')[0]==='monitoring'&&document.querySelector('#dash-admin .dashboard-skeleton'))loadDashboardWidgets(['admin']);
+ },1600);
 }
 function coverageNotice(){
  const d=data?.dashboard;
@@ -1034,49 +1194,10 @@ function monitoringIntegrationCards(health){
  return `<div class="monitoring-health-grid">${health.map(i=>`<section class="panel monitoring-health-card"><div class="panel-header"><div><h2>${esc(i.name)}</h2><p>${esc(i.account||'No account shown')}</p></div>${badge(i.status,i.connected?'green':i.configured?'amber':'red')}</div><div class="panel-body"><div class="monitoring-mini-metrics"><div><span>Last sync</span><b>${i.last_sync_at?timestamp(i.last_sync_at):'Never'}</b></div><div><span>Imported</span><b>${fmtNumber(i.imported)}</b></div><div><span>Failed</span><b>${fmtNumber(i.failed)}</b></div><div><span>Skipped</span><b>${fmtNumber(i.skipped)}</b></div></div>${i.last_error?`<div class="notice warning">${esc(i.last_error)}</div>`:''}<button class="button full" data-act="${esc(i.action)}">${icon('arrow')}${esc(i.action_label)}</button></div></section>`).join('')}</div>`;
 }
 async function monitoring(){
- const today=startOfToday(),tomorrow=new Date(today.getTime()+msDay),params=new URLSearchParams({today_start:today.toISOString(),tomorrow_start:tomorrow.toISOString()});
- const snapshot=await api(`/api/dashboard/monitoring?${params.toString()}`,undefined,'GET',{silent:true});
- const system=monitoringSystem(),health=monitoringHealth(),leads=snapshot.leads||{},risks=snapshot.risks||{},quality=snapshot.quality||{},taskCounts=snapshot.task_counts||{};
- const programmePressure=(snapshot.programme_pressure||[]).map(row=>({...row,max:Math.max(1,...(snapshot.programme_pressure||[]).map(item=>Number(item.value||0)))}));
- const weekly=(snapshot.weekly_leads||[]).map(row=>({label:date(row.week_start,{month:'short',day:'numeric'}),value:Number(row.total||0),max:Math.max(1,...(snapshot.weekly_leads||[]).map(item=>Number(item.total||0)))}));
- const stageCounts=snapshot.stage_counts||[],stageTotal=label=>Number(stageCounts.find(row=>row.stage===label)?.total||0);
- const funnel=[['Leads',leads.total],['Applications',leads.applications],['Enrolled',leads.enrolled_learners]].map(([label,value])=>({label,value:Number(value||0),max:Math.max(1,Number(leads.total||0),Number(leads.applications||0),Number(leads.enrolled_learners||0))}));
- const ageBuckets=[['Overdue',taskCounts.overdue],['Today',taskCounts.today],['Upcoming',taskCounts.upcoming],['Done',taskCounts.done]].map(([label,value])=>({label,value:Number(value||0),max:Math.max(1,Number(taskCounts.overdue||0),Number(taskCounts.today||0),Number(taskCounts.upcoming||0),Number(taskCounts.done||0))}));
- const alerts=[
-  {label:'Overdue tasks',value:taskCounts.overdue||0,detail:'Open actions past due date',go:'planner'},
-  {label:'High priority without action',value:risks.high_no_action||0,detail:'Records that can stall conversion',go:'leads'},
-  {label:'Missing evidence',value:risks.missing_evidence||0,detail:'Application review risk',go:'applications'},
-  {label:'Unlinked attendees',value:risks.attendees_no_follow_up||0,detail:'Event follow-up risk',go:'events'}
- ];
- const staleRows=(risks.stale||[]).map(l=>`<tr><td><strong>${esc(fullName(l))}</strong><div class="small muted">${esc(l.programme||'No programme')}</div></td><td>${esc(l.stage||'No stage')}</td><td>${Math.floor((Date.now()-(safeDate(l.created_at)||new Date()))/msDay)}d</td><td><button class="button" data-go="leads/${esc(l.id)}">Open</button></td></tr>`);
- const teamRows=(snapshot.team||[]).map(row=>`<tr><td><strong>${esc(row.owner||'Unassigned')}</strong><div class="small muted">${esc(row.owner_id||'team')}</div></td><td>${fmtNumber(row.leads)}</td><td>${fmtNumber(row.overdue)}</td><td>${esc(durationLabel(row.avg_response_ms||0))}</td><td>${fmtNumber(row.enrolments)}</td><td>${fmtNumber(Number(row.open_tasks||0)+Number(row.active||0))}</td></tr>`);
- const qualityRows=[
-  `<tr><td>Missing phone/email</td><td>${fmtNumber(quality.missing_contact)}</td><td>Lead contactability</td></tr>`,
-  `<tr><td>Duplicate emails</td><td>${fmtNumber(quality.duplicate_emails)}</td><td>Golden record risk</td></tr>`,
-  `<tr><td>Duplicate phones</td><td>${fmtNumber(quality.duplicate_phones)}</td><td>Golden record risk</td></tr>`,
-  `<tr><td>Missing programme/source</td><td>${fmtNumber(quality.missing_core)}</td><td>Attribution and routing</td></tr>`,
-  `<tr><td>Invalid dates</td><td>${fmtNumber(quality.invalid_dates)}</td><td>Reporting accuracy</td></tr>`,
-  `<tr><td>Unlinked attendees</td><td>${fmtNumber(quality.unlinked_attendees)}</td><td>Event follow-up</td></tr>`
- ];
- const systemRows=[
-  `<tr><td>Uptime</td><td>${durationLabel(system.uptime_ms||0)}</td><td>${system.started_at?timestamp(system.started_at):'Unknown'}</td></tr>`,
-  `<tr><td>Storage</td><td>${esc(system.storage||'unknown')}</td><td>Database mode</td></tr>`,
-  `<tr><td>Last save</td><td>${system.last_save_at?timestamp(system.last_save_at):'Not saved yet'}</td><td>Backend write checkpoint</td></tr>`,
-  `<tr><td>API errors</td><td>${system.api_error_count||0}</td><td>${(system.api_errors||[])[0]?.message?esc((system.api_errors||[])[0].message):'No recent errors'}</td></tr>`,
-  `<tr><td>Background jobs</td><td>${system.background_jobs?.gmail?.running||system.background_jobs?.events?.running||system.background_jobs?.zoom?.running?'Running':'Idle'}</td><td>Gmail, event and Zoom sync workers</td></tr>`,
-  `<tr><td>Audit activity</td><td>${system.audit_24h||0}</td><td>Last 24 hours</td></tr>`
- ];
- return heading('Monitoring dashboard.','Operations, integrations, team performance, risk and system health.',`<button class="button soft" data-act="reload">${icon('arrow')}Refresh</button>`)+
- `${snapshot._snapshot?.stale?'<div class="notice warning">Monitoring is showing the latest saved snapshot while a refresh runs in the background.</div>':''}
- <div class="stats-grid monitoring-stats">${monStat('Leads today',fmtNumber(leads.today),'Since midnight','users')}${monStat('Leads this week',fmtNumber(leads.last_7_days),'Rolling 7 days','chart')}${monStat('Leads this month',fmtNumber(leads.last_30_days),'Rolling 30 days','calendar')}${monStat('Applications',fmtNumber(leads.applications),'Current applications','shield')}</div>
- <div class="stats-grid monitoring-stats">${monStat('New',fmtNumber(stageTotal('New lead')),'New lead stage','users')}${monStat('Qualified',fmtNumber(stageTotal('Qualified')),'Ready for next step','check')}${monStat('Lost',fmtNumber(stageTotal('Lost')),'Closed lost','close','risk')}${monStat('Enrolled',fmtNumber(leads.enrolled_learners||leads.enrolled_stage),'Confirmed learners','shield')}</div>
- <section class="monitoring-alerts">${alerts.map(a=>`<button class="panel monitoring-alert" data-go="${esc(a.go)}"><span>${esc(a.label)}</span><strong>${fmtNumber(a.value)}</strong><em>${esc(a.detail)}</em></button>`).join('')}</section>
- ${monitoringIntegrationCards(health)}
- <div class="monitoring-grid monitoring-chart-grid"><section class="panel"><div class="panel-header"><div><h2>Programmes under pressure</h2><p>Active leads by programme</p></div>${icon('chart')}</div><div class="panel-body">${metricList(programmePressure)}</div></section><section class="panel"><div class="panel-header"><div><h2>Pipeline funnel</h2><p>Lead to enrolment conversion</p></div>${icon('shield')}</div><div class="panel-body">${metricList(funnel)}</div></section><div class="monitoring-row-gap" aria-hidden="true"></div><section class="panel"><div class="panel-header"><div><h2>Lead trend</h2><p>Created leads by week</p></div>${icon('chart')}</div><div class="panel-body">${metricList(weekly)}</div></section><section class="panel"><div class="panel-header"><div><h2>Task aging</h2><p>Open and completed workload buckets</p></div>${icon('clock')}</div><div class="panel-body">${metricList(ageBuckets)}</div></section></div>
- <section class="panel mt"><div class="panel-header"><div><h2>Team performance</h2><p>Owner workload, overdue tasks and outcomes</p></div>${icon('users')}</div>${monitorTable(['Owner','Leads','Overdue','Avg response','Enrolled','Workload'],teamRows,'No team records')}</section>
- <div class="monitoring-grid mt"><section class="panel"><div class="panel-header"><div><h2>Pipeline risk</h2><p>Stale leads and stalled records</p></div>${icon('bell')}</div>${monitorTable(['Lead','Stage','Age',''],staleRows,'No stale leads')}</section><section class="panel"><div class="panel-header"><div><h2>Data quality</h2><p>Duplicates, missing fields and unlinked attendees</p></div>${icon('file')}</div>${monitorTable(['Check','Count','Impact'],qualityRows)}</section></div>
- <section class="panel mt"><div class="panel-header"><div><h2>Admin and system</h2><p>Runtime, storage, jobs and audit activity</p></div>${icon('settings')}</div>${monitorTable(['Signal','Value','Detail'],systemRows)}</section>
- <section class="panel mt"><div class="panel-header"><div><h2>Other risk queues</h2><p>Evidence, contracts, high priority leads and event follow-up</p></div>${icon('clock')}</div><div class="panel-body monitoring-risk-pills">${badge(`${fmtNumber(risks.missing_evidence)} applications missing evidence`,'amber')}${badge(`${fmtNumber(risks.pending_contracts)} contracts pending`,'amber')}${badge(`${fmtNumber(risks.high_no_action)} high priority without next action`,risks.high_no_action?'red':'green')}${badge(`${fmtNumber(risks.attendees_no_follow_up)} attendees without follow-up`,risks.attendees_no_follow_up?'red':'green')}</div></section>`;
+ return heading('Admin dashboard.','Messages, replies, interest, funnel and enrolments.',`<button class="button soft" data-act="dashboard-retry">${icon('arrow')}Refresh</button>`)+
+ `${dashboardFilterBar()}<div class="dashboard-cockpit dashboard-admin-page">
+  ${dashboardCard('admin','Admin Dashboard','Messages, replies, interest, funnel and enrolments')}
+ </div><p class="bottom-note">Admin dashboard uses live dashboard aggregates from PostgreSQL.</p>`;
 }
 function leadSourceOptions(){
  const values=[...(data.sources||[]),...data.leads.flatMap(l=>[l.source_first_touch,l.source_lead_capture,...(l.source_history||[]).map(item=>item.source)]).filter(Boolean)];
@@ -1112,11 +1233,11 @@ function filteredLeads(){
  return data.leads.filter(l=>(filters.stage==='All'||filters.stage==='All stages'||l.stage===filters.stage)&&(filters.programme==='All'||l.programme_id===filters.programme)&&leadMatchesSource(l)&&leadMatchesSearch(l));
 }
 function crmLeadCard(l,n){
- return `<article class="crm-lead-card"><button class="crm-card-main" data-go="leads/${esc(l.id)}"><div class="lead-top">${avatar(l,n)}<div><h3>${esc(fullName(l))}</h3><p>${esc(l.employer||l.email||'No employer recorded')}</p></div></div><div class="lead-programme">${esc(l.programme)} <span class="muted">Â· ${esc(l.level)}</span></div><div class="lead-bottom"><span>${esc(leadSourceLabel(l))}</span><span>${esc(l.priority)} ${icon('chevron')}</span></div></button><select class="crm-stage-select" data-id="${esc(l.id)}" aria-label="Move ${esc(fullName(l))} to another stage">${data.stages.map(stage=>`<option value="${esc(stage)}" ${l.stage===stage?'selected':''}>${esc(stage)}</option>`).join('')}</select></article>`;
+ return `<article class="crm-lead-card"${cardSection('Lead record')}><button class="crm-card-main" data-go="leads/${esc(l.id)}"><div class="lead-top">${avatar(l,n)}<div><h3>${esc(fullName(l))}</h3><p>${esc(l.employer||l.email||'No employer recorded')}</p></div></div><div class="lead-programme">${esc(l.programme)} <span class="muted">Â· ${esc(l.level)}</span></div><div class="lead-bottom"><span>${esc(leadSourceLabel(l))}</span><span>${esc(l.priority)} ${icon('chevron')}</span></div></button><select class="crm-stage-select" data-id="${esc(l.id)}" aria-label="Move ${esc(fullName(l))} to another stage">${data.stages.map(stage=>`<option value="${esc(stage)}" ${l.stage===stage?'selected':''}>${esc(stage)}</option>`).join('')}</select></article>`;
 }
 function leadTableFast(list){
  const visible=list.slice(0,LEAD_TABLE_LIMIT);
- return `<section class="panel table-wrap lead-table"><table><thead><tr><th>Lead</th><th>Contact</th><th>Programme</th><th>Source</th><th>Status</th><th>Priority</th><th>Created</th><th></th></tr></thead><tbody>${visible.map((l,n)=>`<tr><td><div class="table-person">${avatar(l,n)}<div><strong>${esc(fullName(l))}</strong><div class="small muted">${esc(l.employer||'No employer')}</div></div></div></td><td><div>${esc(l.email||'')}</div><div class="small muted">${esc(l.phone||'')}</div></td><td><strong>${esc(l.programme)}</strong><div class="small muted">${esc(l.level)}</div></td><td>${esc(leadSourceLabel(l))}</td><td>${leadStatusSelect(l)}</td><td>${esc(l.priority)}</td><td>${date(l.created_at)}</td><td><button class="icon-button" data-go="leads/${esc(l.id)}" aria-label="Open ${esc(fullName(l))}">${icon('chevron')}</button></td></tr>`).join('')}</tbody></table>${list.length>LEAD_TABLE_LIMIT?`<div class="crm-more">Showing first ${LEAD_TABLE_LIMIT.toLocaleString()} rows. Search or filter to narrow ${list.length.toLocaleString()} matching leads.</div>`:''}${list.length?'':empty('No matching leads','Try another name, programme or stage.')}</section>`;
+ return `<section class="panel table-wrap lead-table"${cardSection('Lead table')}><table><thead><tr><th>Lead</th><th>Contact</th><th>Programme</th><th>Source</th><th>Status</th><th>Priority</th><th>Created</th><th></th></tr></thead><tbody>${visible.map((l,n)=>`<tr><td><div class="table-person">${avatar(l,n)}<div><strong>${esc(fullName(l))}</strong><div class="small muted">${esc(l.employer||'No employer')}</div></div></div></td><td><div>${esc(l.email||'')}</div><div class="small muted">${esc(l.phone||'')}</div></td><td><strong>${esc(l.programme)}</strong><div class="small muted">${esc(l.level)}</div></td><td>${esc(leadSourceLabel(l))}</td><td>${leadStatusSelect(l)}</td><td>${esc(l.priority)}</td><td>${date(l.created_at)}</td><td><button class="icon-button" data-go="leads/${esc(l.id)}" aria-label="Open ${esc(fullName(l))}">${icon('chevron')}</button></td></tr>`).join('')}</tbody></table>${list.length>LEAD_TABLE_LIMIT?`<div class="crm-more">Showing first ${LEAD_TABLE_LIMIT.toLocaleString()} rows. Search or filter to narrow ${list.length.toLocaleString()} matching leads.</div>`:''}${list.length?'':empty('No matching leads','Try another name, programme or stage.')}</section>`;
 }
 function leadViewToggle(){
  return `<div class="lead-view-toggle"><button class="chip ${filters.leadView==='table'?'active':''}" data-act="lead-view" data-id="table">${icon('file')}Table</button><button class="chip ${filters.leadView==='board'?'active':''}" data-act="lead-view" data-id="board">${icon('grid')}Board</button></div>`;
@@ -1131,7 +1252,7 @@ function leadResults(){
  const list=filteredLeads().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
  if(filters.leadView!=='board')return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>Table view with live status controls</span></div>${leadTableFast(list)}${leadsMore()}`;
  const stages=(filters.stage==='All'||filters.stage==='All stages'?data.stages:[filters.stage]),max=Math.max(1,...stages.map(stage=>list.filter(l=>l.stage===stage).length));
- return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>${stages.length} pipeline stage${stages.length===1?'':'s'} shown</span></div><div class="crm-board">${stages.map(stage=>{const rows=list.filter(l=>l.stage===stage).sort((a,b)=>String(a.priority||'').localeCompare(String(b.priority||''))||new Date(b.created_at||0)-new Date(a.created_at||0));const width=Math.max(1,Math.round(rows.length/max*12));return `<section class="crm-column"><header><div><h2>${esc(stage)}</h2><p>${rows.length.toLocaleString()} lead${rows.length===1?'':'s'}</p></div><span class="badge ${stage==='Lost'||stage==='Not Eligible'?'red':stage==='Enrolled'?'green':'amber'}">${rows.length}</span></header><div class="bar-track"><div class="bar-fill w${width}"></div></div><div class="crm-column-body">${rows.slice(0,80).map((l,n)=>crmLeadCard(l,n)).join('')||empty('No leads here')}</div>${rows.length>80?`<div class="crm-more">${rows.length-80} more hidden by this filter</div>`:''}</section>`;}).join('')}</div>${leadsMore()}${list.length?'':empty('No matching leads','Try another name, programme or stage.')}`;
+ return `${leadViewToggle()}<div class="crm-summary"><strong>${list.length.toLocaleString()} matching leads</strong><span>${stages.length} pipeline stage${stages.length===1?'':'s'} shown</span></div><div class="crm-board">${stages.map(stage=>{const rows=list.filter(l=>l.stage===stage).sort((a,b)=>String(a.priority||'').localeCompare(String(b.priority||''))||new Date(b.created_at||0)-new Date(a.created_at||0));const width=Math.max(1,Math.round(rows.length/max*12));return `<section class="crm-column"${cardSection('Pipeline stage')}><header><div><h2>${esc(stage)}</h2><p>${rows.length.toLocaleString()} lead${rows.length===1?'':'s'}</p></div><span class="badge ${stage==='Lost'||stage==='Not Eligible'?'red':stage==='Enrolled'?'green':'amber'}">${rows.length}</span></header><div class="bar-track"><div class="bar-fill w${width}"></div></div><div class="crm-column-body">${rows.slice(0,80).map((l,n)=>crmLeadCard(l,n)).join('')||empty('No leads here')}</div>${rows.length>80?`<div class="crm-more">${rows.length-80} more hidden by this filter</div>`:''}</section>`;}).join('')}</div>${leadsMore()}${list.length?'':empty('No matching leads','Try another name, programme or stage.')}`;
 }
 const phaseConfig=[
  {id:'capture',title:'Capture',subtitle:'New records and source quality',kind:'lead',stages:['New lead'],owner:'Sales',goal:'Contact permission, owner and first task recorded',go:'leads'},
@@ -1158,19 +1279,36 @@ function phaseRecordRow(item,n,phase){
 }
 function phaseCard(phase,n){
  const records=phaseRecords(phase),total=Math.max(1,data.leads.length),width=Math.max(1,Math.round(records.length/total*12));
- return `<article class="phase-card"><div class="phase-card-top"><div class="phase-step">${String(n+1).padStart(2,'0')}</div><div><h3>${esc(phase.title)}</h3><p>${esc(phase.subtitle)}</p></div>${badge(phaseHealth(phase,records),records.length?'green':'amber')}</div><div class="phase-meter"><div class="bar-track"><div class="bar-fill w${width}"></div></div><span>${records.length}</span></div><dl class="phase-meta"><dt>Owner</dt><dd>${esc(phase.owner)}</dd><dt>Control</dt><dd>${esc(phase.goal)}</dd></dl><div class="phase-records">${records.slice(0,3).map((item,i)=>phaseRecordRow(item,i,phase)).join('')||empty('No records in this phase')}</div><button class="text-button" data-go="${phase.go}">Open workspace ${icon('arrow')}</button></article>`;
+ return `<article class="phase-card"${cardSection('Journey phase')}><div class="phase-card-top"><div class="phase-step">${String(n+1).padStart(2,'0')}</div><div><h3>${esc(phase.title)}</h3><p>${esc(phase.subtitle)}</p></div>${badge(phaseHealth(phase,records),records.length?'green':'amber')}</div><div class="phase-meter"><div class="bar-track"><div class="bar-fill w${width}"></div></div><span>${records.length}</span></div><dl class="phase-meta"><dt>Owner</dt><dd>${esc(phase.owner)}</dd><dt>Control</dt><dd>${esc(phase.goal)}</dd></dl><div class="phase-records">${records.slice(0,3).map((item,i)=>phaseRecordRow(item,i,phase)).join('')||empty('No records in this phase')}</div><button class="text-button" data-go="${phase.go}">Open workspace ${icon('arrow')}</button></article>`;
 }
 function phases(){
  const active=phaseConfig.reduce((sum,phase)=>sum+phaseRecords(phase).length,0),blocked=data.applications.filter(a=>!a.learner&&a.requirements?.some(r=>!r.latest||['Pending','Rejected'].includes(r.latest.status))).length,ready=data.leads.filter(l=>l.stage==='Ready for Enrolment').length;
  return heading('Journey phases.','Track the learner journey from first touch to confirmed enrolment.',data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
  `<div class="stats-grid phase-stats">${stat('Records in phases',active,'Across active journey controls','grid')}${stat('Evidence blockers',blocked,'Applications needing attention','file')}${stat('Ready to enrol',ready,'Waiting for confirmation','shield')}${stat('Confirmed learners',dashboardNumbers().enrolled,'Saved attribution snapshots','check')}</div><section class="phase-map">${phaseConfig.map(phaseCard).join('')}</section><section class="panel mt"><div class="panel-header"><div><h2>Phase operating rules</h2><p>Controls that keep the journey auditable</p></div>${icon('shield')}</div><div class="panel-body phase-rules"><div>${icon('check')}Every lead keeps one source history.</div><div>${icon('check')}Human review gates eligibility and contracts.</div><div>${icon('check')}Enrolment saves the conversion snapshot.</div></div></section>`;
 }
+function enrolledApplicationForLead(leadId){
+ return (data.applications||[]).find(a=>String(a.lead_id)===String(leadId)&&a.learner)||(data.applications||[]).find(a=>String(a.lead_id)===String(leadId))||null;
+}
+function journeyTouchRows(lead,app=null,snapshot=null){
+ const first=snapshot?.first_touch||lead.source_first_touch||'Unknown';
+ const second=snapshot?.lead_capture||lead.source_lead_capture||first||'Unknown';
+ const enrolled=Boolean(app?.learner||lead.stage==='Enrolled');
+ const end=snapshot?.conversion_source||(enrolled?second:'Not enrolled yet');
+ return [
+  {label:'Start touch',value:first,description:'Where the enrolled journey started: the first source, campaign, event or import that introduced this learner.'},
+  {label:'Second touch',value:second,description:'The capture point that turned the person into a workable CRM lead with contact details and programme interest.'},
+  {label:'End touch',value:end,description:enrolled?'The conversion touch locked when enrolment was confirmed and the journey became enrolled.':'Locked when enrolment is confirmed, so the final conversion source stays auditable.'}
+ ];
+}
+function journeyTouchDefinition(lead,app=null,snapshot=null){
+ return `<dl class="definition">${journeyTouchRows(lead,app,snapshot).map(row=>`<dt>${esc(row.label)}</dt><dd><strong>${esc(row.value)}</strong><div class="small muted">${esc(row.description)}</div></dd>`).join('')}</dl>`;
+}
 async function leadDetail(id){
  const detail=await api('/api/leads/'+id),l=detail.lead,app=data.applications.find(a=>a.lead_id===id);
  return `${pageBreadcrumb('Lead 360')}<button class="text-button" data-go="leads">${icon('back')} All leads</button><div class="detail-header">${avatar(l,0,true)}<div><h1>${esc(fullName(l))}</h1><p>${esc(l.employer)} · ${esc(l.city||'Location not recorded')}</p></div>${badge(l.stage)}</div>
  <div class="actions">${data.permissions.sales?`${btn('Log a call','log-call',id,'primary')}${btn('Add follow-up','add-task',id)}${btn('Update stage','update-lead',id)}${btn('Add programme','add-programme',id)}${btn('Record email','record-email',id)}${btn('Delete lead','delete-lead',id,'danger')}`:''}${data.permissions.sales||data.permissions.review?btn('Add note','add-note',id):''}${!app&&(data.permissions.sales||data.permissions.review)?btn('Start application','apply',id,'soft'):''}${app?'<button class="button soft" data-go="applications">View application</button>':''}</div>${leadEmailGroups(l)}
  <div class="detail-grid"><div><section class="panel"><div class="panel-header"><h2>The Golden Record</h2>${icon('users')}</div><div class="panel-body"><dl class="definition"><dt>Programme</dt><dd>${esc(l.programme)} · ${esc(l.level)}</dd><dt>Email</dt><dd>${esc(l.email)}</dd><dt>Phone</dt><dd>${esc(l.phone||'Not provided')}</dd><dt>Owner</dt><dd>${esc(l.owner)}</dd><dt>Contact consent</dt><dd>${esc(l.contact_permission)}</dd><dt>Priority</dt><dd>${esc(l.priority)}</dd><dt>Next action</dt><dd>${l.next_action_at?timestamp(l.next_action_at):'No open follow-up'}</dd><dt>Person ID</dt><dd class="mono">${esc(l.person_id)}</dd></dl></div></section>
- <section class="panel mt"><div class="panel-header"><h2>Acquisition lineage</h2>${icon('link')}</div><div class="panel-body"><dl class="definition"><dt>First touch</dt><dd>${esc(l.source_first_touch)}</dd><dt>Lead capture</dt><dd>${esc(l.source_lead_capture)}</dd><dt>Captured</dt><dd>${timestamp(l.created_at)}</dd></dl><div class="info-strip">${icon('shield')}Source history is preserved with your record.</div></div></section>
+ <section class="panel mt"><div class="panel-header"><div><h2>Enrolled journey touches</h2><p>Start, second and end touch descriptions for attribution.</p></div>${icon('link')}</div><div class="panel-body">${journeyTouchDefinition(l,app)}<dl class="definition"><dt>Captured</dt><dd>${timestamp(l.created_at)}</dd></dl><div class="info-strip">${icon('shield')}Source history is preserved with your record.</div></div></section>
  <section class="panel mt"><div class="panel-header"><h2>Open actions</h2></div><div class="panel-body">${data.tasks.filter(t=>t.lead_id===id&&t.status==='Open').map(taskRow).join('')||empty('No open actions')}</div></section></div>
  <section class="panel"><div class="panel-header"><div><h2>A connected journey</h2><p>Activity for this programme opportunity</p></div>${icon('clock')}</div><div class="panel-body timeline">${detail.timeline.map(t=>`<div class="timeline-item"><div class="small">${timestamp(t.occurred_at)} · ${esc(t.source)}</div><h3>${esc(t.summary)}</h3><div class="timeline-meta">${esc(t.actor||'Imported')} · ${esc(t.verification)} · ${Math.round(t.confidence*100)}% source confidence</div></div>`).join('')||empty('The journey starts here')}</div></section></div>`;
 }
@@ -1199,9 +1337,10 @@ function applicationActions(a){
 }
 function applicationCard(a){
  const status=badge(a.learner?'Enrolled':a.status);
+ const lead=(data.leads||[]).find(l=>String(l.id)===String(a.lead_id))||a;
  const requirements=`<div class="requirements">${(a.requirements||[]).map(r=>applicationRequirement(a,r)).join('')}</div>`;
  const learner=a.learner
-  ? `<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div>${requirements}<div class="actions">${(data.permissions.sales||data.permissions.review)?btn('Delete application','delete-application',a.id,'danger'):''}</div>`
+  ? `<div class="info-strip">${icon('shield')}Enrolment confirmed · ${esc(a.learner.external_reference)}</div><div class="mt">${journeyTouchDefinition(lead,a)}</div>${requirements}<div class="actions">${(data.permissions.sales||data.permissions.review)?btn('Delete application','delete-application',a.id,'danger'):''}</div>`
   : `${requirements}<div class="card-foot"><span>Contract</span>${badge(a.contract?.status||'Draft')}</div><div class="actions">${applicationActions(a)}</div>`;
  return `<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${status}</div>${learner}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`;
 }
@@ -1210,10 +1349,10 @@ async function applications(){
  data.applications=result.applications||[];
  const canAdd=data.permissions.sales||data.permissions.review;
  const action=canAdd?`<button class="button primary" data-act="add-application">${icon('plus')}Manual application</button>`:'';
- return heading('Ready for their next chapter.','Evidence, human review and enrolment readiness.',action)+
+ return heading('Enrolled learner applications.','Confirmed learner records, evidence and enrolment snapshots.',action)+
   pageNewNotice('applications')+
   (data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+
-  `<div class="application-grid">${data.applications.map(applicationCard).join('')}</div>${data.applications.length?'':empty('No applications yet','Use Manual application to start one from an existing lead.')}`;
+  `<div class="application-grid">${data.applications.map(applicationCard).join('')}</div>${data.applications.length?'':empty('No enrolled applications yet','Enrolled leads will appear here with their evidence documents.')}`;
 }
 function requirement(a,r){return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} · Version ${r.latest.version}${r.latest.reviewer?' · Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${data.permissions.sales||data.permissions.review?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload new version':'Upload document'}</button>`:''}${r.latest&&data.permissions.review?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>Download</a>${btn('Review','review-evidence',r.latest.id)}`:''}${r.latest&&(data.permissions.sales||data.permissions.review)?btn('Delete evidence','delete-evidence',r.latest.id,'danger'):''}</div></div>`;}
 async function attribution(){const result=await api('/api/attribution?limit=100',undefined,'GET',{silent:true});data.attribution=result.attribution||[];return heading('Know where progress begins.','Trace acquisition through to confirmed enrolment.')+`<div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Acquisition sources</h2></div><div class="panel-body source-bars">${sourceBars()}<p class="bottom-note">One lead is counted for each programme opportunity.</p></div></section><section class="panel"><div class="panel-header"><h2>First-touch outcomes</h2></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Enrolled</th></tr></thead><tbody>${data.source_counts.map(s=>`<tr><td>${esc(s.source)}</td><td>${s.leads}</td><td>${s.enrolled}</td></tr>`).join('')}</tbody></table></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Enrolment snapshots</h2><p>Saved at confirmation · First-touch model</p></div>${icon('shield')}</div><div class="panel-body">${data.attribution.map(s=>`<div class="person-row">${avatar(s)}<div class="person-main"><strong>${esc(fullName(s))}</strong><p>${esc(s.programme)}<br>First: ${esc(s.snapshot.first_touch)} · Capture: ${esc(s.snapshot.lead_capture)}<br>Conversion: ${esc(s.snapshot.conversion_source)}</p></div>${badge('100% '+s.snapshot.first_touch,'green')}</div>`).join('')||empty('No enrolment snapshots yet','A snapshot is saved automatically when enrolment is confirmed.')}</div></section>`;}
@@ -1268,7 +1407,7 @@ function eventHubShell(content){
  const actions=`<div class="actions event-actions">${data.permissions.sales?`<button class="button primary" data-act="import-events">${icon('file')}Import sheet</button>`:''}${data.integrations.find(i=>i.name==='Eventbrite')?.status==='Connected'?`<button class="button soft" data-act="eventbrite-sync">${icon('calendar')}Sync Eventbrite</button>`:''}${data.integrations.find(i=>i.name==='Zoom')?.status==='Connected'?`<button class="button soft" data-act="zoom-sync">${icon('calendar')}Sync Zoom</button>`:''}</div>`;
  return heading('Event registrations.','Confirmation, attendance and follow-up from the source spreadsheet.',actions)+pageNewNotice('events')+`<div class="event-hub-layout"><aside class="event-hub-tabs" aria-label="Event sections">${eventHubTabs.map(([id,label,ic])=>`<button class="event-tab ${filters.eventView===id?'active':''}" data-act="event-hub-view" data-id="${id}">${icon(ic)}<span>${label}</span></button>`).join('')}</aside><section class="event-hub-content"><div class="event-range-tabs">${eventRangeTabs.map(([id,label])=>`<button class="chip ${filters.eventRange===id?'active':''}" data-act="event-hub-range" data-id="${id}">${label}</button>`).join('')}</div>${content}</section></div>`;
 }
-function eventStat(label,value,foot,ic){return `<div class="stat event-stat"><div class="stat-head">${esc(label)}${icon(ic)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
+function eventStat(label,value,foot,ic){return `<div class="stat event-stat"${cardSection('Event metric')}><div class="stat-head">${esc(label)}${icon(ic)}</div><div class="stat-value">${esc(value)}</div><div class="stat-foot">${esc(foot)}</div></div>`;}
 function eventTotals(events){
  return events.reduce((sum,e)=>{const m=eventMetrics(e);sum.booked+=m.booked;sum.confirmed+=m.confirmed;sum.attended+=m.attended;sum.declined+=m.declined;sum.pending+=m.pending;sum.noAnswer+=m.noAnswer;if(eventDateValue(e)>=new Date())sum.upcoming+=1;return sum;},{booked:0,confirmed:0,attended:0,declined:0,pending:0,noAnswer:0,upcoming:0});
 }
@@ -1279,11 +1418,11 @@ function eventMeetingLink(e){const attendee=eventAttendees(e).find(a=>a.zoom_lin
 function eventMeetingButton(e,label='Join meeting'){const link=eventMeetingLink(e);return link?`<a class="button soft" href="${esc(link)}" target="_blank" rel="noreferrer">${icon('link')}${esc(label)}</a>`:'';}
 function nextEventCard(events){
  const next=events.filter(e=>eventDateValue(e)>=new Date()).sort((a,b)=>eventDateValue(a)-eventDateValue(b))[0];
- if(!next)return `<section class="panel event-next">${empty('No upcoming event','Imported events in the selected range will appear here.')}</section>`;
- return `<section class="panel event-next"><div class="panel-body"><div class="eyebrow">Next event</div><h2>${esc(next.name)}</h2><p class="muted small">${timestamp(next.start_at)}</p>${eventMiniStats(next)}<div class="actions"><button class="button primary" data-act="event-open" data-id="${esc(next.id)}">Open event</button>${eventMeetingButton(next,'Join meeting')}</div></div></section>`;
+ if(!next)return `<section class="panel event-next"${cardSection('Event summary')}>${empty('No upcoming event','Imported events in the selected range will appear here.')}</section>`;
+ return `<section class="panel event-next"${cardSection('Event summary')}><div class="panel-body"><div class="eyebrow">Next event</div><h2>${esc(next.name)}</h2><p class="muted small">${timestamp(next.start_at)}</p>${eventMiniStats(next)}<div class="actions"><button class="button primary" data-act="event-open" data-id="${esc(next.id)}">Open event</button>${eventMeetingButton(next,'Join meeting')}</div></div></section>`;
 }
-function funnelChart(totals){const max=Math.max(1,totals.booked,totals.confirmed,totals.attended);return `<section class="panel event-chart"><div class="panel-header"><div><h2>Booking to attendance</h2><p>Based on saved outcomes for the selected range.</p></div></div><div class="panel-body chart-bars vertical"><div style="height:${Math.max(4,totals.booked/max*100)}%"><span></span><b>${totals.booked}</b><em>Booked</em></div><div style="height:${Math.max(4,totals.confirmed/max*100)}%"><span></span><b>${totals.confirmed}</b><em>Confirmed</em></div><div style="height:${Math.max(4,totals.attended/max*100)}%"><span></span><b>${totals.attended}</b><em>Attended</em></div></div></section>`;}
-function workloadChart(events){const top=events.slice().sort((a,b)=>eventMetrics(b).pending-eventMetrics(a).pending).slice(0,5),max=Math.max(1,...top.map(e=>eventMetrics(e).pending));return `<section class="panel"><div class="panel-header"><div><h2>Upcoming workload</h2><p>Pending versus confirmed registrations per event.</p></div></div><div class="panel-body">${top.map(e=>{const m=eventMetrics(e);return `<div class="event-workload-row"><span>${esc(shortEventName(e.name))}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(4,m.pending/max*100)}%"></div></div><b>${m.pending}</b></div>`;}).join('')||empty('No pending registrations')}</div></section>`;}
+function funnelChart(totals){const max=Math.max(1,totals.booked,totals.confirmed,totals.attended);return `<section class="panel event-chart"${cardSection('Event chart')}><div class="panel-header"><div><h2>Booking to attendance</h2><p>Based on saved outcomes for the selected range.</p></div></div><div class="panel-body chart-bars vertical"><div style="height:${Math.max(4,totals.booked/max*100)}%"><span></span><b>${totals.booked}</b><em>Booked</em></div><div style="height:${Math.max(4,totals.confirmed/max*100)}%"><span></span><b>${totals.confirmed}</b><em>Confirmed</em></div><div style="height:${Math.max(4,totals.attended/max*100)}%"><span></span><b>${totals.attended}</b><em>Attended</em></div></div></section>`;}
+function workloadChart(events){const top=events.slice().sort((a,b)=>eventMetrics(b).pending-eventMetrics(a).pending).slice(0,5),max=Math.max(1,...top.map(e=>eventMetrics(e).pending));return `<section class="panel"${cardSection('Event workload')}><div class="panel-header"><div><h2>Upcoming workload</h2><p>Pending versus confirmed registrations per event.</p></div></div><div class="panel-body">${top.map(e=>{const m=eventMetrics(e);return `<div class="event-workload-row"><span>${esc(shortEventName(e.name))}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(4,m.pending/max*100)}%"></div></div><b>${m.pending}</b></div>`;}).join('')||empty('No pending registrations')}</div></section>`;}
 function eventDashboard(events){
  const totals=eventTotals(events),confirmation=pct(totals.confirmed+totals.attended,totals.booked),showUp=totals.confirmed+totals.attended?pct(totals.attended,totals.confirmed+totals.attended):'—';
  return eventHubShell(`<div class="stats-grid">${eventStat('Upcoming events',totals.upcoming,eventRangeTabs.find(r=>r[0]===filters.eventRange)?.[1]||'Selected range','calendar')}${eventStat('Registrations',totals.booked,`${totals.pending} pending contact`,'users')}${eventStat('Confirmed',totals.confirmed,`${confirmation} of registrations`,'check')}${eventStat('Declined',totals.declined,`${totals.noAnswer} no answer`,'phone')}${eventStat('Pending contact',totals.pending,'Not contacted, maybe or call back','clock')}${eventStat('Call backs due',eventCallbackTasks().filter(t=>t.status==='Open').length,'Open in total','phone')}${eventStat('Confirmation rate',confirmation,`${totals.noAnswer} no answer`,'chart')}${eventStat('Show-up rate',showUp,'Recorded after events run','check')}</div><div class="event-dashboard-grid">${nextEventCard(events)}${funnelChart(totals)}</div><div class="event-dashboard-grid mt">${workloadChart(events)}<section class="panel event-action-card"><div class="panel-header"><div><h2>Needs action today</h2><p>Call backs scheduled for today or earlier.</p></div><button class="text-button" data-act="event-hub-view" data-id="callbacks">All call backs</button></div><div class="panel-body"><div class="event-action-scroll">${eventCallbackList(true)}</div></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Upcoming events</h2><p>Next imported sessions</p></div><button class="text-button" data-act="event-hub-view" data-id="events">View all ${icon('arrow')}</button></div><div class="table-wrap">${eventsTable(events.slice(0,5),false)}</div></section>`);
@@ -1425,18 +1564,37 @@ async function zoom(){
  const actions=`<div class="actions event-actions">${connected?`<button class="button primary" data-act="zoom-sync">${icon('video')}Sync Zoom</button><button class="button soft" data-act="zoom-calls-sync">${icon('phone')}Sync calls</button>`:`<button class="button" data-go="settings">${icon('settings')}Setup Zoom</button>`}<button class="button soft" data-go="events">${icon('calendar')}All events</button></div>`;
  return heading('Zoom meetings.','Meetings and phone calls synced from the connected Zoom accounts.',actions)+(loadError?`<div class="notice danger">Zoom data could not be fully loaded: ${esc(loadError)}</div>`:'')+pageNewNotice('zoom')+`<div class="stats-grid zoom-stats">${eventStat('Meetings',stats.total,'Zoom records in this workspace','video')}${eventStat('Upcoming',stats.upcoming,`${stats.past} past meetings`,'calendar')}${eventStat('Hosts',stats.hosts,'Synced account users','users')}${eventStat('Join links',stats.withLinks,'Meetings with a saved URL','link')}${eventStat('Calls',callStats.total,`${callStats.inbound} inbound / ${callStats.outbound} outbound`,'phone')}${eventStat('Numbers',callStats.numbers,`${callStats.linked} linked calls`,'phone')}</div><section class="panel"><div class="panel-header"><div><h2>Synced meetings</h2><p>Zoom meetings are saved as events, with this page focused on Zoom only.</p></div></div><div class="panel-body">${zoomToolbar()}<div class="table-wrap" id="zoom-results">${zoomTable(list)}</div></div></section><section class="panel mt"><div class="panel-header"><div><h2>Phone numbers & source</h2><p>Every number found in Zoom call history, where it came from, and whether it is linked to a CRM lead.</p></div><span class="small muted">${calls.length.toLocaleString()} loaded calls</span></div><div class="panel-body"><div class="table-wrap" id="zoom-number-results">${zoomNumberTable(zoomNumberSummary(calls))}</div></div></section><section class="panel mt"><div class="panel-header"><div><h2>Zoom calls</h2><p>Phone call history is preserved with direction, owner, account and matched lead details.</p></div><span class="small muted">${data.zoom?.last_call_sync_at?`Last sync ${timestamp(data.zoom.last_call_sync_at)}`:'Not synced yet'}</span></div><div class="panel-body"><div class="table-wrap" id="zoom-call-results">${zoomCallsTable(calls)}</div></div></section>`;
 }
-let zohoSyncPollTimer=null;
+let zohoSyncPollTimer=null,zohoRecordsPreviewCache=null,zohoStatusCache=null;
 const ZOHO_MODULE_TABS=['Leads','Contacts','Accounts','Deals','Tasks','Calls','Events','Campaigns','Notes'];
+function cachedFetchSlot(slot,loader,ttlMs=15000){
+ const now=Date.now();
+ if(slot?.promise)return slot;
+ if(slot?.value&&now-slot.at<ttlMs)return slot;
+ const next={at:now,value:slot?.value||null,promise:null};
+ next.promise=loader().then(value=>{next.value=value;next.at=Date.now();return value;}).finally(()=>{next.promise=null;});
+ return next;
+}
 async function loadZohoRecordsPreview(){
- try{return await api('/api/integrations/zoho/records',undefined,'GET',{silent:true});}
+ try{
+  zohoRecordsPreviewCache=cachedFetchSlot(zohoRecordsPreviewCache,()=>api('/api/integrations/zoho/records',undefined,'GET',{silent:true}));
+  return await (zohoRecordsPreviewCache.promise||Promise.resolve(zohoRecordsPreviewCache.value));
+ }
  catch(error){return {error:error.message,modules:ZOHO_MODULE_TABS.map(module=>({module,total:0,records:[]}))};}
+}
+async function loadZohoStatus(){
+ try{
+  zohoStatusCache=cachedFetchSlot(zohoStatusCache,()=>api('/api/integrations/zoho/status',undefined,'GET',{silent:true}));
+  return await (zohoStatusCache.promise||Promise.resolve(zohoStatusCache.value));
+ }catch(error){return {last_error:error.message};}
 }
 function zohoRecordsPanel(payload){
  const modules=payload?.modules?.length?payload.modules:ZOHO_MODULE_TABS.map(module=>({module,total:0,records:[]}));
  const moduleResults=payload?.moduleResults||{};
- const tabs=modules.map(item=>`<span class="badge">${esc(item.module)} ${fmtNumber(item.total||0)}</span>`).join('');
- const rows=modules.flatMap(item=>(item.records||[]).slice(0,3).map(record=>({module:item.module,...record}))).slice(0,12);
- return `<section class="panel mt"><div class="panel-header"><div><h2>Zoho CRM records</h2><p>Leads, Contacts, Accounts, Deals, Tasks, Calls, Events, Campaigns and Notes stored locally.</p></div><button class="button soft" data-act="zoho-full-sync">${icon('arrow')}Full resync</button></div><div class="panel-body"><div class="actions">${tabs}</div>${payload?.error?`<div class="notice warning">${esc(payload.error)}</div>`:''}<div id="zoho-sync-status">${zohoSyncProgress({moduleResults})}</div><div class="table-wrap"><table><thead><tr><th>Module</th><th>Name</th><th>Status</th><th>Owner</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.module)}</td><td><strong>${esc(row.title||row.name||row.id)}</strong><div class="small muted">${esc(row.email||row.company||row.phone||'')}</div></td><td>${esc(row.status||'')}</td><td>${esc(row.owner||'')}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No Zoho records loaded yet','Run a sync after connecting Zoho CRM.')}</div></div></section>`;
+ const previewLimit=Number(payload?.limit||100);
+ const tabs=modules.map(item=>`<span class="badge">${esc(item.module)} ${fmtNumber(item.loaded ?? item.total ?? 0)}</span>`).join('');
+ const rows=modules.flatMap(item=>(item.records||[]).map(record=>({module:item.module,...record}))).slice(0,previewLimit);
+ const detail=payload?.preview_limited?`Opening this page reads only the latest ${fmtNumber(previewLimit)} stored records. Full sync still saves everything in the database.`:'Leads, Contacts, Accounts, Deals, Tasks, Calls, Events, Campaigns and Notes stored locally.';
+ return `<section class="panel mt"><div class="panel-header"><div><h2>Zoho CRM records</h2><p>${esc(detail)}</p></div><button class="button soft" data-act="zoho-full-sync">${icon('arrow')}Full resync</button></div><div class="panel-body"><div class="actions">${tabs}</div>${payload?.error?`<div class="notice warning">${esc(payload.error)}</div>`:''}<div id="zoho-sync-status">${zohoSyncProgress({moduleResults})}</div><div class="table-wrap"><table><thead><tr><th>Module</th><th>Name</th><th>Status</th><th>Owner</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.module)}</td><td><strong>${esc(row.title||row.name||row.id)}</strong><div class="small muted">${esc(row.email||row.company||row.phone||'')}</div></td><td>${esc(row.status||'')}</td><td>${esc(row.owner||'')}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No Zoho records loaded yet','Run a sync after connecting Zoho CRM.')}</div></div></section>`;
 }
 function zohoSyncProgress(status={}){
  const moduleResults=status.moduleResults||{};
@@ -1453,13 +1611,56 @@ function scheduleZohoSyncPoll(jobId){
    const box=$('#zoho-sync-status');
    if(box)box.innerHTML=zohoSyncProgress(status);
    if(['queued','running'].includes(status.status))zohoSyncPollTimer=setTimeout(poll,Number(status.poll_interval_ms||2500));
-   else{await refresh({silent:true});toast(status.status==='completed'?'Zoho sync completed.':status.last_error||'Zoho sync finished.');}
+   else{zohoRecordsPreviewCache=null;zohoStatusCache=null;await refresh({silent:true});toast(status.status==='completed'?'Zoho sync completed.':status.last_error||'Zoho sync finished.');}
   }catch(error){
    const box=$('#zoho-sync-status');
    if(box)box.innerHTML=`<div class="notice warning">${esc(error.message)}</div>`;
   }
  };
  zohoSyncPollTimer=setTimeout(poll,1000);
+}
+async function zohoPage(){
+ const [records,statusResult]=await Promise.all([
+  loadZohoRecordsPreview(),
+  loadZohoStatus()
+ ]);
+ const integration=(data.integrations||[]).find(i=>i.name==='Zoho CRM'||i.name==='Zoho')||{};
+ const connected=Boolean(statusResult.connected)||integration.status==='Connected';
+ const configured=Boolean(statusResult.configured)||['Connected','Ready to connect','Reconnect required'].includes(integration.status);
+ const modules=records?.modules?.length?records.modules:ZOHO_MODULE_TABS.map(module=>({module,total:0,records:[]}));
+ const total=Number(records?.total ?? records?.loaded ?? modules.reduce((sum,item)=>sum+Number(item.loaded ?? item.total ?? 0),0));
+ const loaded=modules.reduce((sum,item)=>sum+Number(item.loaded ?? (item.records||[]).length),0);
+ const previewLimit=Number(records?.limit||100);
+ const lastSync=records?.last_sync_at||data.zoho?.last_sync_at||statusResult.last_sync_at||'';
+ const statusLabel=connected?'Connected':configured?'Ready to connect':'Needs credentials';
+ const statusKind=connected?'green':configured?'amber':'red';
+ const actions=connected
+  ? `<button class="button primary" data-act="zoho-full-sync">${icon('arrow')}Full resync</button><button class="button soft" data-act="zoho-connect">${icon('link')}Reconnect</button>`
+  : configured
+    ? `<button class="button primary" data-act="zoho-connect">${icon('link')}Connect Zoho</button>`
+    : `<button class="button" data-act="zoho-help">${icon('settings')}Setup details</button>`;
+ const issue=statusResult.last_error||records?.error||'';
+ return heading('Zoho CRM sync.','Leads, Contacts, Accounts, Deals, Tasks, Calls, Events, Campaigns and Notes.',`<div class="actions event-actions">${actions}<button class="button soft" data-go="settings">${icon('settings')}Settings</button></div>`)+
+ `${issue?`<div class="notice warning">${esc(issue)}</div>`:''}
+ <div class="stats-grid">
+  ${stat('Connection',statusLabel,connected?'OAuth token is ready':configured?'Credentials are configured':'OAuth credentials are missing','link')}
+  ${stat('Preview loaded',fmtNumber(total),`Page reads max ${fmtNumber(previewLimit)} records`,'users')}
+  ${stat('Modules',fmtNumber(modules.length),'Zoho CRM modules tracked','grid')}
+  ${stat('Last sync',lastSync?timestamp(lastSync):'Never','Run a full resync after connecting','clock')}
+ </div>
+ <section class="panel">
+  <div class="panel-header"><div><h2>Connection status</h2><p>OAuth readiness and sync controls for Zoho CRM.</p></div>${badge(statusLabel,statusKind)}</div>
+  <div class="panel-body">
+   <dl class="definition">
+    <dt>Status</dt><dd>${esc(statusLabel)}</dd>
+    <dt>Client ID</dt><dd>${esc(statusResult.client_id_hint||'Not shown')}</dd>
+    <dt>API domain</dt><dd>${esc(statusResult.api_domain||data.zoho?.api_domain||'Not connected')}</dd>
+    <dt>Account</dt><dd>${esc(statusResult.email||data.zoho?.email||integration.detail||'No Zoho account shown')}</dd>
+   </dl>
+   <div class="actions">${actions}</div>
+  </div>
+ </section>
+ ${zohoRecordsPanel(records)}`;
 }
 function integrationActions(i){
  if(i.name==='Gmail'){
@@ -1509,8 +1710,8 @@ async function developer(){
     <div class="dev-card dev-hero-card"><p class="eyebrow">Access control</p><h1>Invites, roles and runtime status.</h1><p>Manage workspace access, reset temporary passwords and confirm deployment configuration from this tab.</p><div class="dev-hero-meta">${devPill(`Storage: ${config.storage||'unknown'}`,'ok')}${devPill(config.local_only?'Local access':'Configured developer','locked')}</div></div>
     <div class="dev-stat-grid"><div class="dev-stat"><span class="dev-muted">Users</span><strong>${users.length}</strong><small>Total accounts</small></div><div class="dev-stat"><span class="dev-muted">Developers</span><strong>${developerCount}</strong><small>Protected access</small></div><div class="dev-stat"><span class="dev-muted">Temporary</span><strong>${tempCount}</strong><small>Password visible</small></div></div>
   </section>
-  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Invite user</h2><p class="dev-muted">Temporary passwords stay visible here until the user changes them.</p></div></div><form class="dev-form" id="developer-invite-form">${devField('name','Full name','placeholder="Full name" required maxlength="120"')}${devField('email','Work email','type="email" placeholder="name@company.com" required maxlength="254"')}${devField('password','Temporary password','placeholder="Leave blank to generate" minlength="8" maxlength="128"')}<label class="dev-field"><span>Role</span><select name="role" class="dev-role-control" data-native-menu="true">${DEV_ASSIGNABLE_ROLE_OPTIONS.map(([value,label])=>`<option value="${esc(value)}">${esc(label)}</option>`).join('')}</select></label><button class="button primary" type="submit">Invite</button></form></section>
-  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Team access</h2><p class="dev-muted">Reset a password if someone forgets it. Leave the prompt blank to generate one.</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>User</th><th>Role</th><th>Temporary password</th><th>Status</th><th></th></tr></thead><tbody>${users.length?users.map(user=>`<tr><td><div class="dev-user-cell"><span class="dev-avatar">${esc((user.name||user.email||'?').slice(0,1).toUpperCase())}</span><div><strong>${esc(user.name)}</strong><code>${esc(user.email)}</code></div></div></td><td><div class="dev-role-stack">${devRoleSelect(user)}</div></td><td><code class="dev-secret">${esc(user.temporary_password||'Changed by user')}</code></td><td>${user.temporary_password?devPill('Temporary','warn'):devPill('Private','ok')}</td><td>${devUserActions(user)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="dev-empty">No users have been invited yet.</div></td></tr>'}</tbody></table></div></section>
+  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Invite user</h2><p class="dev-muted">The temporary password is shown once, right after you invite the user. Copy it then.</p></div></div><form class="dev-form" id="developer-invite-form">${devField('name','Full name','placeholder="Full name" required maxlength="120"')}${devField('email','Work email','type="email" placeholder="name@company.com" required maxlength="254"')}${devField('password','Temporary password','placeholder="Leave blank to generate" minlength="8" maxlength="128"')}<label class="dev-field"><span>Role</span><select name="role" class="dev-role-control" data-native-menu="true">${DEV_ASSIGNABLE_ROLE_OPTIONS.map(([value,label])=>`<option value="${esc(value)}">${esc(label)}</option>`).join('')}</select></label><button class="button primary" type="submit">Invite</button></form></section>
+  <section class="dev-panel"><div class="dev-panel-header"><div><h2>Team access</h2><p class="dev-muted">Reset a password if someone forgets it. Leave the prompt blank to generate one.</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>User</th><th>Role</th><th>Password</th><th>Status</th><th></th></tr></thead><tbody>${users.length?users.map(user=>`<tr><td><div class="dev-user-cell"><span class="dev-avatar">${esc((user.name||user.email||'?').slice(0,1).toUpperCase())}</span><div><strong>${esc(user.name)}</strong><code>${esc(user.email)}</code></div></div></td><td><div class="dev-role-stack">${devRoleSelect(user)}</div></td><td><code class="dev-secret">${esc(user.is_configured_developer?'Set on the server':user.password_temporary?'Not changed yet':'Changed by user')}</code></td><td>${user.password_temporary?devPill('Temporary','warn'):devPill('Private','ok')}</td><td>${devUserActions(user)}</td></tr>`).join(''):'<tr><td colspan="5"><div class="dev-empty">No users have been invited yet.</div></td></tr>'}</tbody></table></div></section>
   <section class="dev-panel"><div class="dev-panel-header"><div><h2>Runtime</h2><p class="dev-muted">Storage mode: ${esc(config.storage)}</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>Key</th><th>Status</th><th>Value</th></tr></thead><tbody>${(config.server||[]).map(item=>`<tr><td><strong>${esc(item.label)}</strong><br><code>${esc(item.key)}</code></td><td>${devPill(item.configured?'Configured':'Missing',item.configured?'ok':'warn')}</td><td><code>${esc(item.value||'Not set')}</code></td></tr>`).join('')}</tbody></table></div></section>`;
 }
 async function settings(){const dev=isDeveloperAccount(),zohoRecords=await loadZohoRecordsPreview();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}<button class="button soft" data-act="reconcile-leads">${icon('link')}Link imported data</button>${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div>${zohoRecordsPanel(zohoRecords)}<p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
@@ -1528,7 +1729,7 @@ async function render(){
   let html;
   if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);
   else{
-   const view=({today:cockpitToday,monitoring,leads,planner,inbox,applications,events,zoom,settings,developer,audit:auditView,more}[current]||cockpitToday);
+   const view=({today:cockpitToday,monitoring,leads,planner,inbox,applications,events,zoom,zoho:zohoPage,settings,developer,audit:auditView,more}[current]||cockpitToday);
    html=await view();
   }
   if(seenPages.includes(currentPage))markPageSeen(currentPage);
@@ -1543,6 +1744,7 @@ async function render(){
     actions?.insertAdjacentHTML('beforeend',`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`);
    }
    hydrateSelectMenus($('#app'));
+   if(currentPage==='monitoring')(typeof requestAnimationFrame==='function'?requestAnimationFrame:setTimeout)(ensureAdminDashboardLoad);
   }
   diagMark('render-complete',{route:current,duration_ms:Math.round((performance.now()-renderStarted)*10)/10});
  }catch(e){
@@ -1658,6 +1860,24 @@ function confirmAction({title='Are you sure?',message='',confirmLabel='Delete',c
   dialog.querySelector('[data-confirm="ok"]').focus();
  });
 }
+// The server does not keep temporary passwords, so this is the only time one can be read.
+function showTemporaryPassword(password){
+ return new Promise(resolve=>{
+  const dialog=document.createElement('dialog');
+  dialog.className='confirm-dialog';
+  dialog.innerHTML=`<div class="confirm-card"><div class="confirm-icon">${icon('shield')}</div><div class="confirm-copy"><h2>Temporary password</h2><p>Copy it now and send it to the user. It is not saved and will not be shown again.</p><p><code class="dev-secret">${esc(password)}</code></p></div><div class="dialog-actions confirm-actions"><button type="button" class="button" data-password="copy">Copy</button><button type="button" class="button primary" data-password="done">Done</button></div></div>`;
+  const done=()=>{dialog.close();dialog.remove();resolve();};
+  dialog.addEventListener('cancel',event=>{event.preventDefault();done();});
+  dialog.querySelector('[data-password="done"]').addEventListener('click',done);
+  dialog.querySelector('[data-password="copy"]').addEventListener('click',async()=>{
+   try{await navigator.clipboard.writeText(password);toast('Password copied.');}
+   catch{toast('Could not copy. Select the password and copy it by hand.');}
+  });
+  document.body.appendChild(dialog);
+  dialog.showModal();
+  dialog.querySelector('[data-password="copy"]').focus();
+ });
+}
 async function openManualApplicationDialog(){
  if(!applicationCandidateLeads().length&&leadPageState().has_more)await loadMoreLeads();
  const candidates=applicationCandidateLeads();
@@ -1700,7 +1920,7 @@ async function action(act,id='',target=null){
  if(act==='mark-page-seen'){markPageSeen(target.dataset.page||route().split('/')[0]);return render();}
  if(act==='logout'){await api('/api/logout',{});data=null;location.hash='';login();return;}
  if(act==='reconcile-leads'){const result=await api('/api/leads/reconcile',{},'POST',{silent:true});await refresh({silent:true});const s=result.summary||{};toast(`${s.leads_created||0} leads created, ${s.attendees_linked||0} attendees linked, ${s.calls_linked||0} calls linked.`);return;}
- if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});toast(`Temporary password: ${result.temporary_password}`);},'Reset password');
+ if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});await showTemporaryPassword(result.temporary_password);},'Reset password');
  if(act==='delete-user'){if(!await confirmAction({title:'Delete user?',message:'This removes their workspace access.',confirmLabel:'Delete user'}))return;await api(`/api/users/${encodeURIComponent(id)}`,{},'DELETE');await refresh();toast('User deleted.');return;}
  if(act==='delete-lead'){const lead=data.leads.find(l=>l.id===id);if(!await confirmAction({title:'Delete lead?',message:`${lead?fullName(lead):'This lead'} and related tasks, emails and applications will be removed.`,confirmLabel:'Delete lead'}))return;const result=await api(`/api/leads/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});go('leads');await applyServerMutation(result);toast('Lead deleted.');return;}
  if(act==='delete-task'){const task=data.tasks.find(t=>t.id===id);if(!await confirmAction({title:'Delete task?',message:task?task.title:'This task will be removed from the planner.',confirmLabel:'Delete task'}))return;const result=await api(`/api/tasks/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});await applyServerMutation(result);toast('Task deleted.');return;}
@@ -1729,7 +1949,7 @@ async function action(act,id='',target=null){
  if(act==='gmail-sync'){await runGmailSyncAuto();return;}
  if(act==='gmail-help')return information('Connect Gmail',`<p>Add a <span class="mono">.env</span> file beside <span class="mono">server.js</span> with:</p><p class="mono">GMAIL_CLIENT_ID=...<br>GMAIL_CLIENT_SECRET=...<br>GMAIL_REDIRECT_URI=http://127.0.0.1:5500/api/integrations/gmail/callback</p><p class="small muted">Then restart the Kent Business College backend and open Settings again. The Gmail card will change to Ready to connect.</p>`);
  if(act==='zoho-connect'){location.href='/api/integrations/zoho/connect';return;}
- if(act==='zoho-full-sync'){const result=await api('/api/integrations/zoho/sync',{full_sync:true},'POST',{silent:true});scheduleZohoSyncPoll(result.jobId||result.id);toast('Zoho full sync queued.');return;}
+ if(act==='zoho-full-sync'||act==='zoho-sync'){zohoRecordsPreviewCache=null;zohoStatusCache=null;const result=await api('/api/integrations/zoho/sync',{full_sync:true},'POST',{silent:true});scheduleZohoSyncPoll(result.jobId||result.id);toast('Zoho full sync queued.');return;}
  if(act==='zoho-help')return information('Connect Zoho CRM',`<p>Add Zoho OAuth settings to <span class="mono">.env</span>, then connect from Settings.</p><p class="mono">ZOHO_CLIENT_ID=...<br>ZOHO_CLIENT_SECRET=...<br>ZOHO_REDIRECT_URI=...</p><p class="small muted">The sync stores safe module summaries for Leads, Contacts, Accounts, Deals, Tasks, Calls, Events, Campaigns and Notes.</p>`);
  if(act==='eventbrite-connect'){location.href='/api/integrations/eventbrite/connect';return;}
  if(act==='eventbrite-sync'){const result=await api('/api/integrations/eventbrite/sync',{max_events:10},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported_events} Eventbrite event${result.imported_events===1?'':'s'} and ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported${result.deleted_events?`; ${result.deleted_events} removed`:''}${result.attendee_errors?`; ${result.attendee_errors} attendee list${result.attendee_errors===1?'':'s'} unavailable`:''}.`);return;}
@@ -1744,7 +1964,7 @@ async function action(act,id='',target=null){
  if(act==='apollo-help')return information('Connect Apollo',`<p>Add your Apollo API key and optional search filters to <span class="mono">.env</span>:</p><p class="mono">APOLLO_API_KEY=...<br>APOLLO_KEYWORDS=marketing apprenticeships<br>APOLLO_PERSON_TITLES=Marketing Manager,Sales Director<br>APOLLO_PERSON_LOCATIONS=United Kingdom<br>APOLLO_PER_PAGE=25</p><p class="small muted">People Search creates prospect leads from available person and company data. Apollo does not return email addresses or phone numbers from this search endpoint; enrichment can be added next.</p>`);
 
  if(act==='add-application')return openManualApplicationDialog();
- if(act==='add-lead')return showDialog('A new learner journey','Create one canonical person record. A first-contact task will be assigned automatically.',`<div class="form-grid">${field('first_name','First name','','text','maxlength="80" autocomplete="given-name"')}${field('last_name','Last name','','text','maxlength="80" autocomplete="family-name"')}</div>${field('email','Email address','','email','maxlength="254"')}${field('employer','Employer','','text','maxlength="160"')}<label class="field"><span>Phone (optional)</span><input name="phone" type="tel" maxlength="24" placeholder="+44…"></label><label class="field"><span>City (optional)</span><input name="city" maxlength="100"></label>${select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name+' · '+p.level]))}<div class="form-grid">${select('source','Acquisition source',data.sources)}${select('priority','Priority',['P0','P1','P2','P3'],'P2')}</div>${ownerSelect()}${select('contact_permission','Recorded contact permission',['Unknown','Granted','Declined'])}`,async values=>{const result=await api('/api/leads',values);await applyServerMutation(result);toast('Lead created with a first-contact task.');go('leads/'+result.id);return false;},'Create lead');
+ if(act==='add-lead')return showDialog('A new learner journey','Create one canonical person record. A first-contact task will be assigned automatically.',`<div class="form-grid">${field('first_name','First name','','text','maxlength="80" autocomplete="given-name"')}${field('last_name','Last name','','text','maxlength="80" autocomplete="family-name"')}</div>${field('email','Email address','','email','maxlength="254"')}${field('employer','Employer','','text','maxlength="160"')}<label class="field"><span>Phone (optional)</span><input name="phone" type="tel" maxlength="24" placeholder="+44…"></label><label class="field"><span>City (optional)</span><input name="city" maxlength="100"></label>${select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name+' · '+p.level]))}<div class="form-grid">${select('source','Acquisition source',data.sources)}${select('priority','Priority',['P0','P1','P2','P3'],'P2')}</div>${ownerSelect()}${select('contact_permission','Recorded contact permission',['Unknown','Granted','Declined'])}`,async values=>{const result=await api('/api/leads',values);await applyServerMutation(result);toast('Lead created with an application and first-contact task.');go('leads/'+result.id);return false;},'Create lead');
  if(act==='add-programme')return showDialog('Add a programme opportunity','Reuse this person’s Golden Record and preserve their source history.',select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name])),async v=>{const result=await api(`/api/leads/${id}/opportunities`,v);await applyServerMutation(result);toast('Programme opportunity created.');go('leads/'+result.id);return false;},'Create opportunity');
  if(act==='update-lead')return showDialog('Update opportunity','Stage changes and assignment changes are recorded in the audit trail.',select('stage','Stage',data.stages.filter(s=>!['Application Submitted','Eligibility','Ready for Enrolment','Enrolled','Not Eligible','Call Completed','Duplicate'].includes(s)),lead.stage)+ownerSelect(lead.owner_id)+select('priority','Priority',['P0','P1','P2','P3'],lead.priority)+area('reason','Reason for this change'),async values=>{const result=await api('/api/leads/'+id,values,'PATCH');if(result.lead){Object.assign(lead,result.lead);data=syncClientDerived(data);await render();}toast('Opportunity updated.');return false;});
  if(act==='add-task')return showDialog('Plan the next step','Tasks follow the owner of the selected learner opportunity.',leadSelect(id)+field('title','Action to take','','text','maxlength="180"')+select('kind','Action type',['Call','Email','Follow-up','Review'])+field('due_at','Due date and time',localInput(new Date(Date.now()+86400000)),'datetime-local')+select('priority','Priority',['P0','P1','P2','P3'],'P2'),async v=>{v.owner_id=data.leads.find(l=>l.id===v.lead_id).owner_id;v.due_at=new Date(v.due_at).toISOString();const result=await api('/api/tasks',v);if(result.task)data.tasks.unshift(result.task);data=syncClientDerived(data);await render();toast('Follow-up added to the planner.');return false;},'Create task');
@@ -1825,14 +2045,8 @@ function updateDashboardFiltersFromControl(target){
  const f=filters.dashboard;
  if(target.id==='dash-preset'){
   f.preset=target.value;
-  if(f.preset!=='custom')Object.assign(f,dashboardPresetDates(f.preset));
-  const from=$('#dash-from'),to=$('#dash-to');
-  if(from){from.value=f.from;from.disabled=f.preset!=='custom';}
-  if(to){to.value=f.to;to.disabled=f.preset!=='custom';}
- }else if(target.id==='dash-from'){f.preset='custom';f.from=target.value;}
- else if(target.id==='dash-to'){f.preset='custom';f.to=target.value;}
- else if(target.id==='dash-college')f.college_id=target.value;
- else if(target.id==='dash-programme')f.programme_id=target.value;
+  Object.assign(f,dashboardPresetDates(f.preset));
+ }else if(target.id==='dash-programme')f.programme_id=target.value;
  else if(target.id==='dash-intake')f.intake_id=target.value;
  else if(target.id==='dash-owner')f.owner_id=target.value;
  else if(target.id==='dash-source')f.lead_source=target.value;
@@ -1910,7 +2124,7 @@ document.addEventListener('submit',async event=>{
   const result=await api('/api/users',values);
   form.reset();
   await refresh();
-  toast(`Temporary password: ${result.temporary_password}`);
+  await showTemporaryPassword(result.temporary_password);
  }catch(error){
   toast(error.message);
  }finally{
@@ -1962,6 +2176,9 @@ document.addEventListener('change',async event=>{
   try{
    const result=await api(`/api/leads/${lead.id}`,{stage,owner_id:lead.owner_id,priority:lead.priority,reason:`CRM stage changed from ${previous} to ${stage}`},'PATCH');
    if(result.lead)Object.assign(lead,result.lead);
+   if(result.application)data.applications=upsertRecord(data.applications,result.application);
+   if(result.attribution)data.attribution=upsertRecord(data.attribution,result.attribution);
+   data=syncClientDerived(data);
    toast('Lead stage updated.');
   }catch(error){
    lead.stage=previous;
@@ -1972,9 +2189,9 @@ document.addEventListener('change',async event=>{
   }
   return;
  }
- if(event.target.id==='programme-filter'){filters.programme=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
- if(event.target.id==='source-filter'){filters.source=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
-if(event.target.id==='stage-filter'){filters.stage=event.target.value;const results=$('#lead-results');results.innerHTML=leadResults();hydrateSelectMenus(results);}
+ if(event.target.id==='programme-filter'){filters.programme=event.target.value;await refreshLeadResults(true);return;}
+ if(event.target.id==='source-filter'){filters.source=event.target.value;await refreshLeadResults(true);return;}
+if(event.target.id==='stage-filter'){filters.stage=event.target.value;await refreshLeadResults(true);return;}
 if(event.target.id==='event-sort'){filters.eventSort=event.target.value;return render();}
 if(event.target.id==='zoom-sort'){filters.zoomSort=event.target.value;updateZoomResults();return;}
 if(event.target.id==='event-marketing-status'){filters.eventMarketingStatus=event.target.value;return render();}
@@ -2002,7 +2219,7 @@ window.addEventListener('offline',()=>{toast('You’re offline. Reconnect to sav
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;});
 if('serviceWorker'in navigator){
  const localDev=['localhost','127.0.0.1','0.0.0.0'].includes(location.hostname);
- if(localDev)navigator.serviceWorker.getRegistrations().then(registrations=>registrations.forEach(registration=>registration.unregister())).then(()=>('caches'in window?caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('pathway-')).map(key=>caches.delete(key)))):null)).catch(()=>{});
+ if(localDev)navigator.serviceWorker.getRegistrations().then(registrations=>registrations.forEach(registration=>registration.unregister())).then(()=>('caches'in window?caches.keys().then(keys=>Promise.all(keys.filter(key=>key.startsWith('pathway-')||key.startsWith('kbc-')).map(key=>caches.delete(key)))):null)).catch(()=>{});
  else navigator.serviceWorker.register('/sw.js').catch(()=>{});
 }
 function safeDate(value){const d=new Date(value);return Number.isNaN(d.getTime())?null:d;}
@@ -2135,6 +2352,7 @@ function emailLabelKind(text){
  if(/starred|important|unread/i.test(text))return 'orange';
  if(/social|forums/i.test(text))return 'cyan';
  if(/promotion|personal/i.test(text))return 'purple';
+ if(/enrolled/i.test(text))return 'green';
  return 'plain';
 }
 function gmailDisplayLabels(e){
@@ -2146,7 +2364,10 @@ function emailLabels(e){
  const gmailLabels=gmailDisplayLabels(e).filter(label=>label.text!=='Trash');
  if(gmailLabels.length)return gmailLabels;
  const text=[e.subject,e.body].join(' ').toLowerCase(),labels=[];
- if(/zoho|zoho crm|zoho contracts?/.test(text))labels.push({text:'Zoho',kind:'purple'});
+ if(/zoho.*contracts?|contracts?.*zoho/.test(text)){
+  labels.push({text:'Enrolled',kind:'green'});
+  labels.push({text:'Zoho',kind:'purple'});
+ } else if(/zoho|zoho crm/.test(text))labels.push({text:'Zoho',kind:'purple'});
  if(/eventbrite|attendee|attendance|webinar|open day|booking|bookings/.test(text))labels.push({text:'Events',kind:'orange'});
  if(/contract|agreement|sign|commitment/.test(text))labels.push({text:'Contract Matter',kind:'blue'});
  if(/das|digital apprenticeship service/.test(text))labels.push({text:'DAS Matter',kind:'red'});
@@ -2156,11 +2377,11 @@ function emailLabels(e){
 }
 function groupedEmailLabels(e){
  if((e.gmail_label_names||[]).length||(e.gmail_labels||[]).length)return emailLabels(e);
- const labels=emailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Unread','Inbox','Important','Starred','Sent','Resolved','Trash'],grouped=labels.filter(label=>priority.includes(label.text));
+ const labels=emailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Enrolled','Unread','Inbox','Important','Starred','Sent','Resolved','Trash'],grouped=labels.filter(label=>priority.includes(label.text));
  return grouped.length?grouped:labels;
 }
 function primaryEmailLabel(e){
- const labels=groupedEmailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Unread','Inbox','Important','Starred','Sent','Resolved','Trash'];
+ const labels=groupedEmailLabels(e),priority=['Zoho','Events','Contract Matter','DAS Matter','Aptem Matter','Enrolled','Unread','Inbox','Important','Starred','Sent','Resolved','Trash'];
  if((e.gmail_label_names||[]).length||(e.gmail_labels||[]).length){
   const custom=labels.find(label=>!GMAIL_LOW_PRIORITY_LABELS.includes(label.text)&&label.text!=='Trash');
   if(custom)return custom;
@@ -2203,7 +2424,7 @@ function inboxLabelGroups(list){
 }
 function gmailRows(list){
  const visible=list.slice(0,INBOX_RENDER_LIMIT);
- return `<section class="gmail-list">${visible.map(e=>{
+ return `<section class="gmail-list"${cardSection('Inbox list')}>${visible.map(e=>{
   const unread=emailIsUnread(e),overdue=emailIsOverdue(e),labelText=primaryEmailLabel(e).text;
   const trashMeta=emailIsTrashed(e)?`<span class="gmail-age overdue">${esc(e.trash_reason||'Gmail Trash')}</span>`:`<span class="gmail-age ${overdue?'overdue':''}">${esc(emailWaitLabel(e))}</span>`;
   return `<article class="gmail-row ${unread?'unread':''} ${emailIsTrashed(e)?'trashed':''}" data-act="open-email" data-id="${esc(e.id)}" title="Labels: ${esc(labelText)}"><div class="gmail-controls"><span class="gmail-check" aria-hidden="true"></span><span class="gmail-star" aria-hidden="true">&#9734;</span><span class="gmail-marker" aria-hidden="true"></span></div><div class="gmail-sender">${esc(fullName(e))}</div><div class="gmail-message"><span class="gmail-subject">${esc(e.subject)}</span><span class="gmail-label-summary">${esc(labelText)}</span><span class="gmail-dash">-</span><span class="gmail-snippet">${esc(emailSnippet(e))}</span></div><div class="gmail-meta">${trashMeta}<time>${time(e.received_at)}</time></div></article>`;

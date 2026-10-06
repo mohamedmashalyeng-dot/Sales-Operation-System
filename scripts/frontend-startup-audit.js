@@ -59,7 +59,7 @@ check(/api\('\/api\/tasks\?status=all&limit=200&include_counts=true'/.test(sourc
 check(/function inboxQuery/.test(source) && /limit:'50'/.test(source), 'Inbox uses /api/emails with limit 50');
 
 const monitoringFn = sliceBetween(source, 'async function monitoring()', 'function leadSourceOptions()');
-check(/\/api\/dashboard\/monitoring\?/.test(monitoringFn), 'Monitoring frontend uses the snapshot/SWR endpoint');
+check(/\/api\/dashboard\/admin-overview/.test(source), 'Admin dashboard frontend uses the admin overview endpoint');
 check(!/ensureLeadsLoaded|ensureTasksLoaded|ensureEventsLoaded/.test(monitoringFn), 'Monitoring frontend does not load full page datasets');
 
 check(/\/api\/events\/\$\{encodeURIComponent\(id\)\}/.test(source), 'Event attendees/detail data is lazy-loaded');
@@ -75,7 +75,7 @@ const appVersion = (indexSource.match(/\/app\.js\?v=([^"']+)/) || [])[1] || '';
 const cssVersion = (indexSource.match(/\/styles\.css\?v=([^"']+)/) || [])[1] || '';
 check(appVersion && swSource.includes(`/app.js?v=${appVersion}`), 'service-worker app.js cache key matches index.html');
 check(cssVersion && swSource.includes(`/styles.css?v=${cssVersion}`), 'service-worker styles.css cache key matches index.html');
-check(new RegExp(`pathway-shell-[^'"]*${appVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(swSource), 'service-worker cache name contains current app asset key');
+check(new RegExp(`kbc-shell-[^'"]*${appVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(swSource), 'service-worker cache name contains current app asset key');
 
 const refreshFn = sliceBetween(source, 'async function refresh(', 'function inboxFilterKey()');
 check((refreshFn.match(/\/api\/bootstrap/g) || []).length === 1, 'only refresh() performs the bootstrap request');
@@ -178,6 +178,26 @@ function monitoringPayload() {
   };
 }
 
+function adminOverviewPayload() {
+  return {
+    kpis: [
+      { id: 'due_today', label: 'Due Today', value: 5, route: 'planner', icon: 'calendar' },
+      { label: 'Unanswered', value: 2, route: 'inbox', icon: 'mail' }
+    ],
+    summary_cards: [
+      { label: 'Leads', value: 42000, detail: '1 enrolled', route: 'leads', icon: 'users' },
+      { label: 'Inbox', value: 20, detail: '2 unanswered, 4 unread', route: 'inbox', icon: 'mail' }
+    ],
+    funnel: [{ label: 'Leads', value: 42000 }, { label: 'Enrolled', value: 1 }],
+    email_health: [{ label: 'Unanswered', value: 2 }, { label: 'Avg reply', value: 3600000 }],
+    lead_sources: [{ source: 'Website', leads: 42000, enrolled: 1 }],
+    charts: [
+      { title: 'Lead funnel', type: 'bar', rows: [{ label: 'Leads', value: 42000 }, { label: 'Enrolled', value: 1 }] },
+      { title: 'Email health', type: 'pie', rows: [{ label: 'Unanswered', value: 2 }, { label: 'Replied', value: 10 }] }
+    ]
+  };
+}
+
 function respond(url, method, body) {
   const u = new URL(String(url), 'http://localhost');
   const p = u.pathname;
@@ -191,6 +211,7 @@ function respond(url, method, body) {
   if (p === '/api/meetings' && method === 'GET') return { items: [meeting], events: [meeting], has_more: false, next_cursor: '', limit: Number(u.searchParams.get('limit') || 100) };
   if (p === '/api/zoom/calls' && method === 'GET') return { calls: [], total: 0, loaded: 0, has_more: false, next_offset: 0, limit: Number(u.searchParams.get('limit') || 250) };
   if (p === '/api/dashboard/monitoring' && method === 'GET') return monitoringPayload();
+  if (p === '/api/dashboard/admin-overview' && method === 'GET') return adminOverviewPayload();
   if (p.startsWith('/api/dashboard/')) return {};
   if (/^\/api\/leads\/[^/]+$/.test(p) && method === 'GET') return { lead: lead(p.split('/').pop()), timeline: [] };
   if (/^\/api\/leads\/[^/]+$/.test(p) && method === 'PATCH') return { ok: true, lead: { ...lead(p.split('/').pop()), stage: body?.stage || 'Qualified' } };
@@ -313,10 +334,10 @@ async function navigate(hash) {
   m = mark();
   await navigate('#/monitoring');
   page = since(m);
-  const monitoringReqs = page.filter(r => requestPath(r.url) === '/api/dashboard/monitoring');
-  check(monitoringReqs.length === 1, `Monitoring uses one snapshot/SWR API request (${urls(page)})`);
-  check(!page.some(r => ['/api/leads', '/api/events', '/api/tasks', '/api/emails', '/api/applications'].includes(requestPath(r.url))), `Monitoring loads no page datasets (${urls(page)})`);
-  check(/Monitoring dashboard|Lead trend|Pipeline risk/.test(byId('app').innerHTML), 'Monitoring route renders from snapshot data');
+  const adminReqs = page.filter(r => requestPath(r.url) === '/api/dashboard/admin-overview');
+  check(adminReqs.length === 1, `Admin dashboard uses one overview API request (${urls(page)})`);
+  check(!page.some(r => ['/api/leads', '/api/events', '/api/tasks', '/api/emails', '/api/applications'].includes(requestPath(r.url))), `Admin dashboard loads no page datasets (${urls(page)})`);
+  check(/Admin dashboard|Funnel|Lead Sources/.test(byId('app').innerHTML), 'Monitoring route renders the admin dashboard');
 
   m = mark();
   await navigate('#/leads/L-1');
