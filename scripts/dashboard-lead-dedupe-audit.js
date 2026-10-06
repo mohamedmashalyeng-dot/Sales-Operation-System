@@ -1,6 +1,6 @@
 const fs = require('fs');
 
-const server = fs.readFileSync('server.js', 'utf8');
+const server = require('./lib/server-source').readServerSource();
 const app = fs.readFileSync('app.js', 'utf8');
 
 function assert(condition, message) {

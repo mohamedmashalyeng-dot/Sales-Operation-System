@@ -7,6 +7,7 @@ Node.js workspace for Kent Business College admissions, email queue, events, lea
 - `assets/images/` stores logos and browser image assets.
 - `assets/documents/` stores PDF application document templates.
 - `docs/reports/` stores implementation, audit, and performance notes.
+- `server.js` starts the backend; its code lives in `server/`, one file per area (`auth.js`, `leads.js`, `emails.js`, `storage.js`, `routes.js`, ...) and one per integration in `server/integrations/`.
 - `src/` stores the NestJS source modules.
 - `scripts/` stores maintenance, smoke test, and diagnostic scripts.
 - `sql/` stores database schema and migration helpers.
@@ -43,7 +44,7 @@ MongoDB is also supported with a `mongodb://` or `mongodb+srv://` URL and `MONGO
 
 Use a Hostinger Business or Cloud plan that supports Node.js web apps.
 
-1. Upload the project files or connect the repository.
+1. Upload the project files or connect the repository. `server.js` needs the `server/` folder next to it.
 2. Set Node.js version to `20` or newer.
 3. Set the application startup file to `server.js`.
 4. Set the start command to:

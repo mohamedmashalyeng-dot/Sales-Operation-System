@@ -10,7 +10,7 @@ const vm = require('vm');
 
 const root = path.join(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-const serverSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const serverSource = require('./lib/server-source').readServerSource(root);
 const indexSource = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const swSource = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
 

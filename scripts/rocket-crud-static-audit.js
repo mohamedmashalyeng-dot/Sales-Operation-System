@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const server = require('./lib/server-source').readServerSource(root);
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 
 const loadDbIndex = server.indexOf('const loadDbStart = performance.now();');
