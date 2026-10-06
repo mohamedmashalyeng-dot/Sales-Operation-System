@@ -186,4 +186,33 @@ if (configuredAdminPassword !== undefined) process.env.INITIAL_ADMIN_PASSWORD = 
 assert(generated[0] !== generated[1] && generated[0].length >= 24 && !generated.includes('ChangeMeNow!2026'), 'an unset admin password should be random');
 assert(verifyPassword('correct horse', hashPassword('correct horse')) && !verifyPassword('wrong', hashPassword('correct horse')), 'password hashing should still verify');
 
-console.log('Static, bootstrap and sign-in security smoke tests passed.');
+// Static files: how they may be cached, and the short 304 answer for an unchanged file.
+const { serveStatic } = require('../server.js');
+function staticResponse(url, headers = {}) {
+  return new Promise(resolve => {
+    const sent = {};
+    serveStatic({ method: 'GET', url, headers: { host: 'example.test', ...headers }, socket: {} }, {
+      setHeader: (name, value) => { sent[name.toLowerCase()] = value; },
+      writeHead(status, extra = {}) { this.status = status; for (const [name, value] of Object.entries(extra)) sent[name.toLowerCase()] = value; },
+      end(body) { resolve({ status: this.status, headers: sent, size: body ? body.length : 0 }); }
+    });
+  });
+}
+(async () => {
+  const script = await staticResponse('/app.js?v=any-build');
+  assert.strictEqual(script.status, 200);
+  assert.strictEqual(script.headers['cache-control'], 'no-cache', 'app.js should be checked with the server before reuse');
+  assert(script.headers.etag && script.headers['last-modified'], 'app.js should carry an ETag and Last-Modified');
+  const unchanged = await staticResponse('/app.js?v=any-build', { 'if-none-match': script.headers.etag });
+  assert.strictEqual(unchanged.status, 304, 'an unchanged file should be answered with 304');
+  assert.strictEqual(unchanged.size, 0, 'a 304 answer should carry no body');
+  const changed = await staticResponse('/app.js?v=any-build', { 'if-none-match': 'W/"something-else"' });
+  assert.strictEqual(changed.status, 200, 'a different ETag should get the file');
+  for (const page of ['/', '/sw.js', '/manifest.webmanifest']) {
+    assert.strictEqual((await staticResponse(page)).headers['cache-control'], 'no-cache', `${page} should be checked with the server every time`);
+  }
+  assert.strictEqual((await staticResponse('/assets/images/kent-logo-full-dark.png')).headers['cache-control'], 'public, max-age=604800', 'images may be reused for a week');
+  assert((await staticResponse('/')).headers['content-security-policy'], 'pages should keep their Content-Security-Policy');
+
+  console.log('Static, bootstrap and sign-in security smoke tests passed.');
+})().catch(error => { console.error(error); process.exit(1); });

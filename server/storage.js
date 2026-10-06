@@ -17,6 +17,7 @@ const Applications = require('./applications');
 const Monitoring = require('./monitoring');
 const Zoom = require('./integrations/zoom');
 const Zoho = require('./integrations/zoho');
+const Dashboard = require('./dashboard');
 
 let mongoClient = null;
 let mongoStateCollection = null;
@@ -431,6 +432,9 @@ async function createPostgresAppTables(trace = null) {
   await tracedPostgresPoolQuery(trace, 'schema_leads_stage_index', `create index if not exists app_leads_stage_idx on app_leads(stage)`);
   await tracedPostgresPoolQuery(trace, 'schema_leads_owner_id_index', `create index if not exists app_leads_owner_id_idx on app_leads(owner_id)`);
   await tracedPostgresPoolQuery(trace, 'schema_leads_created_at_index', `create index if not exists app_leads_created_at_idx on app_leads(created_at)`);
+  // Dashboard date ranges read leads through this function and its index (see Dashboard.leadCapturedAtFunctionSql).
+  await tracedPostgresPoolQuery(trace, 'schema_lead_captured_at_function', Dashboard.leadCapturedAtFunctionSql());
+  await tracedPostgresPoolQuery(trace, 'schema_leads_captured_at_index', `create index if not exists app_leads_captured_at_idx on app_leads (kbc_lead_captured_at(data, created_at))`);
   // Serves the Leads list keyset pagination (ORDER BY created_at DESC, id DESC).
   await tracedPostgresPoolQuery(trace, 'schema_leads_cursor_index', `create index if not exists idx_app_leads_cursor on app_leads(created_at desc, id desc)`);
   await tracedPostgresPoolQuery(trace, 'schema_tasks_lead_id_index', `create index if not exists app_tasks_lead_id_idx on app_tasks(lead_id)`);
@@ -439,10 +443,15 @@ async function createPostgresAppTables(trace = null) {
   // Planner lists open tasks by due date and done tasks by completion (GET /api/tasks).
   await tracedPostgresPoolQuery(trace, 'schema_tasks_status_due_index', `create index if not exists app_tasks_status_due_idx on app_tasks(status, due_at, id)`);
   await tracedPostgresPoolQuery(trace, 'schema_tasks_owner_status_due_index', `create index if not exists app_tasks_owner_status_due_idx on app_tasks(owner_id, status, due_at)`);
+  // The "all" and "done" task pages are ordered by this expression, newest first.
+  await tracedPostgresPoolQuery(trace, 'schema_tasks_recent_index', `create index if not exists app_tasks_recent_idx on app_tasks ((coalesce(completed_at, due_at)) desc nulls last, id desc)`);
   await tracedPostgresPoolQuery(trace, 'schema_applications_lead_id_index', `create index if not exists app_applications_lead_id_idx on app_applications(lead_id)`);
   await tracedPostgresPoolQuery(trace, 'schema_applications_status_index', `create index if not exists app_applications_status_idx on app_applications(status)`);
   await tracedPostgresPoolQuery(trace, 'schema_applications_created_at_index', `create index if not exists app_applications_created_at_idx on app_applications(created_at)`);
   await tracedPostgresPoolQuery(trace, 'schema_emails_received_at_index', `create index if not exists app_emails_received_at_idx on app_emails(received_at)`);
+  // Holds only the unread emails that are not in the bin (a few dozen rows): the dashboard's
+  // unread count reads them here. The condition is the one the dashboard query uses.
+  await tracedPostgresPoolQuery(trace, 'schema_emails_unread_index', `create index if not exists app_emails_unread_idx on app_emails (received_at desc) where ${Dashboard.dashboardEmailNotTrashedSql('app_emails')} and ${Dashboard.dashboardEmailUnreadSql('app_emails')}`);
   await tracedPostgresPoolQuery(trace, 'schema_events_start_cursor_index', `create index if not exists app_events_start_cursor_idx on app_events(start_at desc nulls last, id desc)`);
   await tracedPostgresPoolQuery(trace, 'schema_leads_programme_id_index', `create index if not exists app_leads_programme_id_idx on app_leads(programme_id)`);
   await tracedPostgresPoolQuery(trace, 'schema_leads_source_capture_index', `create index if not exists app_leads_source_capture_idx on app_leads(source_lead_capture)`);

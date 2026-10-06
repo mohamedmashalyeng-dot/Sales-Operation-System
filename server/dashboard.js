@@ -234,16 +234,32 @@ function jsonArrayMinTimestampExpression(arrayExpression, field) {
   return `(select min(${safeTimestampExpression(`item->>'${field}'`)}) from jsonb_array_elements(case when jsonb_typeof(coalesce(${arrayExpression}, '[]'::jsonb)) = 'array' then coalesce(${arrayExpression}, '[]'::jsonb) else '[]'::jsonb end) item)`;
 }
 
-function dashboardLeadDateExpression(alias = 'l') {
+// The date a lead counts from on the dashboard: its first source capture, else the time the
+// CRM or the import recorded, else when the row was created.
+function leadCapturedAtSql(dataExpression, createdAtExpression) {
   return firstTimestampExpression(
-    jsonArrayMinTimestampExpression(`${alias}.data->'source_history'`, 'captured_at'),
-    `${alias}.data->>'Created_Time'`,
-    `${alias}.data->>'created_time'`,
-    `${alias}.data->>'captured_at'`,
-    `${alias}.data->>'received_at'`,
-    `${alias}.data->>'event_start_at'`,
-    `${alias}.created_at`
+    jsonArrayMinTimestampExpression(`${dataExpression}->'source_history'`, 'captured_at'),
+    `${dataExpression}->>'Created_Time'`,
+    `${dataExpression}->>'created_time'`,
+    `${dataExpression}->>'captured_at'`,
+    `${dataExpression}->>'received_at'`,
+    `${dataExpression}->>'event_start_at'`,
+    createdAtExpression
   );
+}
+
+// Working that date out of the JSON made every dashboard date range read all of app_leads.
+// PostgreSQL now keeps it in the index app_leads_captured_at_idx through this function, so a
+// range reads only the leads inside it. The index stores the function's results: after a
+// change to leadCapturedAtSql it has to be rebuilt (reindex index app_leads_captured_at_idx).
+function leadCapturedAtFunctionSql() {
+  return `create or replace function kbc_lead_captured_at(lead_data jsonb, lead_created_at timestamptz)
+    returns timestamptz language sql immutable set timezone = 'UTC'
+    as $kbc$ select ${leadCapturedAtSql('lead_data', 'lead_created_at')} $kbc$`;
+}
+
+function dashboardLeadDateExpression(alias = 'l') {
+  return `kbc_lead_captured_at(${alias}.data, ${alias}.created_at)`;
 }
 
 function dashboardApplicationDateExpression(alias = 'a') {
@@ -417,10 +433,13 @@ async function loadDashboardCockpitSummaryDb(filters, user) {
         count(*) filter (where lower(coalesce(t.status, t.data->>'status', '')) = 'open' and t.due_at < now())::int as overdue
       from app_tasks t left join app_leads l on l.id = t.lead_id ${taskWhere.sql}
     `, taskWhere.params),
+    // "Unread and not in the bin" is part of the WHERE so that PostgreSQL can answer from the
+    // small index app_emails_unread_idx, which holds only those emails. As a FILTER on the
+    // count it made the query open the stored JSON of every email.
     State.postgresPool.query(`
-      select
-        count(*) filter (where ${dashboardEmailNotTrashedSql('e')} and ${dashboardEmailUnreadSql('e')})::int as unread
-      from app_emails e left join app_leads l on l.id = e.lead_id ${emailWhere.sql}
+      select count(*)::int as unread
+      from app_emails e left join app_leads l on l.id = e.lead_id
+      ${appendSqlCondition(emailWhere.sql, `${dashboardEmailNotTrashedSql('e')} and ${dashboardEmailUnreadSql('e')}`)}
     `, emailWhere.params),
     State.postgresPool.query(`
       select
@@ -810,6 +829,24 @@ async function loadDashboardMyWorkDb(filters, user) {
   const params = [...where.params, ...appWhere.params];
   const appOffset = where.params.length;
   const appSql = appWhere.sql.replace(/\$(\d+)/g, (_, n) => `$${Number(n) + appOffset}`);
+  const openTask = "lower(coalesce(t.status, t.data->>'status', '')) = 'open'";
+  const dueSoon = "(t.due_at is null or t.due_at < current_date + interval '7 days')";
+  const taskRank = "case when t.due_at < now() then 0 when t.due_at < current_date + interval '1 day' then 1 else 2 end";
+  // Without a dashboard filter nothing about the lead decides which tasks are listed. The 20
+  // most urgent are then picked from app_tasks alone and only their leads are looked up;
+  // joining first meant one lead lookup for each of the ~14,000 open tasks.
+  const taskSource = where.sql
+    ? `from app_tasks t
+      left join app_leads l on l.id = t.lead_id
+      ${appendSqlCondition(where.sql, openTask)}
+      and ${dueSoon}`
+    : `from (
+        select t.* from app_tasks t
+        where ${openTask} and ${dueSoon}
+        order by ${taskRank}, t.due_at nulls last, t.id
+        limit 20
+      ) t
+      left join app_leads l on l.id = t.lead_id`;
   const result = await State.postgresPool.query(`
     with work as (
       select
@@ -821,11 +858,8 @@ async function loadDashboardMyWorkDb(filters, user) {
         l.id as lead_id,
         trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) as person,
         l.programme,
-        case when t.due_at < now() then 0 when t.due_at < current_date + interval '1 day' then 1 else 2 end as rank
-      from app_tasks t
-      left join app_leads l on l.id = t.lead_id
-      ${appendSqlCondition(where.sql, "lower(coalesce(t.status, t.data->>'status', '')) = 'open'")}
-      and (t.due_at is null or t.due_at < current_date + interval '7 days')
+        ${taskRank} as rank
+      ${taskSource}
       union all
       select
         a.id,
@@ -852,8 +886,20 @@ async function loadDashboardPriorityLeadsDb(filters) {
   await Storage.ensureStorage();
   if (!State.postgresPool || !Storage.usesPostgresStorage()) return { leads: [] };
   const where = leadDashboardWhere(filters);
+  // The attendee lists of the recent events are opened once, into (event, lead) pairs, and
+  // joined by lead. Testing "does this event's attendee list contain this lead" for every lead
+  // and every event re-read each list hundreds of times: that was nearly all of the query's
+  // time, and with a wide date range it did not finish.
   const result = await State.postgresPool.query(`
-    with signals as (
+    with recent_event_leads as (
+      select ev.id as event_id, attendee->'lead_id' as lead_ref
+      from app_events ev
+      cross join lateral jsonb_array_elements(
+        case when jsonb_typeof(ev.attendees) = 'array' then ev.attendees else '[]'::jsonb end
+      ) attendee
+      where ev.start_at >= now() - interval '14 days'
+    ),
+    signals as (
       select
         l.id,
         trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) as name,
@@ -865,12 +911,12 @@ async function loadDashboardPriorityLeadsDb(filters) {
         count(distinct e.id) filter (where e.received_at >= now() - interval '7 days' and ${dashboardEmailNotTrashedSql('e')})::int as recent_email_count,
         count(distinct t.id) filter (where lower(coalesce(t.status, t.data->>'status', '')) = 'open' and t.due_at < now())::int as overdue_tasks,
         count(distinct a.id) filter (where a.created_at >= now() - interval '14 days')::int as recent_applications,
-        count(distinct ev.id) filter (where ev.start_at >= now() - interval '14 days')::int as recent_events
+        count(distinct ev.event_id)::int as recent_events
       from app_leads l
       left join app_emails e on e.lead_id = l.id
       left join app_tasks t on t.lead_id = l.id
       left join app_applications a on a.lead_id = l.id
-      left join app_events ev on ev.attendees @> jsonb_build_array(jsonb_build_object('lead_id', l.id))
+      left join recent_event_leads ev on ev.lead_ref = to_jsonb(l.id)
       ${where.sql}
       and lower(coalesce(l.stage, l.data->>'stage', '')) not in ('enrolled','lost','not eligible','deferred')
       group by l.id, l.first_name, l.last_name, l.programme, l.stage, l.priority, l.owner
@@ -1063,6 +1109,10 @@ function restoreEmailFromDashboardTrash(email) {
   return true;
 }
 
+exports.dashboardEmailNotTrashedSql = dashboardEmailNotTrashedSql;
+exports.dashboardEmailUnreadSql = dashboardEmailUnreadSql;
+exports.leadCapturedAtSql = leadCapturedAtSql;
+exports.leadCapturedAtFunctionSql = leadCapturedAtFunctionSql;
 exports.dashboardLeadIdentitySql = dashboardLeadIdentitySql;
 exports.loadDashboardSummaryDb = loadDashboardSummaryDb;
 exports.parseDashboardFilters = parseDashboardFilters;

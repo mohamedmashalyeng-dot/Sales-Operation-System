@@ -1,5 +1,5 @@
 'use strict';
-const APP_BUILD_ID='20261006-hotspots';
+const APP_BUILD_ID='20261006-startup-cache';
 window.KBC_APP_BUILD=APP_BUILD_ID;
 window.__KBC_DIAGNOSTICS__ ||= {build:APP_BUILD_ID,requests:[]};
 const diagEnabled=()=>localStorage.getItem('KBC_DIAG')==='1'||new URLSearchParams(location.search).get('debug_frontend')==='true';

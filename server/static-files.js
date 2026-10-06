@@ -56,6 +56,25 @@ function publicStaticFile(pathname) {
   return name;
 }
 
+// Whether a browser or the CDN may reuse a static file without asking the server again.
+// - Pages, scripts, stylesheets, the service worker and the manifest: "no-cache", meaning keep
+//   a copy but check it first. With the ETag below that check is a short 304 answer instead of
+//   the full download every load used to need. Fast repeat loads come from the service worker
+//   (sw.js), which answers these files from its own cache and then checks them in the
+//   background. A freshness time here would let the browser skip the service worker, and with
+//   it that check, so a file changed without a new build id could stay stale.
+// - Images and fonts keep the week the CDN already gave them.
+function staticCacheControl(ext) {
+  return PUBLIC_ASSET_EXTENSIONS.has(ext) ? 'public, max-age=604800' : 'no-cache';
+}
+
+// An If-None-Match header may list several tags and may mark them weak (W/).
+function etagMatches(header, etag) {
+  if (!header) return false;
+  const wanted = etag.replace(/^W\//, '');
+  return String(header).split(',').some(item => item.trim() === '*' || item.trim().replace(/^W\//, '') === wanted);
+}
+
 function serveStatic(req, res) {
   Http.applySecurityHeaders(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return Http.sendJson(res, { error: 'Not found.' }, 404);
@@ -65,13 +84,26 @@ function serveStatic(req, res) {
   const filePath = path.resolve(Config.ROOT, name);
   const rootPath = path.resolve(Config.ROOT);
   if (filePath !== rootPath && !filePath.startsWith(`${rootPath}${path.sep}`)) return Http.sendJson(res, { error: 'Not found.' }, 404);
-  fs.readFile(filePath, (error, content) => {
-    if (error) return Http.sendJson(res, { error: 'Not found.' }, 404);
+  fs.stat(filePath, (statError, stats) => {
+    if (statError || !stats.isFile()) return Http.sendJson(res, { error: 'Not found.' }, 404);
     const ext = path.extname(filePath).toLowerCase();
-    const headers = { 'Content-Type': mime[ext] || 'application/octet-stream' };
-    if (ext === '.html') headers['Content-Security-Policy'] = Http.contentSecurityPolicy(content.toString('utf8'));
-    res.writeHead(200, headers);
-    res.end(content);
+    const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
+    const headers = {
+      'Content-Type': mime[ext] || 'application/octet-stream',
+      'Cache-Control': staticCacheControl(ext),
+      ETag: etag,
+      'Last-Modified': stats.mtime.toUTCString()
+    };
+    if (etagMatches(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    fs.readFile(filePath, (error, content) => {
+      if (error) return Http.sendJson(res, { error: 'Not found.' }, 404);
+      if (ext === '.html') headers['Content-Security-Policy'] = Http.contentSecurityPolicy(content.toString('utf8'));
+      res.writeHead(200, headers);
+      res.end(content);
+    });
   });
 }
 
