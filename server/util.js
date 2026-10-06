@@ -1,7 +1,6 @@
 'use strict';
 
 const Http = require('./http');
-const Routes = require('./routes');
 
 function fullName(item) {
   return `${item.first_name} ${item.last_name}`;
@@ -32,15 +31,18 @@ function decodePageCursor(cursor, label = 'cursor') {
   }
 }
 
+// How many requests went out to each provider; fetchJson counts them.
+const externalFetchCounters = { gmail: 0, google: 0, zoho: 0, zoom: 0, eventbrite: 0, meta: 0, apollo: 0 };
+
 async function fetchJson(url, options = {}) {
   const urlText = String(url || '');
-  if (/gmail\.googleapis\.com|oauth2\.googleapis\.com/i.test(urlText)) Routes.externalFetchCounters.gmail += 1;
-  if (/googleapis\.com|google\.com/i.test(urlText)) Routes.externalFetchCounters.google += 1;
-  if (/zoho/i.test(urlText)) Routes.externalFetchCounters.zoho += 1;
-  if (/zoom\.us/i.test(urlText)) Routes.externalFetchCounters.zoom += 1;
-  if (/eventbrite/i.test(urlText)) Routes.externalFetchCounters.eventbrite += 1;
-  if (/graph\.facebook\.com/i.test(urlText)) Routes.externalFetchCounters.meta += 1;
-  if (/apollo/i.test(urlText)) Routes.externalFetchCounters.apollo += 1;
+  if (/gmail\.googleapis\.com|oauth2\.googleapis\.com/i.test(urlText)) externalFetchCounters.gmail += 1;
+  if (/googleapis\.com|google\.com/i.test(urlText)) externalFetchCounters.google += 1;
+  if (/zoho/i.test(urlText)) externalFetchCounters.zoho += 1;
+  if (/zoom\.us/i.test(urlText)) externalFetchCounters.zoom += 1;
+  if (/eventbrite/i.test(urlText)) externalFetchCounters.eventbrite += 1;
+  if (/graph\.facebook\.com/i.test(urlText)) externalFetchCounters.meta += 1;
+  if (/apollo/i.test(urlText)) externalFetchCounters.apollo += 1;
   const timeoutMs = Number(options.timeoutMs || 20000);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -78,5 +80,6 @@ exports.fullName = fullName;
 exports.nextId = nextId;
 exports.encodePageCursor = encodePageCursor;
 exports.decodePageCursor = decodePageCursor;
+exports.externalFetchCounters = externalFetchCounters;
 exports.fetchJson = fetchJson;
 exports.nameParts = nameParts;

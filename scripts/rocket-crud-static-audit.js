@@ -5,7 +5,9 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const server = require('./lib/server-source').readServerSource(root);
+const { readServerSource, directRouteSource } = require('./lib/server-source');
+const server = readServerSource(root);
+const directRouteText = directRouteSource(root);
 const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
 
 const loadDbIndex = server.indexOf('const loadDbStart = performance.now();');
@@ -28,7 +30,7 @@ const directRoutes = [
 directRoutes.forEach(([name, needle]) => {
   const index = server.indexOf(needle);
   assert(index >= 0, `${name} route should exist`);
-  assert(index < loadDbIndex, `${name} route should return before legacy loadDb`);
+  assert(directRouteText.includes(needle), `${name} route should return before legacy loadDb`);
 });
 
 [

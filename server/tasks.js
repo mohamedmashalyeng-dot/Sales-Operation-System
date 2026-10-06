@@ -174,6 +174,17 @@ async function loadTaskPage(options = {}, trace = null) {
 }
 
 // Task counts per planner bucket over every task (not just the rows loaded in the browser).
+// The day bucket the planner shows for a task; the same rule as taskDueBucket in app.js.
+function taskDueBucket(task, now = new Date()) {
+  const due = new Date(task.due_at);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today.getTime() + 86400000);
+  if (task.status === 'Done') return 'Done';
+  if (due < today) return 'Overdue';
+  if (due < tomorrow) return 'Today';
+  return 'Upcoming';
+}
+
 async function loadTaskBucketCounts(db, bounds, trace = null) {
   const queryFn = trace && db === State.postgresPool ? (sql, params) => Storage.timedPostgresQuery(trace, 'tasks_counts', sql, params) : (sql, params) => db.query(sql, params);
   const result = await queryFn(
@@ -279,6 +290,7 @@ exports.importTaskRows = importTaskRows;
 exports.escapeSqlLike = escapeSqlLike;
 exports.parseOptionalIsoDate = parseOptionalIsoDate;
 exports.loadTaskPage = loadTaskPage;
+exports.taskDueBucket = taskDueBucket;
 exports.loadTaskBucketCounts = loadTaskBucketCounts;
 exports.createTaskFastDb = createTaskFastDb;
 exports.completeTaskFastDb = completeTaskFastDb;

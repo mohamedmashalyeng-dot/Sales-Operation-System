@@ -1,6 +1,8 @@
 const fs = require('fs');
 
-const server = require('./lib/server-source').readServerSource();
+const { readServerSource, directRouteSource } = require('./lib/server-source');
+const server = readServerSource();
+const directRoutes = directRouteSource();
 const app = fs.readFileSync('app.js', 'utf8');
 
 function assert(condition, message) {
@@ -16,7 +18,7 @@ const syncRouteBlock = server.slice(syncRouteIndex, server.indexOf("if (route ==
 
 assert(syncRouteIndex !== -1, 'missing Zoho sync endpoint');
 assert(loadDbIndex !== -1, 'missing legacy loadDb marker');
-assert(syncRouteIndex < loadDbIndex, 'Zoho sync endpoint must run before legacy loadDb');
+assert(directRoutes.includes("route === '/api/integrations/zoho/sync' && method === 'POST'"), 'Zoho sync endpoint must run before legacy loadDb');
 assert(syncRouteBlock.includes('createOrResumeZohoSyncJob'), 'sync endpoint must create/resume a job');
 assert(syncRouteBlock.includes('sendJson(res, { success: true') && syncRouteBlock.includes(', 202'), 'sync endpoint must return 202 immediately');
 assert(!syncRouteBlock.includes('importZohoCrmRecords'), 'sync endpoint must not run the full import inline');
@@ -24,7 +26,7 @@ assert(!syncRouteBlock.includes('importZohoCrmRecords'), 'sync endpoint must not
 assert(server.includes('create table if not exists integration_jobs'), 'missing persistent integration_jobs table');
 assert(server.includes('integration_jobs_active_zoho_idx'), 'missing DB-backed duplicate-job protection');
 assert(server.includes('locked_until < now()') && server.includes('where id = $1 and locked_by = $2'), 'missing row lease that keeps one worker per Zoho job');
-assert(!server.slice(syncRouteIndex, loadDbIndex).includes('pg_try_advisory_lock'), 'Zoho sync must not use session advisory locks through the Neon pooler');
+assert(!directRoutes.includes('pg_try_advisory_lock'), 'Zoho sync must not use session advisory locks through the Neon pooler');
 assert(server.includes('fetchZohoRecordPage'), 'missing one-page Zoho fetcher');
 assert(server.includes('resumeZohoSyncJobs'), 'missing restart resume scheduler');
 assert(server.includes("route === '/api/integrations/zoho/sync-status'"), 'missing latest sync-status endpoint');

@@ -28,6 +28,7 @@ const blocked = [
   '/server/config.js',
   '/server/auth.js',
   '/server/integrations/zoho.js',
+  '/server/routes/index.js',
   '/scripts/security-static-smoke-test.js',
   '/anything.zip',
   '/random.pdf',

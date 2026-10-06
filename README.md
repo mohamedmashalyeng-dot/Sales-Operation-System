@@ -7,7 +7,8 @@ Node.js workspace for Kent Business College admissions, email queue, events, lea
 - `assets/images/` stores logos and browser image assets.
 - `assets/documents/` stores PDF application document templates.
 - `docs/reports/` stores implementation, audit, and performance notes.
-- `server.js` starts the backend; its code lives in `server/`, one file per area (`auth.js`, `leads.js`, `emails.js`, `storage.js`, `routes.js`, ...) and one per integration in `server/integrations/`.
+- `server.js` starts the backend; its code lives in `server/`, one file per area (`auth.js`, `leads.js`, `emails.js`, `storage.js`, ...) and one per integration in `server/integrations/`.
+- `server/routes/` holds the API routes, one file per area. `index.js` tries the route groups in order: the ones that answer straight from the database first, then the ones that need the whole workspace loaded.
 - `src/` stores the NestJS source modules.
 - `scripts/` stores maintenance, smoke test, and diagnostic scripts.
 - `sql/` stores database schema and migration helpers.

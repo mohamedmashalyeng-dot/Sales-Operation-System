@@ -515,8 +515,8 @@ function loadDashboardAdminOverviewLocal(db, user) {
   const enrolled = summary.applications?.enrolled || leads.filter(lead => Applications.isEnrolledStage(lead.stage)).length;
   const overdueTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && new Date(task.due_at || 0).getTime() < Date.now()).length;
   const openTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open').length;
-  const todayTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && taskDueBucket(task) === 'Today').length;
-  const upcomingTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && taskDueBucket(task) === 'Upcoming').length;
+  const todayTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && Tasks.taskDueBucket(task) === 'Today').length;
+  const upcomingTasks = tasks.filter(task => String(task.status || '').toLowerCase() === 'open' && Tasks.taskDueBucket(task) === 'Upcoming').length;
   const unreadEmails = emails.filter(Emails.emailIsUnread).length;
   const zoomMeetings = events.filter(event => event.zoom_meeting_id || event.zoom_meeting_uuid || String(event.location || '').toLowerCase() === 'zoom').length;
   const upcomingEvents = events.filter(event => new Date(event.start_at || 0).getTime() >= Date.now()).length;
