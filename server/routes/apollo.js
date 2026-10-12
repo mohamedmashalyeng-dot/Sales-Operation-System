@@ -2,6 +2,7 @@
 
 const Http = require('../http');
 const Apollo = require('../integrations/apollo');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Apollo routes that work on the fully loaded workspace (db).
@@ -17,6 +18,7 @@ async function apolloWorkspaceRoutes(ctx) {
     });
   }
   if (route === '/api/integrations/apollo/sync' && method === 'POST') {
+    Authorization.requireTeam(user);
     const result = await Apollo.importApolloPeople(db, user, Number(body.max_people || body.max_leads || 25));
     return Http.sendJson(res, result);
   }

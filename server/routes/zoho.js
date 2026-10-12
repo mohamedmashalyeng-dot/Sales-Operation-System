@@ -6,6 +6,7 @@ const Auth = require('../auth');
 const Audit = require('../audit');
 const Events = require('../events');
 const Zoho = require('../integrations/zoho');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Zoho routes that read and write the database directly.
@@ -14,13 +15,15 @@ async function zohoRoutes(ctx) {
   let lightweightMatch = null;
   if (route === '/api/integrations/zoho/sync' && method === 'POST') {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     const started = performance.now();
     const job = await Zoho.createOrResumeZohoSyncJob(req, user, body);
     const payload = Zoho.zohoSyncJobPayload(job);
     return Http.sendJson(res, { success: true, ...payload, acceptedMs: Math.round(performance.now() - started) }, 202);
   }
   if (route === '/api/integrations/zoho/records/page' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoho.loadZohoRecordPage({
       module: url.searchParams.get('module'),
       search: url.searchParams.get('search'),
@@ -44,7 +47,8 @@ async function zohoRoutes(ctx) {
   }
   lightweightMatch = route.match(/^\/api\/integrations\/zoho\/sync\/([^/]+)\/cancel$/);
   if (lightweightMatch && method === 'POST') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     const job = await Zoho.cancelZohoSyncJob(decodeURIComponent(lightweightMatch[1]));
     if (!job) throw Http.statusError(404, 'Zoho sync job not found.');
     return Http.sendJson(res, { success: true, ...Zoho.zohoSyncJobPayload(job) });
@@ -60,7 +64,8 @@ async function zohoRoutes(ctx) {
     return Http.sendJson(res, Zoho.zohoConnectionDiagnostics(req, await Zoho.loadZohoWorkspaceState()));
   }
   if (route === '/api/integrations/zoho/records' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoho.loadZohoRecordsPreviewDb());
   }
   return NOT_HANDLED;
@@ -78,9 +83,11 @@ async function zohoWorkspaceRoutes(ctx) {
     return Http.sendJson(res, Zoho.zohoConnectionDiagnostics(req, db));
   }
   if (route === '/api/integrations/zoho/records' && method === 'GET') {
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoho.zohoRecordsPayloadDb(db));
   }
   if ((route === '/api/integrations/zoho/connect' || route === '/api/integrations/zoho/authorize') && method === 'GET') {
+    Authorization.requireTeam(user);
     const issues = Zoho.zohoConfigIssues(req);
     if (issues.length) throw Http.statusError(400, `Zoho OAuth configuration appears invalid. Verify ZOHO_CLIENT_ID and ZOHO_ACCOUNTS_URL. ${issues[0]}`);
     const sid = Http.parseCookies(req).sid;

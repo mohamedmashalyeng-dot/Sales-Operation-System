@@ -14,6 +14,7 @@ const Leads = require('../leads');
 const Applications = require('../applications');
 const Monitoring = require('../monitoring');
 const Bootstrap = require('../bootstrap');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 async function logCallFastDb(body, user) {
@@ -64,6 +65,7 @@ async function leadsRoutes(ctx) {
     const user = await Auth.currentSessionUser(req, trace);
     const params = Object.fromEntries(['cursor', 'limit', 'search', 'stage', 'owner_id', 'programme_id', 'lead_source', 'created_from', 'created_to', 'sort', 'dir', 'include_total']
       .map(name => [name, url.searchParams.get(name)]));
+    params.owner_id = Authorization.ownerFilter(user, params.owner_id);
     const payload = await Leads.loadLeadPage(params, trace);
     if (url.searchParams.get('debug_timing') === 'true') {
       Auth.requireDeveloperAccess(req, user);
@@ -86,36 +88,46 @@ async function leadsRoutes(ctx) {
   }
   if (route === '/api/leads' && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.rejectProtectedFields(body);
+    body.owner_id = Authorization.ownerForWrite(user, body.owner_id);
     const result = await Leads.createLeadFastDb(body, user);
     return Http.sendJson(res, result, result.created ? 201 : 200);
   }
   lightweightMatch = route.match(/^\/api\/leads\/([^/]+)$/);
   if (lightweightMatch && method === 'GET' && Storage.usesPostgresStorage()) {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
     await Storage.ensureStorage();
     return Http.sendJson(res, await Leads.loadLeadDetailDb(decodeURIComponent(lightweightMatch[1])));
   }
   if (lightweightMatch && method === 'PATCH' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.rejectProtectedFields(body);
+    await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
+    if (body.owner_id !== undefined) body.owner_id = Authorization.ownerForWrite(user, body.owner_id);
     return Http.sendJson(res, await Leads.updateLeadFastDb(lightweightMatch[1], body, user));
   }
   if (lightweightMatch && method === 'DELETE' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     if (!Auth.permissionsForUser(user).sales) throw Http.statusError(403, 'You do not have permission to delete leads.');
     return Http.sendJson(res, await Leads.deleteLeadFastDb(lightweightMatch[1], user));
   }
   lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/opportunities$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
     return Http.sendJson(res, await Leads.addProgrammeOpportunityFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/notes$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
     return Http.sendJson(res, await Leads.addLeadNoteFastDb(lightweightMatch[1], body, user), 201);
   }
   if (route === '/api/calls' && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'lead', body.lead_id);
     return Http.sendJson(res, await logCallFastDb(body, user));
   }
   return NOT_HANDLED;
@@ -126,16 +138,21 @@ async function leadsWorkspaceRoutes(ctx) {
   const { route, method, res, body, db, user } = ctx;
   let match = null;
   if (route === '/api/leads/reconcile' && method === 'POST') {
+    Authorization.requireTeam(user);
     const summary = Workspace.reconcileImportedData(db, user);
     await Storage.saveDb(db);
     return Http.sendJson(res, { ok: true, summary });
   }
   match = route.match(/^\/api\/leads\/([^/]+)$/);
   if (match && method === 'GET') {
+    await Authorization.requireRecord(user, 'lead', match[1], db);
     const lead = Leads.leadFor(db, match[1]);
     return Http.sendJson(res, { lead, timeline: Leads.timeline(db, lead) });
   }
   if (route === '/api/leads' && method === 'POST') {
+    Authorization.rejectProtectedFields(body);
+    body.owner_id = Authorization.ownerForWrite(user, body.owner_id);
+    Authorization.requireOwnDuplicate(user, body.email ? (db.leads || []).find(lead => String(lead.email || '').trim().toLowerCase() === String(body.email).trim().toLowerCase()) : null);
     const programme = db.programmes.find(item => item.id === body.programme_id);
     if (!programme) throw Http.statusError(400, 'Choose a programme.');
     const owner = db.users.find(item => item.id === body.owner_id) || user;
@@ -172,8 +189,13 @@ async function leadsWorkspaceRoutes(ctx) {
     return Http.sendJson(res, { id: result.lead.id, lead: result.lead, created: result.created, application: automaticApplication ? Applications.publicApplication(automaticApplication) : null }, result.created ? 201 : 200);
   }
   if (match && method === 'PATCH') {
+    Authorization.rejectProtectedFields(body);
+    await Authorization.requireRecord(user, 'lead', match[1], db);
+    if (body.owner_id !== undefined) body.owner_id = Authorization.ownerForWrite(user, body.owner_id);
     const lead = Leads.leadFor(db, match[1]);
-    Object.assign(lead, { stage: body.stage, owner_id: body.owner_id, priority: body.priority });
+    // Only the fields the request carries: assigning all three wiped the owner, the stage or the
+    // priority whenever one of them was left out.
+    for (const field of ['stage', 'owner_id', 'priority']) if (body[field] !== undefined) lead[field] = body[field];
     let automaticApplication = null;
     const existingApplication = (db.applications || []).find(app => app.lead_id === lead.id);
     if (Config.AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && Applications.isEnrolledStage(lead.stage) && !existingApplication) {
@@ -190,6 +212,7 @@ async function leadsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/leads\/([^/]+)\/opportunities$/);
   if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'lead', match[1], db);
     const original = Leads.leadFor(db, match[1]);
     const programme = db.programmes.find(item => item.id === body.programme_id);
     if (!programme) throw Http.statusError(400, 'Choose a programme.');
@@ -222,6 +245,7 @@ async function leadsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/leads\/([^/]+)\/notes$/);
   if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'lead', match[1], db);
     Leads.leadFor(db, match[1]);
     Audit.addAudit(db, user, 'Note added', 'lead', match[1], body.note);
     await Storage.saveDb(db);
@@ -229,6 +253,7 @@ async function leadsWorkspaceRoutes(ctx) {
   }
 
   if (route === '/api/calls' && method === 'POST') {
+    await Authorization.requireRecord(user, 'lead', body.lead_id, db);
     const lead = Leads.leadFor(db, body.lead_id);
     Audit.addAudit(db, user, `Call ${body.outcome}`, 'lead', lead.id, body.note);
     if (body.follow_up) db.tasks.push({ id: Util.nextId('T', [db.tasks]), title: body.next_action, lead_id: lead.id, kind: 'Follow-up', status: 'Open', created_at: new Date().toISOString(), due_at: body.due_at, priority: lead.priority, owner_id: lead.owner_id });

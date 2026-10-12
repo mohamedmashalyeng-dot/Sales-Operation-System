@@ -77,7 +77,8 @@ check(appVersion && swSource.includes(`/app.js?v=${appVersion}`), 'service-worke
 check(cssVersion && swSource.includes(`/styles.css?v=${cssVersion}`), 'service-worker styles.css cache key matches index.html');
 check(swSource.includes('cache.match(event.request)') && !swSource.includes('ignoreSearch'), 'service worker answers shell files from the cache by their full URL, version included');
 check(swSource.includes("mode==='navigate')event.respondWith(fetch(event.request)"), 'service worker always takes pages from the network, so a new build is discovered');
-check(swSource.includes("cache:'reload'") && swSource.includes("cache:'no-cache'"), 'service worker fills and refreshes its cache from the server, not from the HTTP cache');
+check(swSource.includes("cache:'reload'"), 'service worker fills its cache from the server, not from the HTTP cache');
+check(!swSource.includes("cache:'no-cache'") && !swSource.includes('event.waitUntil(update'), 'service worker sends no background request for a file it already has');
 check(new RegExp(`kbc-shell-[^'"]*${appVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(swSource), 'service-worker cache name contains current app asset key');
 
 const refreshFn = sliceBetween(source, 'async function refresh(', 'function inboxFilterKey()');

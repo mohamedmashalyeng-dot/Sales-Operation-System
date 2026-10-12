@@ -558,6 +558,34 @@ async function loadFilteredEmailPageSql(db, filters, limit, cursor, options = {}
   }));
 }
 
+// The inbox of a Member (options.scope_owner_id, set by the route): only emails that belong to
+// leads this user owns. It is its own small query so the team inbox paths below stay as they
+// are; a Member's emails are few, so the usual filters and sort run over them in memory.
+async function loadOwnedEmailPage(ownerId, filters, limit, cursor, trace) {
+  const db = State.postgresPool ? {} : await Storage.loadDb();
+  const ownedLeadIds = State.postgresPool ? null : new Set((db.leads || []).filter(lead => String(lead.owner_id || '') === ownerId).map(lead => String(lead.id)));
+  const rows = State.postgresPool
+    ? (await Storage.timedPostgresQueryWithStatementTimeout(trace, 'owned_emails',
+      `select ${emailSummaryDataSql()} as data from app_emails
+       where lead_id in (select id from app_leads where owner_id = $1)
+       order by received_at desc nulls last, id limit 1000`, [ownerId], Config.EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows.map(row => row.data)
+    : (db.emails || []).filter(email => ownedLeadIds.has(String(email.lead_id || '')));
+  const filtered = rows
+    .filter(email => emailMatchesFilters(db, email, filters))
+    .sort((a, b) => compareEmailsForFilters(a, b, filters));
+  const cursorIndex = cursor ? filtered.findIndex(item => item.id === cursor.id) : -1;
+  const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+  const pageRows = filtered.slice(startIndex, startIndex + limit);
+  return {
+    emails: pageRows.map(publicEmailSummary),
+    loaded: startIndex + pageRows.length,
+    total: filtered.length,
+    next_cursor: startIndex + pageRows.length < filtered.length ? encodeEmailCursor(pageRows[pageRows.length - 1]) : '',
+    limit,
+    has_more: startIndex + pageRows.length < filtered.length
+  };
+}
+
 async function loadEmailPage(options = {}, trace = null) {
   const limit = Math.max(1, Math.min(Number(options.limit || 50), 100));
   const cursor = decodeEmailCursor(options.cursor);
@@ -565,6 +593,8 @@ async function loadEmailPage(options = {}, trace = null) {
   const hasFilters = Boolean(filters.status || filters.label || filters.search || filters.day || filters.dateField === 'due' || filters.sort !== 'newest');
   const includeTotal = !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
   await Perf.perfPhase(trace, 'emails_storage', () => Storage.ensureStorage());
+  const scopeOwnerId = String(options.scope_owner_id || '');
+  if (scopeOwnerId) return loadOwnedEmailPage(scopeOwnerId, filters, limit, cursor, trace);
   if (hasFilters) {
     // Hot inbox pages avoid a workspace round trip; company-sender checks use env/admin
     // addresses plus the owned domains. Legacy/local storage still has its db object.

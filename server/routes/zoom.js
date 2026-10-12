@@ -5,19 +5,22 @@ const Http = require('../http');
 const Auth = require('../auth');
 const Events = require('../events');
 const Zoom = require('../integrations/zoom');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Zoom routes that read and write the database directly.
 async function zoomRoutes(ctx) {
   const { route, method, res, trace, req, url } = ctx;
   if (route === '/api/zoom/events' && method === 'GET') {
-    await Auth.currentSessionUser(req, trace);
+    const user = await Auth.currentSessionUser(req, trace);
+    Authorization.requireTeam(user);
     const page = await Zoom.loadZoomEventPageDb({ limit: url.searchParams.get('limit'), cursor: url.searchParams.get('cursor'), search: url.searchParams.get('search') }, trace);
     return Http.sendJson(res, { events: page.items, has_more: page.has_more, hasMore: page.hasMore, next_cursor: page.next_cursor, nextCursor: page.nextCursor, limit: page.limit }, 200, {}, trace);
   }
   // Zoom meetings under the generic name; default page of 50, newest first.
   if (route === '/api/meetings' && method === 'GET') {
-    await Auth.currentSessionUser(req, trace);
+    const user = await Auth.currentSessionUser(req, trace);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoom.loadZoomEventPageDb({
       limit: url.searchParams.get('limit'),
       cursor: url.searchParams.get('cursor'),
@@ -34,11 +37,13 @@ async function zoomRoutes(ctx) {
     }, trace), 200, {}, trace);
   }
   if (route === '/api/zoom/calls' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoom.loadZoomCallPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
   }
   if (route === '/api/zoom/numbers' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoom.loadZoomNumberPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
   }
   return NOT_HANDLED;
@@ -65,6 +70,7 @@ async function zoomWorkspaceRoutes(ctx) {
     });
   }
   if (route === '/api/integrations/zoom/sync' && method === 'POST') {
+    Authorization.requireTeam(user);
     const result = await Zoom.importZoomMeetings(db, user, Number(body.max_meetings || body.max_events || process.env.ZOOM_MAX_MEETINGS || 500), {
       save: false,
       report_history_months: body.report_history_months || body.history_months,
@@ -74,6 +80,7 @@ async function zoomWorkspaceRoutes(ctx) {
     return Http.sendJson(res, result);
   }
   if (route === '/api/zoom/calls' && method === 'GET') {
+    Authorization.requireTeam(user);
     const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 250));
     const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
     const allCalls = (db.zoom?.calls || [])
@@ -92,6 +99,7 @@ async function zoomWorkspaceRoutes(ctx) {
     });
   }
   if (route === '/api/integrations/zoom/calls/sync' && method === 'POST') {
+    Authorization.requireTeam(user);
     const result = await Zoom.importZoomCalls(db, user, Number(body.max_calls || process.env.ZOOM_MAX_CALLS || 1000), {
       save: false,
       max_calls: body.max_calls,

@@ -2,6 +2,7 @@
 
 const Http = require('../http');
 const Meta = require('../integrations/meta');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Meta routes that work on the fully loaded workspace (db).
@@ -16,6 +17,7 @@ async function metaWorkspaceRoutes(ctx) {
     });
   }
   if (route === '/api/integrations/meta/sync' && method === 'POST') {
+    Authorization.requireTeam(user);
     const result = await Meta.importMetaLeads(db, user, Number(body.max_leads || 50));
     return Http.sendJson(res, result);
   }

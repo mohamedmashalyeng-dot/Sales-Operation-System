@@ -9,6 +9,7 @@ const Auth = require('../auth');
 const Audit = require('../audit');
 const Events = require('../events');
 const Eventbrite = require('../integrations/eventbrite');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Eventbrite routes that work on the fully loaded workspace (db).
@@ -25,6 +26,7 @@ async function eventbriteWorkspaceRoutes(ctx) {
     });
   }
   if (route === '/api/integrations/eventbrite/connect' && method === 'GET') {
+    Authorization.requireTeam(user);
     if (!Eventbrite.eventbriteConfigured()) throw Http.statusError(400, 'Eventbrite credentials are not configured. Add EVENTBRITE_CLIENT_ID and EVENTBRITE_CLIENT_SECRET to .env.');
     const sid = Http.parseCookies(req).sid;
     const session = await Auth.getSession(sid);
@@ -61,6 +63,7 @@ async function eventbriteWorkspaceRoutes(ctx) {
     return res.end();
   }
   if (route === '/api/integrations/eventbrite/sync' && method === 'POST') {
+    Authorization.requireTeam(user);
     const result = await Eventbrite.importEventbriteEvents(db, user, Number(body.max_events || 10), { save: false });
     await Events.saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, deleteEventIds: result.deleted_event_ids || [] });
     return Http.sendJson(res, result);

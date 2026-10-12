@@ -13,6 +13,7 @@ const Emails = require('../emails');
 const Monitoring = require('../monitoring');
 const Bootstrap = require('../bootstrap');
 const Gmail = require('../integrations/gmail');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Emails routes that read and write the database directly.
@@ -21,7 +22,8 @@ async function emailsRoutes(ctx) {
   let lightweightMatch = null;
   lightweightMatch = route.match(/^\/api\/emails\/([^/]+)$/);
   if (lightweightMatch && method === 'GET') {
-    await Auth.currentSessionUser(req, trace);
+    const user = await Auth.currentSessionUser(req, trace);
+    await Authorization.requireRecord(user, 'email', lightweightMatch[1]);
     return Http.sendJson(res, await Emails.loadEmailDetail(lightweightMatch[1]), 200, {}, trace);
   }
   if (route === '/api/emails' && method === 'GET') {
@@ -43,7 +45,8 @@ async function emailsRoutes(ctx) {
       include_total: url.searchParams.get('include_total'),
       owner: url.searchParams.get('owner'),
       owner_id: url.searchParams.get('owner_id'),
-      folder: url.searchParams.get('folder')
+      folder: url.searchParams.get('folder'),
+      scope_owner_id: Authorization.ownerFilter(user, '')
     };
     Perf.perfAdd(trace, 'emails_before_sql', performance.now() - emailsHandlerStarted, {
       pool: Storage.postgresPoolStats(),
@@ -89,21 +92,26 @@ async function emailsRoutes(ctx) {
   }
   if (route === '/api/emails' && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.rejectProtectedFields(body);
+    await Authorization.requireRecord(user, 'lead', body.lead_id);
     return Http.sendJson(res, await Emails.recordEmailFastDb(body, user), 201);
   }
   lightweightMatch = route.match(/^\/api\/emails\/([^/]+)\/resolve$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'email', lightweightMatch[1]);
     return Http.sendJson(res, await Emails.resolveEmailFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/emails\/([^/]+)\/read$/);
   if (lightweightMatch && method === 'PATCH' && State.postgresPool) {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'email', lightweightMatch[1]);
     return Http.sendJson(res, await Emails.updateEmailReadStateFastDb(lightweightMatch[1], body));
   }
   lightweightMatch = route.match(/^\/api\/emails\/([^/]+)$/);
   if (lightweightMatch && method === 'DELETE' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'email', lightweightMatch[1]);
     if (!Auth.permissionsForUser(user).sales) throw Http.statusError(403, 'You do not have permission to delete emails.');
     return Http.sendJson(res, await Emails.deleteEmailFastDb(lightweightMatch[1], user));
   }
@@ -115,6 +123,8 @@ async function emailsWorkspaceRoutes(ctx) {
   const { route, method, res, body, db, user } = ctx;
   let match = null;
   if (route === '/api/emails' && method === 'POST') {
+    Authorization.rejectProtectedFields(body);
+    await Authorization.requireRecord(user, 'lead', body.lead_id, db);
     const lead = Leads.leadFor(db, body.lead_id);
     const received = new Date(body.received_at);
     db.emails.unshift({ id: Util.nextId('E', [db.emails]), first_name: lead.first_name, last_name: lead.last_name, email: lead.email, lead_id: lead.id, subject: body.subject, body: body.body, owner: lead.owner, direction: 'inbound', response_at: null, due_at: new Date(received.getTime() + Config.EMAIL_RESPONSE_SLA_MS).toISOString(), received_at: received.toISOString() });
@@ -125,6 +135,7 @@ async function emailsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/emails\/([^/]+)\/resolve$/);
   if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'email', match[1], db);
     const email = db.emails.find(item => item.id === match[1]);
     if (!email) throw Http.statusError(404, 'Email not found.');
     const responseAt = new Date(body.response_at);
@@ -137,6 +148,7 @@ async function emailsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/emails\/([^/]+)\/reply$/);
   if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'email', match[1], db);
     const email = db.emails.find(item => item.id === match[1]);
     if (!email) throw Http.statusError(404, 'Email not found.');
     const messageText = String(body.message || '').trim();

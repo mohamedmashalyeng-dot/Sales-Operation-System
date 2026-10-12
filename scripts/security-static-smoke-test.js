@@ -136,7 +136,7 @@ const {
 } = require('../server.js').__securityTest;
 const { publicErrorMessage } = require('../server.js');
 
-// Sign-in throttle: the allowance, the 429 with Retry-After, and the window running out.
+// Sign-in throttle: the allowance, the 429 with short progressive Retry-After values, and expiry.
 authThrottle.clear();
 const fakeRequest = { headers: { 'x-forwarded-for': '203.0.113.9' }, socket: {} };
 const limits = loginThrottleLimits(fakeRequest, 'someone@example.com');
@@ -145,9 +145,29 @@ for (let attempt = 0; attempt < LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS; attempt +=
   assertAuthThrottle(limits, startedAt);
   recordAuthThrottle(limits, startedAt);
 }
-assert.throws(() => assertAuthThrottle(limits, startedAt), error => error.status === 429 && Number(error.headers['Retry-After']) > 0, 'sign-in should be blocked after the allowed failures');
+assert.throws(
+  () => assertAuthThrottle(limits, startedAt),
+  error => error.status === 429
+    && Number(error.headers['Retry-After']) > 0
+    && Number(error.headers['Retry-After']) <= 30
+    && error.message.includes('second'),
+  'sign-in should start with a short 30 second block after the allowed failures'
+);
 assert.doesNotThrow(() => assertAuthThrottle(loginThrottleLimits({ headers: { 'x-forwarded-for': '203.0.113.10' }, socket: {} }, 'someone@example.com'), startedAt), 'another address should not be blocked yet');
-assert.doesNotThrow(() => assertAuthThrottle(limits, startedAt + AUTH_THROTTLE_WINDOW_MS + 1), 'the block should end with the window');
+assert.doesNotThrow(() => assertAuthThrottle(limits, startedAt + 31 * 1000), 'the first sign-in block should expire after 30 seconds');
+const secondBlockAt = startedAt + 31 * 1000;
+for (let attempt = 0; attempt < LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS; attempt += 1) {
+  assertAuthThrottle(limits, secondBlockAt);
+  recordAuthThrottle(limits, secondBlockAt);
+}
+assert.throws(
+  () => assertAuthThrottle(limits, secondBlockAt),
+  error => error.status === 429
+    && Number(error.headers['Retry-After']) > 30
+    && Number(error.headers['Retry-After']) <= 60,
+  'the next sign-in block should increase to one minute'
+);
+assert.doesNotThrow(() => assertAuthThrottle(limits, startedAt + AUTH_THROTTLE_WINDOW_MS + 1), 'the throttle should not stay blocked after the auth window');
 authThrottle.clear();
 
 // Error text: intended messages pass through, internal ones are replaced.
@@ -201,7 +221,8 @@ function staticResponse(url, headers = {}) {
 (async () => {
   const script = await staticResponse('/app.js?v=any-build');
   assert.strictEqual(script.status, 200);
-  assert.strictEqual(script.headers['cache-control'], 'no-cache', 'app.js should be checked with the server before reuse');
+  assert.strictEqual(script.headers['cache-control'], 'public, max-age=604800', 'app.js asked for with a build id may be reused for a week');
+  assert.strictEqual((await staticResponse('/app.js')).headers['cache-control'], 'no-cache', 'app.js asked for without a build id should be checked every time');
   assert(script.headers.etag && script.headers['last-modified'], 'app.js should carry an ETag and Last-Modified');
   const unchanged = await staticResponse('/app.js?v=any-build', { 'if-none-match': script.headers.etag });
   assert.strictEqual(unchanged.status, 304, 'an unchanged file should be answered with 304');

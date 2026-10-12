@@ -57,15 +57,19 @@ function publicStaticFile(pathname) {
 }
 
 // Whether a browser or the CDN may reuse a static file without asking the server again.
-// - Pages, scripts, stylesheets, the service worker and the manifest: "no-cache", meaning keep
-//   a copy but check it first. With the ETag below that check is a short 304 answer instead of
-//   the full download every load used to need. Fast repeat loads come from the service worker
-//   (sw.js), which answers these files from its own cache and then checks them in the
-//   background. A freshness time here would let the browser skip the service worker, and with
-//   it that check, so a file changed without a new build id could stay stale.
-// - Images and fonts keep the week the CDN already gave them.
-function staticCacheControl(ext) {
-  return PUBLIC_ASSET_EXTENSIONS.has(ext) ? 'public, max-age=604800' : 'no-cache';
+// - A script or stylesheet asked for with ?v=<build> has a new URL for every build, so that
+//   exact URL may be reused for a week. The CDN already did this for stylesheets; scripts had
+//   no cache header at all and were downloaded from this server on every page load.
+// - Images and fonts: a week, as the CDN already gave them.
+// - Pages, the service worker, the manifest and anything asked for without ?v=: "no-cache".
+//   They are how a new build is discovered, so they are checked with the server every time
+//   (a short 304 answer when unchanged).
+// A script or stylesheet that changes therefore needs a new build id, or browsers and the CDN
+// keep the old file for up to a week.
+function staticCacheControl(name, ext, versioned) {
+  if (PUBLIC_ASSET_EXTENSIONS.has(ext)) return 'public, max-age=604800';
+  if ((ext === '.js' || ext === '.css') && versioned && name !== 'sw.js') return 'public, max-age=604800';
+  return 'no-cache';
 }
 
 // An If-None-Match header may list several tags and may mark them weak (W/).
@@ -90,7 +94,7 @@ function serveStatic(req, res) {
     const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
     const headers = {
       'Content-Type': mime[ext] || 'application/octet-stream',
-      'Cache-Control': staticCacheControl(ext),
+      'Cache-Control': staticCacheControl(name, ext, url.searchParams.has('v')),
       ETag: etag,
       'Last-Modified': stats.mtime.toUTCString()
     };

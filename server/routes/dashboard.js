@@ -9,6 +9,7 @@ const Audit = require('../audit');
 const Leads = require('../leads');
 const Dashboard = require('../dashboard');
 const Monitoring = require('../monitoring');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 const serverStartedAt = new Date();
@@ -22,6 +23,7 @@ async function dashboardRoutes(ctx) {
   }
   if (route === '/api/dashboard/admin-overview' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Dashboard.loadDashboardAdminOverviewDb(Dashboard.parseDashboardFilters(url, user), user));
   }
   if (route === '/api/dashboard/totals' && method === 'GET') {
@@ -29,8 +31,9 @@ async function dashboardRoutes(ctx) {
     return Http.sendJson(res, await Dashboard.loadDashboardTotalsDb({ today_start: url.searchParams.get('today_start'), tomorrow_start: url.searchParams.get('tomorrow_start') }));
   }
   if ((route === '/api/dashboard/monitoring' || route === '/api/monitoring') && method === 'GET') {
+    const user = await Auth.currentSessionUser(req, trace);
+    Authorization.requireTeam(user);
     try {
-      await Auth.currentSessionUser(req, trace);
       return Http.sendJson(res, await Monitoring.loadDashboardMonitoringDb({ today_start: url.searchParams.get('today_start'), tomorrow_start: url.searchParams.get('tomorrow_start') }, trace), 200, {}, trace);
     } catch (error) {
       if (error.status === 400) throw error;
@@ -47,7 +50,8 @@ async function dashboardRoutes(ctx) {
     return Http.sendJson(res, await Dashboard.loadDashboardActivityDb(Dashboard.parseDashboardFilters(url, user), url.searchParams.get('limit') || 20), 200, {}, trace);
   }
   if (route === '/api/contacts' && method === 'GET') {
-    await Auth.currentSessionUser(req, trace);
+    const user = await Auth.currentSessionUser(req, trace);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Leads.loadContactPage({
       limit: url.searchParams.get('limit'),
       offset: url.searchParams.get('offset'),
@@ -85,11 +89,13 @@ async function dashboardRoutes(ctx) {
     return Http.sendJson(res, await Dashboard.loadDashboardSearchDb(url.searchParams.get('q'), user));
   }
   if (route === '/api/audit' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, { audit: await Audit.loadAuditListDb(url.searchParams.get('limit')) });
   }
   if (route === '/api/attribution' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, { attribution: await Audit.loadAttributionListDb(url.searchParams.get('limit')) });
   }
   return NOT_HANDLED;
@@ -97,8 +103,9 @@ async function dashboardRoutes(ctx) {
 
 // Dashboard routes that work on the fully loaded workspace (db).
 async function dashboardWorkspaceRoutes(ctx) {
-  const { route, method, res, db } = ctx;
+  const { route, method, res, db, user } = ctx;
   if (route === '/api/monitoring/system' && method === 'GET') {
+    Authorization.requireTeam(user);
     const now = Date.now();
     const since = new Date(now - 24 * 60 * 60 * 1000);
     return Http.sendJson(res, {

@@ -9,6 +9,7 @@ const Storage = require('../storage');
 const Auth = require('../auth');
 const Audit = require('../audit');
 const Gmail = require('../integrations/gmail');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Gmail routes that work on the fully loaded workspace (db).
@@ -32,6 +33,7 @@ async function gmailWorkspaceRoutes(ctx) {
     });
   }
   if (route === '/api/integrations/gmail/connect' && method === 'GET') {
+    Authorization.requireTeam(user);
     if (!Gmail.gmailConfigured()) throw Http.statusError(400, 'Gmail credentials are not configured. Add GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET to .env.');
     const sid = Http.parseCookies(req).sid;
     const session = await Auth.getSession(sid);
@@ -70,6 +72,7 @@ async function gmailWorkspaceRoutes(ctx) {
     return res.end();
   }
   if (route === '/api/integrations/gmail/sync' && method === 'POST') {
+    Authorization.requireTeam(user);
     if (!Config.GMAIL_IMPORT_ENABLED) throw Http.statusError(403, 'Gmail import is paused. Existing emails remain available.');
     let result;
     try {

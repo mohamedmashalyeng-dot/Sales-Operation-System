@@ -530,10 +530,12 @@ async function clearUserSessions(userId) {
 }
 
 // Password guessing is slowed down in memory. Each key (email + address, address, email or
-// user) may fail a limited number of times inside one window, then gets 429 until the window
-// ends. Counts belong to this process and a restart clears them.
+// user) may fail a limited number of times inside one window. Login gets short progressive
+// locks, while other auth actions keep the full window lock. Counts belong to this process and
+// a restart clears them.
 const AUTH_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_THROTTLE_MAX_KEYS = 20000;
+const LOGIN_THROTTLE_LOCK_STEPS_MS = [30 * 1000, 60 * 1000, 3 * 60 * 1000];
 const LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS = 5;
 const LOGIN_FAILURES_PER_ADDRESS = 20;
 // Stops one account being guessed from many addresses.
@@ -552,16 +554,36 @@ function authThrottleEntry(key, now = Date.now()) {
   return null;
 }
 
-// limits is a list of [key, allowed count]. Throws 429 when any key has used its allowance.
+// limits is a list of [key, allowed count, optional progressive lock steps].
+// Throws 429 when any key has used its allowance.
 function assertAuthThrottle(limits, now = Date.now()) {
   let retryMs = 0;
-  for (const [key, allowed] of limits) {
+  for (const [key, allowed, lockSteps] of limits) {
     const entry = authThrottleEntry(key, now);
-    if (entry && entry.count >= allowed) retryMs = Math.max(retryMs, entry.resetAt - now);
+    if (!entry) continue;
+    if (entry.blockedUntil > now) {
+      retryMs = Math.max(retryMs, entry.blockedUntil - now);
+      continue;
+    }
+    if (entry.count < allowed) continue;
+    if (Array.isArray(lockSteps) && lockSteps.length) {
+      const lockLevel = Math.max(0, Number(entry.lockLevel || 0));
+      const lockMs = lockSteps[Math.min(lockLevel, lockSteps.length - 1)];
+      entry.lockLevel = lockLevel + 1;
+      entry.count = 0;
+      entry.blockedUntil = now + lockMs;
+      entry.resetAt = Math.max(entry.resetAt || 0, now + AUTH_THROTTLE_WINDOW_MS, entry.blockedUntil);
+      retryMs = Math.max(retryMs, lockMs);
+      continue;
+    }
+    retryMs = Math.max(retryMs, entry.resetAt - now);
   }
   if (!retryMs) return;
-  const minutes = Math.max(1, Math.ceil(retryMs / 60000));
-  const error = Http.statusError(429, `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`);
+  const seconds = Math.max(1, Math.ceil(retryMs / 1000));
+  const waitText = seconds < 60
+    ? `${seconds} second${seconds === 1 ? '' : 's'}`
+    : `${Math.ceil(seconds / 60)} minute${Math.ceil(seconds / 60) === 1 ? '' : 's'}`;
+  const error = Http.statusError(429, `Too many attempts. Try again in ${waitText}.`);
   error.headers = { 'Retry-After': String(Math.ceil(retryMs / 1000)) };
   throw error;
 }
@@ -570,7 +592,7 @@ function recordAuthThrottle(limits, now = Date.now()) {
   for (const [key] of limits) {
     const entry = authThrottleEntry(key, now);
     if (entry) entry.count += 1;
-    else authThrottle.set(key, { count: 1, resetAt: now + AUTH_THROTTLE_WINDOW_MS });
+    else authThrottle.set(key, { count: 1, resetAt: now + AUTH_THROTTLE_WINDOW_MS, lockLevel: 0, blockedUntil: 0 });
   }
   if (authThrottle.size <= AUTH_THROTTLE_MAX_KEYS) return;
   for (const [key, entry] of authThrottle) {
@@ -586,9 +608,9 @@ function recordAuthThrottle(limits, now = Date.now()) {
 function loginThrottleLimits(req, email) {
   const address = Http.requestIp(req);
   return [
-    [`login:${email}|${address}`, LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS],
-    [`login-address:${address}`, LOGIN_FAILURES_PER_ADDRESS],
-    [`login-email:${email}`, LOGIN_FAILURES_PER_EMAIL]
+    [`login:${email}|${address}`, LOGIN_FAILURES_PER_EMAIL_AND_ADDRESS, LOGIN_THROTTLE_LOCK_STEPS_MS],
+    [`login-address:${address}`, LOGIN_FAILURES_PER_ADDRESS, LOGIN_THROTTLE_LOCK_STEPS_MS],
+    [`login-email:${email}`, LOGIN_FAILURES_PER_EMAIL, LOGIN_THROTTLE_LOCK_STEPS_MS]
   ];
 }
 

@@ -7,6 +7,7 @@ const Storage = require('../storage');
 const Auth = require('../auth');
 const Audit = require('../audit');
 const Events = require('../events');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 // Events routes that read and write the database directly.
@@ -40,6 +41,7 @@ async function eventsWorkspaceRoutes(ctx) {
   const { route, method, res, body, db, user } = ctx;
   let match = null;
   if (route === '/api/events/import' && method === 'POST') {
+    Authorization.requireTeam(user);
     if (!Auth.permissions(user.role).sales) throw Http.statusError(403, 'You do not have permission to import events.');
     const result = await Events.importSpreadsheetEvents(db, user, body);
     await Events.saveEventImportTables(db, { preserveGmail: true, preserveZoom: true });

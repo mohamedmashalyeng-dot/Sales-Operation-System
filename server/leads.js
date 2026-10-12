@@ -14,6 +14,7 @@ const Emails = require('./emails');
 const Applications = require('./applications');
 const Bootstrap = require('./bootstrap');
 const Zoom = require('./integrations/zoom');
+const Authorization = require('./authorization');
 
 let identityCleanupRunning = false;
 function refreshLeadSoftDelete(trace = null, { force = false } = {}) {
@@ -714,6 +715,7 @@ async function createLeadFastDb(body, user) {
     const existingResult = email
       ? await client.query(`select data from app_leads where lower(email) = $1 and ${activeLeadCondition()} limit 1 for update`, [email])
       : { rows: [] };
+    Authorization.requireOwnDuplicate(user, existingResult.rows[0]?.data);
     const now = new Date().toISOString();
     const normalized = {
       first_name: body.first_name || Util.nameParts('', email).first_name,

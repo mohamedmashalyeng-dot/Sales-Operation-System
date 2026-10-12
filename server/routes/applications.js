@@ -8,6 +8,7 @@ const Auth = require('../auth');
 const Audit = require('../audit');
 const Leads = require('../leads');
 const Applications = require('../applications');
+const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
 
 async function verifyContractFastDb(id, body) {
@@ -52,7 +53,7 @@ async function applicationsRoutes(ctx) {
   const { route, method, res, trace, body, req, url } = ctx;
   let lightweightMatch = null;
   if (route === '/api/applications' && method === 'GET') {
-    await Auth.currentSessionUser(req, trace);
+    const user = await Auth.currentSessionUser(req, trace);
     return Http.sendJson(res, await Applications.loadApplicationListDb({
       limit: url.searchParams.get('limit'),
       offset: url.searchParams.get('offset'),
@@ -62,8 +63,8 @@ async function applicationsRoutes(ctx) {
       programme_id: url.searchParams.get('programme_id'),
       intake: url.searchParams.get('intake'),
       intake_id: url.searchParams.get('intake_id'),
-      owner: url.searchParams.get('owner'),
-      owner_id: url.searchParams.get('owner_id'),
+      owner: Authorization.ownerFilter(user, url.searchParams.get('owner')),
+      owner_id: Authorization.ownerFilter(user, url.searchParams.get('owner_id')),
       source: url.searchParams.get('source'),
       created_from: url.searchParams.get('created_from'),
       created_to: url.searchParams.get('created_to'),
@@ -73,27 +74,33 @@ async function applicationsRoutes(ctx) {
   }
   if (route === '/api/applications' && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.rejectProtectedFields(body);
+    await Authorization.requireRecord(user, 'lead', body.lead_id);
     return Http.sendJson(res, await Applications.createApplicationFastDb(body, user), 201);
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/evidence$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'application', lightweightMatch[1]);
     return Http.sendJson(res, await Applications.uploadEvidenceFastDb(lightweightMatch[1], body), 201);
   }
   lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)\/review$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Applications.reviewEvidenceFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)$/);
   if (lightweightMatch && method === 'DELETE' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'evidence', lightweightMatch[1]);
     if (!Auth.permissionsForUser(user).review && !Auth.permissionsForUser(user).sales) throw Http.statusError(403, 'You do not have permission to delete evidence.');
     return Http.sendJson(res, await Applications.deleteEvidenceFastDb(lightweightMatch[1], user));
   }
   lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)\/file$/);
   if (lightweightMatch && method === 'GET' && State.postgresPool) {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'evidence', lightweightMatch[1]);
     return Applications.sendEvidenceFileFastDb(lightweightMatch[1], res);
   }
   lightweightMatch = route.match(/^\/api\/document-templates\/([^/]+)\/file$/);
@@ -104,21 +111,25 @@ async function applicationsRoutes(ctx) {
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/review$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Applications.reviewApplicationFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/contract$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await verifyContractFastDb(lightweightMatch[1], body));
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/enrol$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Applications.enrolApplicationFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)$/);
   if (lightweightMatch && method === 'DELETE' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     if (!Auth.permissionsForUser(user).review && !Auth.permissionsForUser(user).sales) throw Http.statusError(403, 'You do not have permission to delete applications.');
     return Http.sendJson(res, await Applications.deleteApplicationFastDb(lightweightMatch[1], user));
   }
@@ -130,6 +141,8 @@ async function applicationsWorkspaceRoutes(ctx) {
   const { route, method, res, body, db, user } = ctx;
   let match = null;
   if (route === '/api/applications' && method === 'POST') {
+    Authorization.rejectProtectedFields(body);
+    await Authorization.requireRecord(user, 'lead', body.lead_id, db);
     const lead = Leads.leadFor(db, body.lead_id);
     const intake = db.intakes.find(item => item.id === body.intake_id);
     const alreadyEnrolled = Boolean(body.already_enrolled);
@@ -152,6 +165,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/evidence$/);
   if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'application', match[1], db);
     const app = appFor(db, match[1]);
     const req = app.requirements.find(item => item.id === body.requirement_id);
     if (!req) throw Http.statusError(404, 'Requirement not found.');
@@ -163,6 +177,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/evidence\/([^/]+)\/file$/);
   if (match && method === 'GET') {
+    await Authorization.requireRecord(user, 'evidence', match[1], db);
     const req = db.applications.flatMap(app => app.requirements).find(item => item.latest?.id === match[1]);
     if (!req?.latest) throw Http.statusError(404, 'Evidence not found.');
     const content = Buffer.from(req.latest.content_base64 || '', 'base64');
@@ -172,6 +187,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/evidence\/([^/]+)\/review$/);
   if (match && method === 'POST') {
+    Authorization.requireTeam(user);
     const req = db.applications.flatMap(app => app.requirements).find(item => item.latest?.id === match[1]);
     if (!req?.latest) throw Http.statusError(404, 'Evidence not found.');
     req.latest.status = body.status;
@@ -183,6 +199,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/review$/);
   if (match && method === 'POST') {
+    Authorization.requireTeam(user);
     const app = appFor(db, match[1]);
     const lead = Leads.leadFor(db, app.lead_id);
     app.status = body.status;
@@ -194,6 +211,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/contract$/);
   if (match && method === 'POST') {
+    Authorization.requireTeam(user);
     const app = appFor(db, match[1]);
     app.contract = { status: 'Verified', signatory: body.signatory, signed_at: body.signed_at, note: body.note, consistency_confirmed: body.consistency_confirmed };
     await Storage.saveDb(db);
@@ -202,6 +220,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/enrol$/);
   if (match && method === 'POST') {
+    Authorization.requireTeam(user);
     const app = appFor(db, match[1]);
     const lead = Leads.leadFor(db, app.lead_id);
     app.status = 'Enrolled';
