@@ -100,6 +100,27 @@ async function leadsRoutes(ctx) {
     await Storage.ensureStorage();
     return Http.sendJson(res, await Leads.loadLeadDetailDb(decodeURIComponent(lightweightMatch[1])));
   }
+  lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/(timeline|emails|tasks|application|applications|meetings|calls|files|notes)$/);
+  if (lightweightMatch && method === 'GET' && Storage.usesPostgresStorage()) {
+    const user = await Auth.currentSessionUser(req, trace);
+    const leadId = decodeURIComponent(lightweightMatch[1]);
+    const tab = lightweightMatch[2] === 'applications' ? 'application' : lightweightMatch[2];
+    await Authorization.requireRecord(user, 'lead', leadId);
+    await Storage.ensureStorage();
+    const options = { limit: url.searchParams.get('limit'), cursor: url.searchParams.get('cursor') };
+    const loaders = {
+      timeline: Leads.loadLead360TimelineDb,
+      emails: Leads.loadLead360EmailsDb,
+      tasks: Leads.loadLead360TasksDb,
+      application: Leads.loadLead360ApplicationsDb,
+      meetings: Leads.loadLead360MeetingsDb,
+      calls: Leads.loadLead360CallsDb,
+      files: Leads.loadLead360FilesDb,
+      notes: Leads.loadLead360NotesDb
+    };
+    return Http.sendJson(res, await loaders[tab](leadId, options), 200, {}, trace);
+  }
+  lightweightMatch = route.match(/^\/api\/leads\/([^/]+)$/);
   if (lightweightMatch && method === 'PATCH' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
     Authorization.rejectProtectedFields(body);
@@ -135,7 +156,7 @@ async function leadsRoutes(ctx) {
 
 // Leads routes that work on the fully loaded workspace (db).
 async function leadsWorkspaceRoutes(ctx) {
-  const { route, method, res, body, db, user } = ctx;
+  const { route, method, res, body, url, db, user } = ctx;
   let match = null;
   if (route === '/api/leads/reconcile' && method === 'POST') {
     Authorization.requireTeam(user);
@@ -147,7 +168,26 @@ async function leadsWorkspaceRoutes(ctx) {
   if (match && method === 'GET') {
     await Authorization.requireRecord(user, 'lead', match[1], db);
     const lead = Leads.leadFor(db, match[1]);
-    return Http.sendJson(res, { lead, timeline: Leads.timeline(db, lead) });
+    return Http.sendJson(res, { lead, timeline: Leads.timeline(db, lead).slice(0, 8), recent_activity: Leads.timeline(db, lead).slice(0, 8), tabs: ['timeline', 'emails', 'tasks', 'application', 'meetings', 'calls', 'notes', 'files'] });
+  }
+  match = route.match(/^\/api\/leads\/([^/]+)\/(timeline|emails|tasks|application|applications|meetings|calls|files|notes)$/);
+  if (match && method === 'GET') {
+    await Authorization.requireRecord(user, 'lead', match[1], db);
+    const lead = Leads.leadFor(db, match[1]);
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 30), 100));
+    const tab = match[2] === 'applications' ? 'application' : match[2];
+    const applications = (db.applications || []).filter(app => String(app.lead_id) === String(lead.id)).map(Applications.publicApplication);
+    if (tab === 'timeline') return Http.sendJson(res, { items: Leads.timeline(db, lead).slice(0, limit), has_more: false, next_cursor: '', limit });
+    if (tab === 'emails') return Http.sendJson(res, { items: (db.emails || []).filter(email => String(email.lead_id) === String(lead.id)).slice(0, limit), emails: (db.emails || []).filter(email => String(email.lead_id) === String(lead.id)).slice(0, limit), has_more: false, next_cursor: '', limit });
+    if (tab === 'tasks') return Http.sendJson(res, { items: (db.tasks || []).filter(task => String(task.lead_id) === String(lead.id)).slice(0, limit), tasks: (db.tasks || []).filter(task => String(task.lead_id) === String(lead.id)).slice(0, limit), has_more: false, next_cursor: '', limit });
+    if (tab === 'application') return Http.sendJson(res, { items: applications.slice(0, limit), applications: applications.slice(0, limit), application: applications[0] || null, has_more: false, next_cursor: '', limit });
+    if (tab === 'meetings') return Http.sendJson(res, { items: (db.events || []).filter(event => (event.attendees || []).some(attendee => String(attendee.lead_id) === String(lead.id))).slice(0, limit), events: (db.events || []).filter(event => (event.attendees || []).some(attendee => String(attendee.lead_id) === String(lead.id))).slice(0, limit), has_more: false, next_cursor: '', limit });
+    if (tab === 'calls') return Http.sendJson(res, { items: (db.zoom?.calls || []).filter(call => String(call.lead_id || '') === String(lead.id)).slice(0, limit), calls: (db.zoom?.calls || []).filter(call => String(call.lead_id || '') === String(lead.id)).slice(0, limit), has_more: false, next_cursor: '', limit });
+    if (tab === 'files') {
+      const files = applications.flatMap(app => (app.requirements || []).flatMap(req => req.latest ? [{ ...req.latest, title: req.title, application_id: app.id, requirement_id: req.id, content_base64: undefined, download_url: `/api/evidence/${encodeURIComponent(req.latest.id)}/file` }] : []));
+      return Http.sendJson(res, { items: files.slice(0, limit), files: files.slice(0, limit), has_more: false, next_cursor: '', limit });
+    }
+    return Http.sendJson(res, { items: (db.audit || []).filter(item => String(item.entity_id) === String(lead.id) && item.action === 'Note added').slice(0, limit), notes: (db.audit || []).filter(item => String(item.entity_id) === String(lead.id) && item.action === 'Note added').slice(0, limit), has_more: false, next_cursor: '', limit });
   }
   if (route === '/api/leads' && method === 'POST') {
     Authorization.rejectProtectedFields(body);
@@ -188,6 +228,7 @@ async function leadsWorkspaceRoutes(ctx) {
     await Storage.saveDb(db);
     return Http.sendJson(res, { id: result.lead.id, lead: result.lead, created: result.created, application: automaticApplication ? Applications.publicApplication(automaticApplication) : null }, result.created ? 201 : 200);
   }
+  match = route.match(/^\/api\/leads\/([^/]+)$/);
   if (match && method === 'PATCH') {
     Authorization.rejectProtectedFields(body);
     await Authorization.requireRecord(user, 'lead', match[1], db);

@@ -7,6 +7,7 @@ const Http = require('./http');
 const Perf = require('./perf');
 const Storage = require('./storage');
 const Audit = require('./audit');
+const Automations = require('./automations');
 const Applications = require('./applications');
 const Monitoring = require('./monitoring');
 
@@ -253,6 +254,7 @@ async function completeTaskFastDb(id, user) {
       [task.id, task.status, task.completed_at, Applications.jsonValue(task)]
     );
     await Audit.appendAuditFast(client, user, 'Task completed', 'lead', task.lead_id, task.title);
+    await Automations.recordAutomationEvent(client, 'task_completed', 'task', task.id, { task, lead_id: task.lead_id });
     await client.query('commit');
     State.dbCache = null;
     return { ok: true, task };

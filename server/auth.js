@@ -264,8 +264,6 @@ function configuredDeveloperUserRecord() {
 async function findLoginUser(email) {
   await ensureUserStorage();
   if (State.postgresPool) {
-    const developerUser = configuredDeveloperUserRecord();
-    if (developerUser) await upsertPostgresUsers([developerUser]);
     const table = Storage.sqlIdentifier(Config.POSTGRES_USERS_TABLE, 'app_users');
     const result = await Storage.postgresQuery(
       `select id, name, email, role, password_hash, invited_at, password_changed_at from ${table} where email = $1 limit 1`,

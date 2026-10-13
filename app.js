@@ -12,17 +12,26 @@ function diagMark(event,meta={}){
 }
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const DASH='-';
+const displayText=(value,fallback=DASH)=>{
+ const text=String(value??'').trim();
+ return text&&text!=='â€”'&&text!=='—'?text:fallback;
+};
 const paths={home:'M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75 M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',calendar:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2',mail:'M3 5h18v14H3z M3 5l9 7 9-7',grid:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',arrow:'M5 12h14 M14 7l5 5-5 5',back:'M19 12H5 M10 7l-5 5 5 5',plus:'M12 5v14 M5 12h14',search:'M21 21l-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0',check:'M5 12l4 4L19 6',bell:'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9 M10 21h4',close:'M6 6l12 12 M6 18 18 6',phone:'M22 16v3a2 2 0 0 1-2 2C10 21 3 14 3 4a2 2 0 0 1 2-2h3l2 5-3 2c1 3 3 5 6 6l2-3z',file:'M14 2H4v20h16V8z M14 2v6h6 M8 13h8 M8 17h5',chart:'M4 3v18h17 M8 15v-4 M13 15V7 M18 15V4',shield:'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6z M8 12l3 3 5-6',clock:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0 M12 6v6l4 2',settings:'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M9 2h6l1 4 4 1 2 5-3 3v5l-5 2-3-3-5 1-3-5 2-4-1-5 5-1z',logout:'M9 21H3V3h6 M8 12h14 M17 7l5 5-5 5',link:'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2 M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2',download:'M12 3v12 M7 10l5 5 5-5 M4 16v5h16v-5',spark:'M12 3l2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6z',chevron:'m9 6 6 6-6 6',eye:'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12 M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6',eyeOff:'M3 3l18 18 M10.6 10.6A3 3 0 0 0 13.4 13.4 M9.9 5.1A10.4 10.4 0 0 1 12 5c6 0 10 7 10 7a17.8 17.8 0 0 1-3.1 3.9 M6.1 6.1C3.5 7.8 2 12 2 12s4 7 10 7c1.2 0 2.4-.3 3.5-.7'};
 paths.video='M15 10l6-4v12l-6-4v4H3V6h12z';
 const icon=(name,cls='')=>`<svg class="icon ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.grid}"/></svg>`;
 const logo=()=>'<div class="logo"><img src="/assets/images/kent-logo-full-dark.png" alt="Kent Business College"></div>';
-const initials=p=>esc(((p.first_name||p.name||'').split(' ')[0][0]||'')+((p.last_name||p.name?.split(' ')[1]||'')[0]||''));
+const initials=p=>{const name=`${p?.first_name||''} ${p?.last_name||''}`.trim()||p?.display_name||p?.senderName||p?.sender_name||p?.from_name||p?.name||p?.email||'';return esc(((name||'').split(' ')[0]?.[0]||'')+((name||'').split(' ')[1]?.[0]||''));};
 const avatar=(p,n=0,large=false)=>`<span class="avatar ${['sage','blue','rose',''][n%4]} ${large?'large':''}">${initials(p)}</span>`;
 const badge=(s,cls)=>`<span class="badge ${cls||(/Overdue|Rejected|Not Eligible/.test(s)?'red':/Verified|Eligible|Enrolled|Qualified|Ready|Done/.test(s)?'green':/Pending|Review|New|Call Booked/.test(s)?'amber':'')}">${esc(s)}</span>`;
-const fullName=l=>`${l?.first_name||''} ${l?.last_name||''}`.trim()||l?.name||'Unknown';
+function emailLocalPartName(email){
+ const local=String(email||'').split('@')[0]||'';
+ return local.replace(/[._-]+/g,' ').replace(/\d+/g,' ').trim().split(/\s+/).filter(Boolean).map(part=>part.charAt(0).toUpperCase()+part.slice(1).toLowerCase()).join(' ');
+}
+const fullName=l=>displayText(`${l?.first_name||''} ${l?.last_name||''}`.trim()||l?.display_name||l?.senderName||l?.sender_name||l?.from_name||l?.name||emailLocalPartName(l?.email||l?.from));
 const normalizeEmail=email=>String(email||'').trim().toLowerCase();
-const date=(d,opts={day:'2-digit',month:'2-digit',year:'numeric'})=>d?new Date(d).toLocaleDateString('en-GB',opts):'—';
-const time=d=>d?new Date(d).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):'—';
+const date=(d,opts={day:'2-digit',month:'2-digit',year:'numeric'})=>d?new Date(d).toLocaleDateString('en-GB',opts):DASH;
+const time=d=>d?new Date(d).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}):DASH;
 const timestamp=d=>`${date(d)} · ${time(d)}`;
 const localInput=(d=new Date())=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
 const EMAIL_RESPONSE_SLA_MS=48*60*60*1000;
@@ -36,6 +45,43 @@ const APPLICATION_DOCUMENT_TEMPLATES=[
 function applicationRequirement(a,r){
  const canManage=data.permissions.sales||data.permissions.review;
  return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} Â· Version ${r.latest.version}${r.latest.reviewer?' Â· Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${canManage?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload signed version':'Upload document'}</button>`:''}${r.latest&&canManage?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>${icon('download')}Download</a>`:''}${r.latest&&data.permissions.review?btn('Review','review-evidence',r.latest.id):''}${r.latest&&canManage?btn('Delete evidence','delete-evidence',r.latest.id,'danger'):''}</div></div>`;
+}
+const ADMISSIONS_STAGE_ORDER=['In review','Documents Missing','Documents Pending','Eligible','Not Eligible','Enrolled'];
+function clientRequirementState(r){return r?.latest?.status||'Missing';}
+function clientOutstandingRequirements(a){return (a?.requirements||[]).filter(r=>['Missing','Pending','Rejected'].includes(clientRequirementState(r))).map(r=>({id:r.id,title:r.title,status:clientRequirementState(r),filename:r.latest?.filename||''}));}
+function clientAdmissionsStage(a){
+ if(a?.learner||a?.status==='Enrolled')return 'Enrolled';
+ if(a?.status==='Not Eligible')return 'Not Eligible';
+ const outstanding=clientOutstandingRequirements(a);
+ if(outstanding.some(r=>r.status==='Missing'||r.status==='Rejected'))return 'Documents Missing';
+ if(outstanding.some(r=>r.status==='Pending'))return 'Documents Pending';
+ if(a?.status==='Eligible')return 'Eligible';
+ return 'In review';
+}
+function clientNextAction(a,tasks=[]){
+ const open=(tasks||[]).filter(t=>t.status!=='Done').sort((x,y)=>new Date(x.due_at||0)-new Date(y.due_at||0))[0];
+ if(open)return {type:'task',label:open.title,due_at:open.due_at,task_id:open.id};
+ const outstanding=clientOutstandingRequirements(a),rejected=outstanding.find(r=>r.status==='Rejected'),missing=outstanding.find(r=>r.status==='Missing'),pending=outstanding.find(r=>r.status==='Pending');
+ if(rejected)return {type:'requirement',label:`Resolve rejected document: ${rejected.title}`,requirement_id:rejected.id};
+ if(missing)return {type:'requirement',label:`Request missing document: ${missing.title}`,requirement_id:missing.id};
+ if(pending)return {type:'review',label:`Review uploaded document: ${pending.title}`,requirement_id:pending.id};
+ if(a?.status==='Eligible'&&a?.contract?.status!=='Verified')return {type:'contract',label:'Verify learning agreement'};
+ if(a?.status==='Eligible'&&a?.contract?.status==='Verified'&&!a?.learner)return {type:'enrol',label:'Confirm enrolment'};
+ if(a?.status==='In review')return {type:'decision',label:'Record eligibility decision'};
+ return {type:'none',label:'No action'};
+}
+function clientAllowedTransitions(a){
+ if(!a||a.learner||a.status==='Enrolled')return [];
+ const allVerified=(a.requirements||[]).every(r=>clientRequirementState(r)==='Verified'),current=a.status||'In review',transitions=[];
+ if(current==='In review'){if(allVerified)transitions.push('Eligible');transitions.push('Not Eligible');}
+ if(current==='Eligible'){transitions.push('In review');if(a.contract?.status==='Verified')transitions.push('Enrolled');}
+ if(current==='Not Eligible')transitions.push('In review');
+ if(clientOutstandingRequirements(a).length&&!transitions.includes('In review'))transitions.push('In review');
+ return transitions.filter(s=>s!==current);
+}
+function clientAdmissionSummary(a,d=data){
+ const lead=(d?.leads||[]).find(l=>String(l.id)===String(a.lead_id))||null,tasks=(d?.tasks||[]).filter(t=>String(t.lead_id||'')===String(a.lead_id)&&t.status!=='Done'),stage=clientAdmissionsStage(a),outstanding=clientOutstandingRequirements(a);
+ return {...a,lead,admissions_stage:stage,outstanding_requirements:outstanding,outstanding_count:outstanding.length,next_action:clientNextAction(a,tasks),allowed_transitions:clientAllowedTransitions(a)};
 }
 function parseDisplayDate(value,endOfDay=false){
  const match=String(value||'').trim().match(/^(\d{1,2})[\/. -](\d{1,2})[\/. -](\d{4})$/);
@@ -184,15 +230,26 @@ const dueLabel=t=>t.status==='Done'?'Done':new Date(t.due_at)<new Date()?'Overdu
 const empty=(title,detail='')=>`<div class="empty">${icon('check')}<h3>${esc(title)}</h3>${esc(detail)}</div>`;
 const btn=(label,act,id='',kind='')=>`<button class="button ${kind}" data-act="${act}" data-id="${esc(id)}">${esc(label)}</button>`;
 const cardSection=()=>'';
-let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,dashboardFilterTimer=null,globalSearchTimer=null,globalSearchController=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'Unanswered',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',dashboard:{preset:'last30',from:'',to:'',programme_id:'',intake_id:'',owner_id:'',lead_source:''}},deferredInstall=null;
+let data=null,viewId=0,authMode='login',authNotice='',authEmail='',loadingCount=0,loadingTimer=null,gmailSyncRunning=false,inboxFilterTimer=null,leadFilterTimer=null,eventFilterTimer=null,dashboardFilterTimer=null,globalSearchTimer=null,globalSearchController=null,filters={search:'',stage:'All',programme:'All',source:'All',leadView:'table',planner:'Open',inbox:'All',inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',myDay:'All',notifications:'all',documentsSearch:'',documentsType:'',adminAudit:{actor:'',action:'',entity:'',from:'',to:''},dashboard:{preset:'last30',from:'',to:'',programme_id:'',intake_id:'',owner_id:'',lead_source:''}},deferredInstall=null;
 let pageLoadState={leads:false,tasks:false,events:false};
 let dashboardState={version:0,controllers:[],widgets:{}};
+let myDayState={payload:null,loading:false,error:''};
+let lead360State={details:{},tabs:{},active:{},loading:{}};
+let admissionsState={pipeline:null,stage:'In review',stagePayload:null,loading:false};
+let savedViewsState={};
+let dataQualityState={type:'duplicate_leads',summary:null,issues:[],next_cursor:'',loading:false,error:''};
+let integrationCentreState={overview:null,details:{},selected:'zoho',loading:false,error:''};
+let analyticsState={payload:null,filters:{preset:'30d',from:'',to:'',programme_id:'',intake_id:'',owner_id:'',lead_source:''},loading:false,error:''};
+let notificationsState={items:[],next_cursor:'',unread_count:null,loading:false,error:''};
+let documentsState={items:[],next_cursor:'',loading:false,error:''};
+let adminAuditState={overview:null,audit:[],next_cursor:'',loading:false,error:''};
+let globalSearchState={items:[],active:0,query:'',result:null};
 let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSearchText:new Map()};
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300,PLANNER_LIST_LIMIT=120,PLANNER_DONE_LIMIT=30;
 const GMAIL_IMPORT_ENABLED=true;
-const labels={today:'Command centre',monitoring:'Admin dashboard',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',zoho:'Zoho CRM sync',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
-const navs=[['today','home','Today'],['monitoring','chart','Admin'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom'],['zoho','link','Zoho CRM']];
+const labels={'my-day':'My Day',today:'Dashboard',notifications:'Notifications',documents:'Documents',monitoring:'Admin dashboard',analytics:'Analytics','data-quality':'Data Quality','integration-centre':'Integrations','admin-audit':'Admin & Audit',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoho:'Zoho CRM sync',automations:'Automations',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
+const navs=[['my-day','spark','My Day'],['today','home','Dashboard'],['notifications','bell','Notifications'],['documents','file','Documents'],['monitoring','chart','Admin'],['analytics','chart','Analytics'],['data-quality','shield','Data Quality'],['integration-centre','link','Integrations'],['admin-audit','shield','Admin & Audit'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['zoho','link','Zoho CRM'],['automations','settings','Automations']];
 const localUserKey='pathway_local_user';
 const localDataKey='pathway_local_data';
 const seenPages=['leads','planner','inbox','applications','events','zoom'];
@@ -286,7 +343,7 @@ function buildLocalData(user){
   applications:[],
   events:[],
   integrations:[{name:'Gmail',status:'Not connected',detail:'Connect Gmail from Settings.'},{name:'Eventbrite',status:'Not connected',detail:'Connect Eventbrite from Settings.'},{name:'Zoom',status:'Needs credentials',detail:'Add Zoom Server-to-Server OAuth credentials to enable meeting sync.'},{name:'Meta',status:'Needs credentials',detail:'Add META_ACCESS_TOKEN and META_PAGE_ID to enable Lead Ads sync.'}],
-  intakes:[{id:'I-1',programme_id:'p1',name:'January 2027'},{id:'I-2',programme_id:'p2',name:'February 2027'}],
+  intakes:[],
   audit:[],
   attribution:[],
   source_counts:[],
@@ -303,6 +360,24 @@ function getLocalData(user=getStoredUser()){
  return buildLocalData(user);
 }
 function saveLocalData(next){const clean=recalculate(next);localStorage.setItem(localDataKey,JSON.stringify(clean));return clean;}
+function localIntegrationSummary(item,now){
+ const name=item.name||'Integration',key=name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'integration',connected=item.status==='Connected',configured=connected||item.status==='Ready to connect';
+ return {id:key==='zoho-crm'?'zoho':key,name,configured,connected,health:connected?'healthy':configured?'disconnected':'unknown',sync_status:'idle',last_attempt_at:item.last_attempt_at||'',last_success_at:item.last_successful_sync||item.last_sync_at||'',last_error:item.last_error||'',records_processed:Number(item.imported||0),needs_reconnect:false,running:false,async_supported:key==='zoho-crm'||key==='zoho',reconnect_url:key==='gmail'?'/api/integrations/gmail/connect':key==='eventbrite'?'/api/integrations/eventbrite/connect':(key==='zoho-crm'||key==='zoho')?'/api/integrations/zoho/connect':'',accounts:[],detail:{message:item.detail||''}};
+}
+function localIntegrationOverviewPayload(d){
+ const generated_at=new Date().toISOString(),integrations=(d.integrations||[]).map(item=>localIntegrationSummary(item,generated_at));
+ return {generated_at,duration_ms:0,metrics:{total:integrations.length,healthy:integrations.filter(item=>item.health==='healthy').length,warning:0,error:0,disconnected:integrations.filter(item=>item.health==='disconnected').length,running:0},integrations,recent_activity:[]};
+}
+function localAnalyticsOverviewPayload(d){
+ const leads=d.leads||[],apps=d.applications||[],leadIdsWithApp=new Set(apps.map(a=>String(a.lead_id||''))),approvedIds=new Set(apps.filter(a=>['Eligible','Enrolled'].includes(a.status)||a.learner).map(a=>String(a.lead_id||''))),enrolledIds=new Set(apps.filter(a=>a.learner||a.status==='Enrolled').map(a=>String(a.lead_id||'')));
+ const progressed=leads.filter(l=>leadIdsWithApp.has(String(l.id))||!['','New lead','Lost','Not Eligible','Deferred'].includes(String(l.stage||''))).length;
+ const sourceMap=new Map(),programmeMap=new Map(),ownerMap=new Map();
+ const add=(map,key,label,l)=>{const row=map.get(key)||{label,key,leads:0,applications:0,approved:0,enrolled:0};row.leads+=1;if(leadIdsWithApp.has(String(l.id)))row.applications+=1;if(approvedIds.has(String(l.id)))row.approved+=1;if(enrolledIds.has(String(l.id))||l.stage==='Enrolled')row.enrolled+=1;map.set(key,row);};
+ leads.forEach(l=>{add(sourceMap,l.source_lead_capture||l.source_first_touch||'Other',l.source_lead_capture||l.source_first_touch||'Other',l);add(programmeMap,l.programme_id||l.programme||'none',l.programme||'No programme',l);add(ownerMap,l.owner_id||l.owner||'unassigned',l.owner||'Unassigned',l);});
+ const pct=(n,d)=>d?Math.round(n/d*1000)/10:null,stage=(id,label,value,prev)=>({id,label,value,conversion_from_previous:prev?pct(value,prev):null,drop_from_previous:prev&&pct(value,prev)!==null?100-pct(value,prev):null}),funnelStages=[stage('leads','Captured Leads',leads.length,0),stage('progressed','Progressed Leads',progressed,leads.length),stage('applications','Applications',leadIdsWithApp.size,progressed),stage('approved','Approved',approvedIds.size,leadIdsWithApp.size),stage('enrolled','Enrolled',enrolledIds.size,approvedIds.size)];
+ const perf=row=>({source:row.label,programme:row.label,owner:row.label,leads:row.leads,applications:row.applications,approved:row.approved,enrolled:row.enrolled,application_rate:pct(row.applications,row.leads),approval_rate:pct(row.approved,row.applications),enrolment_rate:pct(row.enrolled,row.leads)});
+ return {generated_at:new Date().toISOString(),filters:{preset:'local'},snapshot:{used:false,reason:'local storage'},kpis:[{label:'Captured Leads',value:leads.length},{label:'Applications',value:leadIdsWithApp.size},{label:'Approved',value:approvedIds.size},{label:'Enrolled',value:enrolledIds.size},{label:'Lead to Application',value:pct(leadIdsWithApp.size,leads.length),suffix:'%'},{label:'Median Response',value:null,suffix:' min'}],funnel:{stages:funnelStages,largest_dropoff:funnelStages.slice(1).filter(s=>s.drop_from_previous!==null).sort((a,b)=>b.drop_from_previous-a.drop_from_previous)[0]||null,conversions:{lead_to_application:pct(leadIdsWithApp.size,leads.length),application_to_approval:pct(approvedIds.size,leadIdsWithApp.size),approval_to_enrolment:pct(enrolledIds.size,approvedIds.size),lead_to_enrolment:pct(enrolledIds.size,leads.length)}},events:{applications_created:apps.length,enrolments_recorded:enrolledIds.size},response_time:{responded:0,average_minutes:null,median_minutes:null,buckets:[]},sources:[...sourceMap.values()].map(perf),programmes:[...programmeMap.values()].map(perf),owners:[...ownerMap.values()].map(row=>({owner_id:row.key,owner:row.label,cohort_leads:row.leads,open_leads:row.leads-row.enrolled,applications:row.applications,enrolled:row.enrolled,open_tasks:(d.tasks||[]).filter(t=>t.owner_id===row.key&&t.status==='Open').length,overdue_tasks:(d.tasks||[]).filter(t=>t.owner_id===row.key&&t.status==='Open'&&new Date(t.due_at)<new Date()).length,median_response_minutes:null})),ageing:[],trends:{granularity:'day',points:[]},meta:{timings:[],limitations:['Local fallback uses local workspace data only.']}};
+}
 function canUseLocal(path){return false;}
 function nextId(prefix,items){const max=items.flat().map(x=>String(x?.id||x).match(new RegExp('^'+prefix+'-(\\d+)$'))).filter(Boolean).reduce((m,x)=>Math.max(m,Number(x[1])),0);return `${prefix}-${max+1}`;}
 function numericEmailId(email){let h=0x811c9dc5;for(const ch of normalizeEmail(email)){h^=ch.charCodeAt(0);h=Math.imul(h,0x01000193)>>>0;}return String(100000000000+(h%900000000000));}
@@ -421,6 +496,61 @@ async function localApi(path,body={},method='POST'){
  if(clean==='/api/logout'){saveStoredUser(null);return {ok:true};}
  if(clean==='/api/bootstrap'){if(!user)throw new Error('Sign in to your local workspace.');return clone(saveLocalData(getLocalData(user)));}
  const d=getLocalData(user);
+ if(clean==='/api/search'&&method==='GET'){
+  const q=String(new URLSearchParams(path.split('?')[1]||'').get('q')||'').trim().toLowerCase();
+  if(q.length<2)return {query:q,groups:[],leads:[],emails:[],applications:[],tasks:[],meetings:[],calls:[]};
+  const matchText=(...parts)=>parts.join(' ').toLowerCase().includes(q),limit=5;
+  const leadRows=d.leads.filter(l=>matchText(fullName(l),l.email,l.phone,l.id,l.programme)).slice(0,limit).map(l=>({type:'lead',id:l.id,title:fullName(l),subtitle:`${l.programme||''} - ${l.stage||''}`,meta:l.email||l.phone||'',route:`leads/${l.id}`}));
+  const appRows=d.applications.filter(a=>matchText(fullName(a),a.id,a.programme,a.status)).slice(0,limit).map(a=>({type:'application',id:a.id,title:fullName(a),subtitle:a.programme||'',meta:a.status||'',route:`applications/${a.id}`}));
+  const taskRows=d.tasks.filter(t=>matchText(t.title,t.kind,t.status)).slice(0,limit).map(t=>({type:'task',id:t.id,title:t.title,subtitle:t.kind||'',meta:t.status||'',route:'planner'}));
+  const emailRows=d.emails.filter(e=>!emailIsTrashed(e)&&matchText(e.subject,e.email,fullName(e))).slice(0,limit).map(e=>({type:'email',id:e.id,title:e.subject||'Email',subtitle:fullName(e),meta:e.email||'',route:'inbox'}));
+  const meetingRows=d.events.filter(e=>matchText(e.name,e.location,e.campaign)).slice(0,limit).map(e=>({type:'meeting',id:e.id,title:e.name||'Meeting',subtitle:e.location||'',meta:e.start_at?timestamp(e.start_at):'',route:'events'}));
+  const callRows=(d.zoom?.calls||[]).filter(c=>matchText(c.caller_name,c.caller_number,c.callee_name,c.callee_number,c.lead_name)).slice(0,limit).map(c=>({type:'call',id:c.id||c.zoom_call_id,title:c.lead_name||c.caller_number||'Call',subtitle:c.direction||'',meta:c.callee_number||'',route:c.lead_id?`leads/${c.lead_id}`:'zoom'}));
+  const groups=[['Leads',leadRows],['Applications',appRows],['Tasks',taskRows],['Emails',emailRows],['Meetings',meetingRows],['Calls',callRows]].filter(([,items])=>items.length).map(([label,items])=>({label,items}));
+  return {query:q,groups,leads:leadRows,applications:appRows,tasks:taskRows,emails:emailRows,meetings:meetingRows,calls:callRows};
+ }
+ if(clean==='/api/integrations/overview'&&method==='GET')return localIntegrationOverviewPayload(d);
+ if(clean==='/api/analytics/overview'&&method==='GET')return localAnalyticsOverviewPayload(d);
+ let integrationMatch=clean.match(/^\/api\/integrations\/control\/([^/]+)\/sync$/);
+ if(integrationMatch&&method==='POST')return {provider:decodeURIComponent(integrationMatch[1]),status:'queued',jobId:`local-${Date.now()}`};
+ integrationMatch=clean.match(/^\/api\/integrations\/([^/]+)$/);
+ if(integrationMatch&&method==='GET'){
+  const overview=localIntegrationOverviewPayload(d),id=decodeURIComponent(integrationMatch[1]),integration=overview.integrations.find(item=>item.id===id)||overview.integrations[0]||null;
+  if(!integration)throw new Error('Integration not found.');
+  return {generated_at:overview.generated_at,integration,connection:{configured:integration.configured,connected:integration.connected,needs_reconnect:integration.needs_reconnect,reconnect_url:integration.reconnect_url},sync:{status:integration.sync_status,last_attempt_at:integration.last_attempt_at,last_success_at:integration.last_success_at,records_processed:integration.records_processed,running:integration.running,async_supported:integration.async_supported},history:[],recent_safe_errors:[],audit:[]};
+ }
+ if(clean==='/api/saved-views'&&method==='GET'){
+  const entity=new URLSearchParams(path.split('?')[1]||'').get('entity_type')||'';
+  return {saved_views:(d.saved_views||[]).filter(view=>view.user_id===d.user.id&&(!entity||view.entity_type===entity))};
+ }
+ if(clean==='/api/data-quality/summary'&&method==='GET'){
+  const leadIds=new Set(d.leads.map(l=>l.id)),users=new Set(d.owners.map(o=>o.id)),programmes=new Set(d.programmes.map(p=>p.id)),duplicate=(field)=>[...d.leads.reduce((map,l)=>{const key=String(field==='phone'?String(l.phone||'').replace(/\D/g,''):l[field]||'').trim().toLowerCase();if(key)(map.get(key)||map.set(key,[]).get(key)).push(l);return map;},new Map()).values()].filter(list=>list.length>1).length,invalidEmail=l=>l.email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(l.email).trim()),invalidPhone=l=>{const digits=String(l.phone||'').replace(/\D/g,'');return l.phone&&(digits.length<7||digits.length>20||/^(0{7,}|1{7,}|9{7,})$/.test(digits)||/(test|unknown|none|n\/a|no phone)/i.test(l.phone));};
+  return {generated_at:new Date().toISOString(),snapshot:{used:false,reason:'local storage'},metrics:{duplicate_leads:duplicate('email')+duplicate('phone'),missing_email:d.leads.filter(l=>!String(l.email||'').trim()).length,invalid_email:d.leads.filter(invalidEmail).length,missing_phone:d.leads.filter(l=>!String(l.phone||'').trim()).length,invalid_phone:d.leads.filter(invalidPhone).length,missing_owner:d.leads.filter(l=>!l.owner_id||!users.has(l.owner_id)).length,missing_programme:d.leads.filter(l=>!l.programme_id||!programmes.has(l.programme_id)).length,orphan_task:d.tasks.filter(t=>t.lead_id&&!leadIds.has(t.lead_id)).length,orphan_application:d.applications.filter(a=>a.lead_id&&!leadIds.has(a.lead_id)).length,orphan_email_relation:d.emails.filter(e=>e.lead_id&&!leadIds.has(e.lead_id)).length,duplicate_external_id:0,zoho_mismatch:0,stale_lead:0,stale_application:0,incomplete_application:d.applications.filter(a=>!a.lead_id||!a.programme||!a.status).length}};
+ }
+ if(clean==='/api/data-quality/issues'&&method==='GET'){
+  const params=new URLSearchParams(path.split('?')[1]||''),type=params.get('type')||'duplicate_leads',limit=Math.max(1,Math.min(Number(params.get('limit')||25),50)),cursor=Math.max(0,Number(params.get('cursor')||0)),leadIds=new Set(d.leads.map(l=>l.id)),leadRecord=l=>({id:l.id,name:fullName(l),email:l.email||'',phone:l.phone||'',owner:l.owner||'',owner_id:l.owner_id||'',programme:l.programme||'',programme_id:l.programme_id||'',stage:l.stage||'',route:`leads/${l.id}`}),issue=(record,title,why,records)=>({issue_id:`${type}:${record.id||title}`,type,severity:'review',title,why,suggested_review:'Review before making changes.',affected_count:records?records.length:1,records:records||[record]});
+  let issues=[];
+  if(type==='duplicate_leads'){for(const field of ['email','phone']){const groups=[...d.leads.reduce((map,l)=>{const key=String(field==='phone'?String(l.phone||'').replace(/\D/g,''):l[field]||'').trim().toLowerCase();if(key)(map.get(key)||map.set(key,[]).get(key)).push(l);return map;},new Map()).values()].filter(list=>list.length>1);groups.forEach(list=>issues.push(issue(leadRecord(list[0]),`Duplicate lead candidates matched by ${field}`,`Matched by exact normalized ${field}. Name-only matching is not used.`,list.map(leadRecord))));}}
+  if(type==='missing_email')issues=d.leads.filter(l=>!String(l.email||'').trim()).map(l=>issue(leadRecord(l),'Missing email address','Lead has no email address.'));
+  if(type==='invalid_email')issues=d.leads.filter(l=>l.email&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(l.email).trim())).map(l=>issue(leadRecord(l),'Invalid email format','Email does not match a basic local@domain format.'));
+  if(type==='missing_phone')issues=d.leads.filter(l=>!String(l.phone||'').trim()).map(l=>issue(leadRecord(l),'Missing phone number','Lead has no phone number.'));
+  if(type==='orphan_task')issues=d.tasks.filter(t=>t.lead_id&&!leadIds.has(t.lead_id)).map(t=>issue({id:t.id,title:t.title,missing_lead_id:t.lead_id,route:'planner'},'Orphan task','Task references a missing lead.'));
+  if(type==='orphan_application')issues=d.applications.filter(a=>a.lead_id&&!leadIds.has(a.lead_id)).map(a=>issue({id:a.id,lead_id:a.lead_id,route:`applications/${a.id}`},'Orphan application','Application references a missing lead.'));
+  if(type==='orphan_email_relation')issues=d.emails.filter(e=>e.lead_id&&!leadIds.has(e.lead_id)).map(e=>issue({id:e.id,title:e.subject,missing_lead_id:e.lead_id,route:'inbox'},'Orphan email relation','Email has a lead_id that no longer resolves.'));
+  return {issues:issues.slice(cursor,cursor+limit),next_cursor:issues.length>cursor+limit?String(cursor+limit):''};
+ }
+ if(clean==='/api/saved-views'){
+  const now=new Date().toISOString(),view={id:nextId('SV',[d.saved_views||[]]),user_id:d.user.id,entity_type:body.entity_type,name:body.name,filters:body.filters||{},is_default:Boolean(body.is_default),created_at:now,updated_at:now};
+  d.saved_views||=[];if(view.is_default)d.saved_views.forEach(item=>{if(item.user_id===d.user.id&&item.entity_type===view.entity_type)item.is_default=false;});d.saved_views.unshift(view);saveLocalData(d);return {ok:true,saved_view:view};
+ }
+ let savedViewMatch=clean.match(/^\/api\/saved-views\/([^/]+)$/);
+ if(savedViewMatch&&method==='PATCH'){
+  const view=(d.saved_views||[]).find(item=>item.id===savedViewMatch[1]&&item.user_id===d.user.id);if(!view)throw new Error('You do not have access to this saved view.');
+  Object.assign(view,body,{updated_at:new Date().toISOString()});if(view.is_default)d.saved_views.forEach(item=>{if(item.id!==view.id&&item.user_id===d.user.id&&item.entity_type===view.entity_type)item.is_default=false;});saveLocalData(d);return {ok:true,saved_view:view};
+ }
+ if(savedViewMatch&&method==='DELETE'){
+  d.saved_views=(d.saved_views||[]).filter(item=>!(item.id===savedViewMatch[1]&&item.user_id===d.user.id));saveLocalData(d);return {ok:true,deleted:{saved_views:[savedViewMatch[1]]}};
+ }
  let match=clean.match(/^\/api\/leads\/([^/]+)$/);
  if(match&&method==='GET'){const lead=leadFor(d,match[1]);return {lead:clone(lead),timeline:localTimeline(d,lead)};}
  if(match&&method==='DELETE'){const lead=leadFor(d,match[1]);d.leads=d.leads.filter(l=>l.id!==lead.id);d.tasks=d.tasks.filter(t=>t.lead_id!==lead.id);d.emails=d.emails.filter(e=>e.lead_id!==lead.id);d.applications=d.applications.filter(a=>a.lead_id!==lead.id);d.attribution=d.attribution.filter(a=>a.lead_id!==lead.id);addAudit(d,'Lead deleted','lead',lead.id,fullName(lead));saveLocalData(d);return {ok:true,deleted:{leads:[lead.id],tasks_for_lead:lead.id,emails_for_lead:lead.id,applications_for_lead:lead.id}};}
@@ -452,6 +582,30 @@ async function localApi(path,body={},method='POST'){
  if(match&&method==='PATCH'){const email=d.emails.find(e=>e.id===match[1]);if(!email)throw new Error('Email not found.');email.is_read=body.is_read!==false;email.gmail_labels=(email.gmail_labels||[]).filter(label=>label!=='UNREAD');email.gmail_label_names=(email.gmail_label_names||[]).filter(label=>String(label).toLowerCase()!=='unread');saveLocalData(d);return {ok:true,email};}
  match=clean.match(/^\/api\/emails\/([^/]+)$/);
  if(match&&method==='DELETE'){const email=d.emails.find(e=>e.id===match[1]);if(!email)throw new Error('Email not found.');d.emails=d.emails.filter(e=>e.id!==match[1]);addAudit(d,'Email deleted','lead',email.lead_id,email.subject);saveLocalData(d);return {ok:true,deleted:{emails:[match[1]]}};}
+ if(clean==='/api/admissions/pipeline'&&method==='GET'){
+  const summaries=(d.applications||[]).map(a=>clientAdmissionSummary(a,d)),stages=ADMISSIONS_STAGE_ORDER.map(stage=>({stage,count:summaries.filter(a=>a.admissions_stage===stage).length,oldest_created_at:summaries.filter(a=>a.admissions_stage===stage).sort((x,y)=>new Date(x.created_at||0)-new Date(y.created_at||0))[0]?.created_at||null})),statusMap=new Map();
+  summaries.forEach(a=>statusMap.set(a.status||'Unknown',(statusMap.get(a.status||'Unknown')||0)+1));
+  return {stages,statuses:[...statusMap.entries()].map(([status,count])=>({status,count})),total:summaries.length,performance:{aggregate_only:true}};
+ }
+ match=clean.match(/^\/api\/admissions\/stage\/([^/]+)$/);
+ if(match&&method==='GET'){
+  const stage=decodeURIComponent(match[1]),params=new URLSearchParams(path.split('?')[1]||''),limit=Math.max(1,Math.min(Number(params.get('limit')||25),100)),offset=Math.max(0,Number(params.get('offset')||0)),items=(d.applications||[]).map(a=>clientAdmissionSummary(a,d)).filter(a=>a.admissions_stage===stage).sort((x,y)=>new Date(y.created_at||0)-new Date(x.created_at||0)),page=items.slice(offset,offset+limit);
+  return {stage,applications:page,limit,offset,loaded:offset+page.length,has_more:offset+page.length<items.length,next_offset:offset+page.length};
+ }
+ if(clean==='/api/applications'&&method==='GET')return {applications:(d.applications||[]).map(a=>clientAdmissionSummary(a,d)),total:(d.applications||[]).length,loaded:(d.applications||[]).length,has_more:false};
+ match=clean.match(/^\/api\/applications\/([^/]+)$/);
+ if(match&&method==='GET'){
+  const app=clientAdmissionSummary(applicationFor(d,match[1]),d),lead=d.leads.find(l=>String(l.id)===String(app.lead_id))||null,tasks=d.tasks.filter(t=>String(t.lead_id||'')===String(app.lead_id)&&t.status!=='Done'),activity=d.audit.filter(a=>(a.entity==='application'&&String(a.entity_id)===String(app.id))||(a.entity==='lead'&&String(a.entity_id)===String(app.lead_id))).slice(0,40);
+  return {application:app,lead,requirements:app.requirements||[],outstanding_requirements:app.outstanding_requirements,tasks,activity,stage_history:activity,next_action:app.next_action,allowed_transitions:app.allowed_transitions,enrolment:app.learner||null};
+ }
+ match=clean.match(/^\/api\/applications\/([^/]+)\/status$/);
+ if(match&&method==='PATCH'){
+  const app=applicationFor(d,match[1]),lead=leadFor(d,app.lead_id),target=body.status,allowed=clientAllowedTransitions(app);
+  if(!['In review','Eligible','Not Eligible','Enrolled'].includes(target))throw new Error('Unknown application status.');
+  if(!allowed.includes(target))throw new Error(`Cannot move application from ${app.status||'In review'} to ${target}.`);
+  if(target==='Enrolled'&&!body.external_reference)throw new Error('Enrolment reference is required.');
+  app.status=target;if(target==='Enrolled')app.learner={external_reference:body.external_reference,enrolled_at:now,note:body.note};lead.stage=target==='Eligible'?'Ready for Enrolment':target==='Not Eligible'?'Not Eligible':target==='Enrolled'?'Enrolled':'Eligibility';addAudit(d,'Application status changed','application',app.id,target);saveLocalData(d);return {ok:true,application:clientAdmissionSummary(app,d),lead,allowed_transitions:clientAllowedTransitions(app)};
+ }
  if(clean==='/api/applications'){const lead=leadFor(d,body.lead_id),intake=d.intakes.find(i=>i.id===body.intake_id),already=Boolean(body.already_enrolled),documentsNeedSignature=Boolean(body.documents_need_signature),evidenceVerified=already&&!documentsNeedSignature,appId=nextId('A',[d.applications]),learner=already?{external_reference:body.learner_reference||'Already enrolled',enrolled_at:now,note:body.enrolment_note||'Added as an existing enrolled learner.'}:null;lead.stage=already?'Enrolled':'Application Submitted';const app={id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:intake?.name||'Next intake',status:already?'Enrolled':'In review',manager:d.user.name,member:lead.first_name,created_at:now,contract:evidenceVerified?{status:'Verified',note:'Existing enrolled learner documents uploaded.'}:{status:'Draft',note:documentsNeedSignature?'Documents uploaded for learner signature.':undefined},requirements:localApplicationRequirements(appId,body.evidence_files,evidenceVerified),learner};d.applications.push(app);let attribution=null;if(already){attribution={...lead,programme:app.programme,snapshot:{first_touch:lead.source_first_touch,lead_capture:lead.source_lead_capture,conversion_source:lead.source_lead_capture}};d.attribution.unshift(attribution);}addAudit(d,already?'Existing learner enrolled':'Application started','lead',lead.id);saveLocalData(d);return {ok:true,application:app,lead,attribution};}
  match=clean.match(/^\/api\/applications\/([^/]+)\/evidence$/);
  if(match){const app=applicationFor(d,match[1]),req=app.requirements.find(r=>r.id===body.requirement_id);if(!req)throw new Error('Requirement not found.');const version=(req.latest?.version||0)+1;req.latest={id:nextId('ER',[d.applications.flatMap(a=>a.requirements.map(r=>r.latest).filter(Boolean))]),filename:body.filename,version,status:'Pending',reviewer:null,content_base64:body.content_base64};if(!app.learner)app.status='In review';saveLocalData(d);return {ok:true,application:app};}
@@ -566,9 +720,19 @@ async function runGmailSyncAuto(){
  clearTimeout(loadingTimer);
  $('#global-loader')?.classList.remove('show');
  try{
-  const result=await api('/api/integrations/gmail/sync',{max_results:25,latest:true});
+  const totals={imported:0,replies_resolved:0,labels_refreshed:0,scanned:0};
+  let result=null,rounds=0;
+  do{
+   result=await api('/api/integrations/gmail/sync',{latest:true,skip_trash:false});
+   totals.imported+=Number(result.imported||0);
+   totals.replies_resolved+=Number(result.replies_resolved||0);
+   totals.labels_refreshed+=Number(result.labels_refreshed||0);
+   totals.scanned+=Number(result.scanned||0);
+   rounds+=1;
+  }while(result?.has_more&&!result?.quota_limited&&rounds<20);
   await refresh({silent:true});
-  toast(`Gmail newest sync complete. ${result.imported||0} imported, ${result.replies_resolved||0} replies matched, ${result.labels_refreshed||0} labels fixed.`);
+  const suffix=result?.has_more?' Gmail still has more pages; run sync again to continue.':'';
+  toast(`Gmail full sync complete. ${totals.imported} imported, ${totals.replies_resolved} replies matched, ${totals.labels_refreshed} labels fixed.${suffix}`);
  }catch(error){
   if(/quota|rate|limit/i.test(error.message)){
    toast('Google quota reached. Try again later.');
@@ -581,7 +745,7 @@ async function runGmailSyncAuto(){
 }
 async function refresh(options={}){
  try{
-  data=await api('/api/bootstrap',undefined,'POST',{silent:Boolean(options.silent)});pageLoadState={leads:false,tasks:false,events:false};if(data?.user)saveStoredUser(data.user);ensureSeenBaseline();rebuildClientIndexes(data);await render();
+  data=await api('/api/bootstrap',undefined,'POST',{silent:Boolean(options.silent)});pageLoadState={leads:false,tasks:false,events:false};if(data?.user)saveStoredUser(data.user);ensureSeenBaseline();rebuildClientIndexes(data);await loadNotificationCount();await render();
  }
  catch(error){
   throw error;
@@ -591,7 +755,7 @@ function inboxFilterKey(){
  return JSON.stringify({status:filters.inbox,label:filters.inboxLabel,search:filters.inboxSearch.trim(),day:displayDateToIso(filters.inboxDay)||filters.inboxDay,date_filter:filters.inboxDate,sort:filters.inboxSort});
 }
 function inboxQuery(cursor=''){
- const params=new URLSearchParams({limit:'50',status:filters.inbox,label:filters.inboxLabel,date_filter:filters.inboxDate,sort:filters.inboxSort});
+ const params=new URLSearchParams({limit:'all',status:filters.inbox,label:filters.inboxLabel,date_filter:filters.inboxDate,sort:filters.inboxSort});
  const search=filters.inboxSearch.trim(),day=displayDateToIso(filters.inboxDay)||filters.inboxDay.trim();
  if(search)params.set('search',search);
  if(day)params.set('day',day);
@@ -761,11 +925,30 @@ function navButton(n,current){
  const count=current===n[0]?0:pageNewCount(n[0]);
  return `<button class="nav-button ${current===n[0]?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;
 }
+function canUseTeamViews(){return Boolean(data.permissions?.review||data.permissions?.admin||data.permissions?.developer||['monitor','manager','admissions','qa','director','admin'].includes(String(data.user?.role||'').toLowerCase()));}
+function pulledRecordCount(){
+ const totals=[
+  data?.dashboard?.leads?.total,
+  data?.dashboard?.tasks?.open,
+  data?.dashboard?.tasks?.done,
+  data?.email_paging?.total,
+  data?.event_paging?.total,
+  data?.zoom?.call_paging?.total
+ ].map(value=>Number(value)).filter(Number.isFinite);
+ const loaded=['leads','tasks','emails','applications','events','audit','attribution'].reduce((sum,key)=>sum+Number(data?.[key]?.length||0),0)+Number(data?.zoom?.calls?.length||0);
+ return loaded+totals.reduce((sum,value)=>sum+Math.max(0,value),0);
+}
+function workspaceDataNotice(){
+ if(!data||pulledRecordCount()>0)return '';
+ if(!(pageLoadState.leads||pageLoadState.tasks||pageLoadState.events||data.email_paging||data.dashboard))return '';
+ return '<div class="notice warning">No pulled workspace records are loaded yet. This workspace only shows live/imported data; missing fields are displayed as "-".</div>';
+}
 function shell(content,current){
- const navCurrent=current.split('/')[0],user=data.user,bell=`${icon('bell')}${overdueEmailCount()?`<span class="alert-count">${overdueEmailCount()}</span>`:''}`;
- return `<aside class="sidebar">${logo()}<div class="eyebrow">Workspace</div>${navs.map(n=>navButton(n,navCurrent)).join('')}<div class="eyebrow">Manage</div>${navButton(['settings','settings','Settings'],navCurrent)}${['admin','qa','director'].includes(user.role)?navButton(['audit','shield','Audit trail'],navCurrent):''}<div class="sidebar-footer"><div class="workspace-tag"><b>${data.demo?'Demo workspace':'Team workspace'}</b>${data.demo?'Fictional records · Explore freely':'Apprenticeship operations'}</div><div class="sidebar-user">${avatar(user)}<div><b>${esc(user.name)}</b><div class="muted small">${esc(user.role)}</div></div><button class="text-button" data-act="logout" aria-label="Sign out">${icon('logout')}</button></div></div></aside>
- <div class="main-shell"><header class="topbar">${logo()}<div class="breadcrumb">WORKSPACE <span>/</span> <b>${esc(labels[navCurrent]||'Lead 360')}</b></div><div class="global-search">${icon('search')}<input id="global-search" aria-label="Search workspace" autocomplete="off" placeholder="Search leads, emails, applications..." value=""><div id="global-search-results" class="global-search-results" hidden></div></div><div class="top-actions"><span class="small muted"><span class="status-dot"></span>${data.demo?'Demo workspace':'Connected to workspace'}</span><button class="icon-button" data-act="notifications" aria-label="View overdue actions">${icon('bell')}</button>${avatar(user)}</div></header>${navigator.onLine?'':'<div class="offline-banner">Offline — reconnect to view and save changes.</div>'}<main class="workspace">${content}</main></div>
- <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['monitoring','chart','Admin'],['leads','users','Leads'],['planner','calendar','Planner'],['more','grid','More']].map(n=>{const count=navCurrent===n[0]?0:pageNewCount(n[0]);return `<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','monitoring','leads','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;}).join('')}</nav>`;
+ const navCurrent=current.split('/')[0],user=data.user,bellCount=notificationsState.unread_count??overdueEmailCount(),bell=`${icon('bell')}${bellCount?`<span class="alert-count">${bellCount}</span>`:''}`;
+ const visibleNavs=navs.filter(n=>(!['data-quality','admin-audit'].includes(n[0])||data.permissions?.review||data.permissions?.admin||data.permissions?.developer)&&(n[0]!=='integration-centre'||canUseTeamViews()));
+ return `<aside class="sidebar">${logo()}<div class="eyebrow">Workspace</div>${visibleNavs.map(n=>navButton(n,navCurrent)).join('')}<div class="eyebrow">Manage</div>${navButton(['settings','settings','Settings'],navCurrent)}${['admin','qa','director'].includes(user.role)?navButton(['audit','shield','Audit trail'],navCurrent):''}<div class="sidebar-footer"><div class="workspace-tag"><b>${data.demo?'Demo workspace':'Team workspace'}</b>${data.demo?'Workspace records':'Apprenticeship operations'}</div><div class="sidebar-user">${avatar(user)}<div><b>${esc(user.name)}</b><div class="muted small">${esc(user.role)}</div></div><button class="text-button" data-act="logout" aria-label="Sign out">${icon('logout')}</button></div></div></aside>
+ <div class="main-shell"><header class="topbar">${logo()}<div class="breadcrumb">WORKSPACE <span>/</span> <b>${esc(labels[navCurrent]||'Lead 360')}</b></div><div class="global-search">${icon('search')}<input id="global-search" aria-label="Search workspace" autocomplete="off" placeholder="Search leads, emails, applications..." value=""><div id="global-search-results" class="global-search-results" hidden></div></div><div class="top-actions"><span class="small muted"><span class="status-dot"></span>${data.demo?'Demo workspace':'Connected to workspace'}</span><button class="icon-button" data-act="notifications" aria-label="Open Notification Centre">${bell}</button>${avatar(user)}</div></header>${navigator.onLine?'':'<div class="offline-banner">Offline — reconnect to view and save changes.</div>'}<main class="workspace">${content}</main></div>
+ <nav class="mobile-nav" aria-label="Main navigation">${[['today','home','Today'],['leads','users','Leads'],['inbox','mail','Inbox'],['planner','calendar','Planner'],['more','grid','More']].map(n=>{const count=navCurrent===n[0]?0:pageNewCount(n[0]);return `<button class="mobile-tab ${navCurrent===n[0]||(n[0]==='more'&&!['today','leads','inbox','planner'].includes(navCurrent))?'active':''}" data-go="${n[0]}">${icon(n[1])}${n[2]}${count?`<span class="nav-count">${count}</span>`:''}</button>`;}).join('')}</nav>`;
 }
 function taskRow(t){return `<div class="task-row"><button class="check-button ${t.status==='Done'?'done':''}" data-act="complete" data-id="${t.id}" ${!data.permissions.sales?'disabled':''} aria-label="Complete ${esc(t.title)}">${t.status==='Done'?icon('check'):''}</button><div class="task-copy ${t.status==='Done'?'done':''}"><strong>${esc(t.title)}</strong><p><button class="text-button" data-go="leads/${t.lead_id}">${esc(fullName(t))}</button> · ${esc(t.kind)}</p></div>${badge(dueLabel(t),dueLabel(t)==='Overdue'?'red':'')}${data.permissions.sales?`<button class="icon-button danger" data-act="delete-task" data-id="${esc(t.id)}" aria-label="Delete ${esc(t.title)}">${icon('close')}</button>`:''}</div>`;}
 function plannerLead(t){return data.leads.find(l=>l.id===t.lead_id)||t;}
@@ -1062,20 +1245,176 @@ function scheduleDashboardLoad(only=null){
  clearTimeout(dashboardFilterTimer);
  dashboardFilterTimer=setTimeout(()=>loadDashboardWidgets(only),120);
 }
-function cockpitToday(){
+function myDayApiUrl(){
+ const start=new Date();start.setHours(0,0,0,0);
+ const tomorrow=new Date(start.getTime()+msDay);
+ const params=new URLSearchParams({today_start:start.toISOString(),tomorrow_start:tomorrow.toISOString()});
+ return `/api/dashboard/my-day?${params.toString()}`;
+}
+async function loadMyDay(force=false){
+ if(myDayState.loading)return;
+ if(myDayState.payload&&!force)return;
+ myDayState={...myDayState,loading:true,error:''};
+ if(route().split('/')[0]==='my-day')render();
+ try{
+  const payload=await api(myDayApiUrl(),undefined,'GET',{silent:true});
+  myDayState={payload,loading:false,error:''};
+ }catch(error){
+  myDayState={...myDayState,loading:false,error:error.message||'Unable to load My Day.'};
+ }
+ if(route().split('/')[0]==='my-day')render();
+}
+function myDayMetricCard(key,label,iconName,routeName){
+ const payload=myDayState.payload||{},value=Number(payload.summary?.[key]||0);
+ return `<button class="stat my-day-stat" data-go="${esc(routeName||'my-day')}"${cardSection('My Day KPI')}><div class="stat-head">${esc(label)}${icon(iconName)}</div><div class="stat-value">${fmtNumber(value)}</div><div class="stat-foot">${value?'Needs attention':'Clear right now'}</div></button>`;
+}
+function myDayTypeLabel(type=''){
+ return {lead_follow_up:'Leads',at_risk_lead:'Leads',unanswered_email:'Emails',overdue_task:'Tasks',task_due_today:'Tasks',application_action:'Applications',meeting_today:'Meetings'}[type]||'Other';
+}
+function myDayTypeIcon(type=''){
+ return {lead_follow_up:'phone',at_risk_lead:'users',unanswered_email:'mail',overdue_task:'clock',task_due_today:'calendar',application_action:'file',meeting_today:'video'}[type]||'bell';
+}
+function myDayPriorityKind(priority=''){
+ return priority==='high'?'red':priority==='medium'?'amber':'blue';
+}
+function myDayFilteredActions(){
+ const actions=myDayState.payload?.priority_actions||[],filter=filters.myDay||'All';
+ return filter==='All'?actions:actions.filter(action=>myDayTypeLabel(action.type)===filter);
+}
+function myDayActionCard(action){
+ const type=myDayTypeLabel(action.type),kind=myDayPriorityKind(action.priority);
+ return `<article class="my-day-action ${kind}"${cardSection('My Day action')}>
+  <div class="my-day-action-icon">${icon(myDayTypeIcon(action.type))}</div>
+  <div class="my-day-action-main">
+   <div class="my-day-action-top"><strong>${esc(action.title||'Action')}</strong>${badge(type,kind)}</div>
+   <p>${esc(action.subtitle||'Needs attention')}${action.related?` · ${esc(action.related)}`:''}</p>
+   <span>${action.due_at?esc(timestamp(action.due_at)):'No due date recorded'}</span>
+  </div>
+  <button class="button soft" data-act="my-day-open" data-id="${esc(action.entity_id||'')}">Open</button>
+ </article>`;
+}
+function myDayFilters(){
+ const counts=(myDayState.payload?.priority_actions||[]).reduce((map,action)=>{const key=myDayTypeLabel(action.type);map[key]=(map[key]||0)+1;return map;},{});
+ const labels=['All','Leads','Emails','Tasks','Applications','Meetings'];
+ return `<div class="chips my-day-filters">${labels.map(label=>`<button class="chip ${filters.myDay===label?'active':''}" data-act="my-day-filter" data-id="${esc(label)}">${esc(label)}${label!=='All'&&counts[label]?` (${counts[label]})`:''}</button>`).join('')}</div>`;
+}
+function myDay(){
  const greeting=new Date().getHours()<12?'Good morning':'Good afternoon';
- setTimeout(()=>{if(route()==='today')loadDashboardWidgets(DASHBOARD_INITIAL_WIDGETS);},0);
- return heading(`${greeting}, ${data.user.name.split(' ')[0]}`,'Sales + Operations Cockpit',data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
- `${dashboardFilterBar()}<div class="dashboard-cockpit">
-  ${dashboardCard('attention','Needs Your Attention','The operational queue to clear first','dashboard-primary')}
-  ${dashboardCard('work','My Work Today','Overdue, due today and next actions','dashboard-primary')}
-  ${dashboardCard('priority','Priority Leads','Deterministic signals and reasons','dashboard-primary')}
-  ${dashboardCard('kpis','KPI Summary','Six live database counters')}
-  ${dashboardCard('pipeline','Sales Pipeline','Stage counts, conversion and stuck leads')}
-  ${dashboardCard('source','Source Performance','Lead source to enrolment outcomes')}
-  ${dashboardCard('integrations','Integration Health','Safe sync status only')}
-  ${dashboardCard('activity','Recent Activity','Latest audit events')}
- </div><p class="bottom-note">Dashboard widgets load independently from PostgreSQL and do not use bootstrap analytics.</p>`;
+ if(!myDayState.payload&&!myDayState.loading&&!myDayState.error)setTimeout(()=>loadMyDay(),0);
+ const payload=myDayState.payload,actions=myDayFilteredActions();
+ return heading(`${greeting}, ${data.user.name.split(' ')[0]}`,`${date(new Date(),{weekday:'long',day:'numeric',month:'long'})} · What should I do next?`,`<button class="button soft" data-act="my-day-refresh">${icon('clock')}Refresh</button>`)+
+ `<div class="stats-grid my-day-stats">
+  ${myDayMetricCard('follow_up_leads','Needs follow-up','phone','leads')}
+  ${myDayMetricCard('unanswered_emails','Unanswered','mail','inbox')}
+  ${myDayMetricCard('applications_needing_action','Applications','file','applications')}
+  ${myDayMetricCard('overdue_tasks','Overdue tasks','clock','planner')}
+  ${myDayMetricCard('meetings_today','Meetings today','video','planner')}
+  ${myDayMetricCard('at_risk_leads','At risk','bell','leads')}
+ </div>
+ <section class="panel my-day-panel"><div class="panel-header"><div><h2>Priority Actions</h2><p>${payload?.generated_at?`Updated ${timestamp(payload.generated_at)}`:'Loading your operational queue'}</p></div>${icon('bell')}</div><div class="panel-body">
+  ${myDayFilters()}
+  ${myDayState.loading?dashboardLoading():myDayState.error?`<div class="empty">${icon('close')}<h3>Unable to load My Day.</h3><p>${esc(myDayState.error)}</p></div>`:actions.length?`<div class="my-day-actions">${actions.map(myDayActionCard).join('')}</div>`:empty(payload?.empty?'You’re all caught up.':'No actions in this filter','New due work, replies and reviews will appear here.')}
+ </div></section>
+ <p class="bottom-note">My Day uses one compact backend endpoint and only records allowed by your permissions.</p>`;
+}
+function todayExactPanelHeader(ic,title,sub='',action=''){
+ return `<div class="today-exact-card-head"><div class="today-exact-title-wrap"><span class="today-exact-card-icon">${icon(ic)}</span><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div></div>${action||`<button class="today-exact-link" data-go="more">View all ${icon('chevron')}</button>`}</div>`;
+}
+function todayExactWorkIcon(item){
+ const source=String(item.source||item.kind||'').toLowerCase();
+ if(source.includes('mail')||source.includes('inbox'))return 'mail';
+ if(source.includes('event'))return 'calendar';
+ if(source.includes('zoom')||source.includes('video'))return 'calendar';
+ if(source.includes('application'))return 'file';
+ if(source.includes('cloud')||source.includes('zoho'))return 'link';
+ return 'bell';
+}
+function todayExactWork(){
+ const open=(data.tasks||[]).filter(t=>t.status==='Open').slice().sort((a,b)=>new Date(a.due_at||0)-new Date(b.due_at||0)).slice(0,9);
+ return `<section class="today-exact-card today-exact-work">${todayExactPanelHeader('grid','My Work Today','','<button class="today-exact-link" data-go="planner">View all '+icon('chevron')+'</button>')}
+  <div class="today-exact-list">${open.map(t=>`<div class="today-work-row">
+   <span class="today-check"></span>
+   <span class="today-square">${icon(todayExactWorkIcon(t))}</span>
+   <div class="today-row-main"><strong title="${esc(t.title)}">${esc(t.title)}</strong><p>${esc(t.programme||fullName(t)||t.kind||'Workspace')}</p></div>
+   <time>${esc(time(t.due_at)||date(t.due_at,{day:'numeric',month:'short',year:'numeric'}))}</time>
+  </div>`).join('')||empty('No work due','Your planner is clear.')}</div>
+ </section>`;
+}
+function todayExactInboxStats(){
+ const emails=(data.emails||[]).filter(e=>!emailIsTrashed(e));
+ const unanswered=emails.filter(emailNeedsResponse);
+ const overdue=unanswered.filter(emailIsOverdue);
+ const now=Date.now(),resolved24=emails.filter(e=>!emailNeedsResponse(e)&&responseDate(e)&&now-responseDate(e)<=msDay).length;
+ const responded=emails.map(e=>({start:emailResponseStartAt(e),end:responseDate(e)})).filter(e=>e.start&&e.end&&e.end>=e.start);
+ const avgHours=responded.length?responded.reduce((sum,e)=>sum+(e.end-e.start)/3600000,0)/responded.length:0;
+ const trend=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((label,index)=>{
+  const samples=responded.filter(e=>((new Date(e.end).getDay()+6)%7)===index).map(e=>(e.end-e.start)/3600000);
+  return {label,hours:samples.length?avg(samples):0.12};
+ });
+ return {unanswered:unanswered.length,overdue:overdue.length,resolved24,avgHours,trend};
+}
+function todayExactInbox(){
+ const stats=todayExactInboxStats(),max=Math.max(1,...stats.trend.map(point=>point.hours));
+ const tiles=[['mail',stats.unanswered,'Unanswered','red','inbox'],['clock',stats.overdue,'Overdue','amber','inbox'],['check',stats.resolved24,'Resolved (24h)','green','inbox']];
+ return `<section class="today-exact-card today-exact-inbox">${todayExactPanelHeader('mail','Inbox Response Tracking','','<button class="today-exact-link" data-go="inbox">View all '+icon('chevron')+'</button>')}
+  <div class="today-inbox-stats">${tiles.map(t=>`<button class="today-inbox-stat ${t[3]}" data-go="${t[4]}"><span>${icon(t[0])}</span><strong>${fmtNumber(t[1])}</strong><em>${esc(t[2])}</em></button>`).join('')}</div>
+  <div class="today-chart-head"><span>Response Time Trend <em>(hours)</em></span><b>Avg. ${stats.avgHours.toFixed(1)}h</b></div>
+  <div class="today-response-chart">${stats.trend.map(point=>`<div><i style="height:${Math.max(4,Math.min(96,point.hours/max*96))}%"></i><span>${esc(point.label)}</span></div>`).join('')}</div>
+ </section>`;
+}
+function todayExactActivityTone(row){
+ const text=String(`${row.action||''} ${row.entity||''}`).toLowerCase();
+ if(text.includes('fail')||text.includes('error'))return 'red';
+ if(text.includes('complete')||text.includes('confirm'))return 'green';
+ if(text.includes('application')||text.includes('document'))return 'amber';
+ if(text.includes('move')||text.includes('lead'))return 'purple';
+ return 'primary';
+}
+function todayExactActivity(){
+ const rows=(data.audit||[]).slice().sort((a,b)=>new Date(b.occurred_at||b.created_at||0)-new Date(a.occurred_at||a.created_at||0)).slice(0,6);
+ return `<section class="today-exact-card today-exact-activity">${todayExactPanelHeader('clock','Recent Activity','','<button class="today-exact-link" data-go="audit">View all '+icon('chevron')+'</button>')}
+  <div class="today-exact-list">${rows.map(row=>`<button class="today-activity-row" data-go="audit">
+   <span class="today-square ${todayExactActivityTone(row)}">${icon(todayExactActivityTone(row)==='green'?'check':todayExactActivityTone(row)==='red'?'bell':todayExactActivityTone(row)==='amber'?'file':todayExactActivityTone(row)==='purple'?'users':'mail')}</span>
+   <div class="today-row-main"><strong>${esc(row.action||'Workspace activity')}</strong><p>${esc(row.actor||row.user||'Workspace')} · ${esc(row.entity||row.module||'Activity')}</p></div>
+   <time>${esc(timestamp(row.occurred_at||row.created_at||new Date().toISOString()))}</time>
+  </button>`).join('')||empty('No recent activity','Activity will appear here.')}</div>
+ </section>`;
+}
+function todayExactAttention(){
+ const emails=(data.emails||[]).filter(e=>!emailIsTrashed(e)),overdueEmails=emails.filter(e=>emailNeedsResponse(e)&&emailIsOverdue(e));
+ const open=(data.tasks||[]).filter(t=>t.status==='Open'),overdueTasks=open.filter(t=>taskDueBucket(t)==='Overdue').slice(0,2);
+ const items=[];
+ if(overdueEmails.length){const oldest=overdueEmails.slice().sort((a,b)=>new Date(a.received_at||0)-new Date(b.received_at||0))[0];items.push({kind:'overdue',title:`${overdueEmails.length} emails past response SLA`,detail:`Oldest unanswered thread is "${oldest.subject||'Inbox message'}".`,meta:'Inbox',age:timestamp(oldest.received_at),action:'Open inbox',route:'inbox'});}
+ overdueTasks.forEach(t=>items.push({kind:'urgent',title:t.title,detail:t.description||'Task assigned for today.',meta:'Planner',age:timestamp(t.due_at),action:'Open task',route:'planner'}));
+ const integration=(data.integrations||[]).find(i=>String(i.status||'').toLowerCase()!=='connected');
+ if(integration)items.push({kind:'urgent',title:`${integration.name||'Integration'} needs attention`,detail:integration.detail||'Review sync status and reconnect if needed.',meta:'Integrations',age:'Now',action:'Review sync',route:'settings'});
+ const dueToday=open.filter(t=>taskDueBucket(t)==='Today').length;
+ if(dueToday)items.push({kind:'due',title:`${dueToday} task${dueToday===1?'':'s'} due today`,detail:'Clear these before end of day.',meta:'Planner',age:'Today',action:'Open planner',route:'planner'});
+ return `<section class="today-exact-card today-exact-attention">${todayExactPanelHeader('bell','Needs your attention','A prioritised queue of actions for today',`<span class="today-pill">${items.length}</span>`)}
+  <div class="today-attention-list">${items.slice(0,6).map(item=>`<button class="today-attention-row ${item.kind}" data-go="${esc(item.route)}">
+   <span class="today-dot"></span><div class="today-row-main"><strong>${esc(item.title)} <em>${esc(item.kind==='overdue'?'Overdue':item.kind==='urgent'?'Urgent':'Due soon')}</em></strong><p>${esc(item.detail)}</p><small>${esc(item.meta)} · ${esc(item.age)}</small></div><span class="today-row-action">${esc(item.action)} ${icon('chevron')}</span>
+  </button>`).join('')||empty('You are all caught up','No priority actions for today.')}</div>
+ </section>`;
+}
+function todayExactTeam(){
+ const owners=data.owners?.length?data.owners:[...new Set((data.leads||[]).map(l=>l.owner).filter(Boolean))].map((name,index)=>({id:name,name,role:index?'Sales Representative':'Admissions Manager'}));
+ const emails=data.emails||[],tasks=data.tasks||[],leads=data.leads||[];
+ const rows=owners.slice(0,6).map(owner=>{
+  const keys=new Set([String(owner.id||''),String(owner.name||'')].filter(Boolean));
+  const ownerLeads=leads.filter(l=>keys.has(String(l.owner_id||''))||keys.has(String(l.owner||'')));
+  const ownerTasks=tasks.filter(t=>keys.has(String(t.owner_id||''))||ownerLeads.some(l=>String(l.id)===String(t.lead_id)));
+  const ownerEmails=emails.filter(e=>keys.has(String(e.owner_id||''))||keys.has(String(e.owner||''))||ownerLeads.some(l=>String(l.id)===String(e.lead_id)));
+  return {name:owner.name||owner.label||'Unknown user',role:owner.role||'Admissions & Sales',open:ownerTasks.filter(t=>t.status==='Open').length,overdue:ownerTasks.filter(t=>t.status==='Open'&&taskDueBucket(t)==='Overdue').length,leads:ownerLeads.filter(l=>!['Enrolled','Lost','Deferred','Not Eligible'].includes(l.stage)).length,unanswered:ownerEmails.filter(emailNeedsResponse).length};
+ });
+ return `<section class="today-exact-card today-exact-team">${todayExactPanelHeader('users','Team overview','Workload across the team - open tasks, overdue items, owned leads and unanswered emails',`<span class="today-pill">${rows.length} people</span>`)}
+  <div class="today-team-table"><table><thead><tr><th>Team member</th><th>Open tasks</th><th>Overdue</th><th>Active leads</th><th>Unanswered</th></tr></thead><tbody>${rows.map(row=>`<tr><td><div class="today-team-person">${avatar({first_name:row.name.split(' ')[0],last_name:row.name.split(' ').slice(1).join(' ')})}<span><strong>${esc(row.name)}</strong><small>${esc(row.role)}</small></span></div></td><td>${fmtNumber(row.open)}</td><td><b class="${row.overdue?'hot':''}">${fmtNumber(row.overdue)}</b></td><td>${fmtNumber(row.leads)}</td><td><b class="${row.unanswered?'warm':''}">${fmtNumber(row.unanswered)}</b></td></tr>`).join('')}</tbody></table></div>
+ </section>`;
+}
+function cockpitToday(){
+ return `<div class="today-exact">
+  <div class="today-exact-top">${todayExactWork()}${todayExactInbox()}${todayExactActivity()}</div>
+  <div class="today-exact-bottom">${todayExactAttention()}${todayExactTeam()}</div>
+ </div>`;
 }
 function ensureAdminDashboardLoad(){
  if(route().split('/')[0]!=='monitoring')return;
@@ -1203,10 +1542,50 @@ function leadSourceOptions(){
  const values=[...(data.sources||[]),...data.leads.flatMap(l=>[l.source_first_touch,l.source_lead_capture,...(l.source_history||[]).map(item=>item.source)]).filter(Boolean)];
  return ['All',...new Set(values)].sort((a,b)=>a==='All'?-1:b==='All'?1:a.localeCompare(b));
 }
+function savedViewEntityFilters(entity){
+ if(entity==='leads')return {search:filters.search,stage:filters.stage,programme:filters.programme,source:filters.source};
+ if(entity==='inbox')return {status:filters.inbox,label:filters.inboxLabel,search:filters.inboxSearch,day:filters.inboxDay,date_filter:filters.inboxDate,sort:filters.inboxSort};
+ if(entity==='tasks')return {status:filters.planner};
+ if(entity==='applications')return {stage:admissionsState.stage};
+ return {};
+}
+async function loadSavedViews(entity){
+ const state=savedViewsState[entity];
+ if(state?.loaded||state?.loading)return state?.items||[];
+ savedViewsState[entity]={items:[],loading:true,loaded:false,error:'',default_applied:Boolean(state?.default_applied)};
+ try{
+  const result=await api(`/api/saved-views?entity_type=${encodeURIComponent(entity)}`,undefined,'GET',{silent:true});
+  savedViewsState[entity]={items:result.saved_views||[],loading:false,loaded:true,error:'',default_applied:Boolean(state?.default_applied)};
+ }catch(error){
+  savedViewsState[entity]={items:[],loading:false,loaded:true,error:error.message||'Unable to load saved views.',default_applied:Boolean(state?.default_applied)};
+ }
+ return savedViewsState[entity].items;
+}
+function savedViewsBarHtml(entity){
+ const state=savedViewsState[entity]||{items:[],loading:false,loaded:false};
+ const views=state.items||[];
+ return `<div class="saved-views-bar" id="saved-views-${esc(entity)}"><div class="saved-views-list">${views.map(view=>`<button class="chip ${view.is_default?'active':''}" data-act="saved-view-apply" data-id="${esc(view.id)}" data-entity="${esc(entity)}">${esc(view.name)}</button>`).join('')||`<span class="small muted">${state.loading?'Loading saved views...':'No saved views yet'}</span>`}</div><div class="saved-views-actions"><button class="button soft" data-act="saved-view-save" data-entity="${esc(entity)}">${icon('plus')}Save View</button>${views.length?`<button class="button" data-act="saved-view-manage" data-entity="${esc(entity)}">Manage</button>`:''}</div></div>`;
+}
+function renderSavedViewsBar(entity){
+ const node=document.getElementById(`saved-views-${entity}`);
+ if(node)node.outerHTML=savedViewsBarHtml(entity);
+}
+function savedViewsBar(entity){
+ const state=savedViewsState[entity]||{items:[],loading:false,loaded:false};
+ if(!state.loaded&&!state.loading)setTimeout(async()=>{const views=await loadSavedViews(entity);const next=savedViewsState[entity];const defaultView=views.find(view=>view.is_default);if(defaultView&&!next.default_applied){next.default_applied=true;return applySavedView(entity,defaultView);}renderSavedViewsBar(entity);},0);
+ return savedViewsBarHtml(entity);
+}
+async function applySavedView(entity,view){
+ const f=view.filters||{};
+ if(entity==='leads'){Object.assign(filters,{search:f.search||'',stage:f.stage||'All',programme:f.programme||'All',source:f.source||'All'});await refreshLeadResults(true);return render();}
+ if(entity==='inbox'){Object.assign(filters,{inbox:f.status||'All',inboxLabel:f.label||'All',inboxSearch:f.search||'',inboxDay:f.day||'',inboxDate:f.date_filter||'received',inboxSort:f.sort||'newest'});await loadInboxEmails(true);return render();}
+ if(entity==='tasks'){filters.planner=f.status||'Open';return render();}
+ if(entity==='applications'){admissionsState.stage=f.stage||f.admissions_stage||'In review';admissionsState.stagePayload=null;return render();}
+}
 async function leads(){
  await ensureLeadsLoaded();
  return heading('People, with potential.',`${dashboardNumbers().leadsTotal.toLocaleString()} leads · Every opportunity, one connected record.`,data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
- `${pageNewNotice('leads')}<div class="toolbar lead-toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search leads" placeholder="Search name, employer or email…" value="${esc(filters.search)}"></div><select id="programme-filter" aria-label="Filter by programme"><option value="All">All programmes</option>${data.programmes.map(p=>`<option value="${p.id}" ${filters.programme===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select><select id="source-filter" aria-label="Filter by source">${leadSourceOptions().map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source==='All'?'All sources':source)}</option>`).join('')}</select><select id="stage-filter" aria-label="Filter by stage"><option>All stages</option>${data.stages.map(s=>`<option ${filters.stage===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div><div id="lead-results">${leadResults()}</div>`;
+ `${pageNewNotice('leads')}${savedViewsBar('leads')}<div class="toolbar lead-toolbar"><div class="search">${icon('search')}<input id="lead-search" aria-label="Search leads" placeholder="Search name, employer or email…" value="${esc(filters.search)}"></div><select id="programme-filter" aria-label="Filter by programme"><option value="All">All programmes</option>${data.programmes.map(p=>`<option value="${p.id}" ${filters.programme===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select><select id="source-filter" aria-label="Filter by source">${leadSourceOptions().map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source==='All'?'All sources':source)}</option>`).join('')}</select><select id="stage-filter" aria-label="Filter by stage"><option>All stages</option>${data.stages.map(s=>`<option ${filters.stage===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div><div id="lead-results">${leadResults()}</div>`;
 }
 function leadMatchesSource(l){
  if(filters.source==='All')return true;
@@ -1303,14 +1682,85 @@ function journeyTouchRows(lead,app=null,snapshot=null){
 function journeyTouchDefinition(lead,app=null,snapshot=null){
  return `<dl class="definition">${journeyTouchRows(lead,app,snapshot).map(row=>`<dt>${esc(row.label)}</dt><dd><strong>${esc(row.value)}</strong><div class="small muted">${esc(row.description)}</div></dd>`).join('')}</dl>`;
 }
+const lead360Tabs=[['timeline','Timeline','clock'],['emails','Emails','mail'],['tasks','Tasks','check'],['application','Application','file'],['meetings','Meetings','video'],['calls','Calls','phone'],['notes','Notes','link'],['files','Files','download']];
+async function getLead360Detail(id){
+ if(!lead360State.details[id])lead360State.details[id]=await api('/api/leads/'+id);
+ return lead360State.details[id];
+}
+async function loadLead360Tab(id,tab,force=false){
+ const key=`${id}:${tab}`;
+ if(lead360State.tabs[key]&&!force)return lead360State.tabs[key];
+ lead360State.loading[key]=true;
+ try{
+  const result=await api(`/api/leads/${encodeURIComponent(id)}/${tab}?limit=30`,undefined,'GET',{silent:true});
+  lead360State.tabs[key]=result;
+  return result;
+ }finally{lead360State.loading[key]=false;}
+}
+function lead360TabButton(id,[tab,label,ic],active){
+ const summary=lead360State.details[id]?.summary||{},count=summary[tab==='application'?'applications':tab];
+ return `<button class="lead360-tab ${active===tab?'active':''}" data-act="lead-tab" data-id="${esc(id)}" data-tab="${esc(tab)}">${icon(ic)}<span>${label}</span>${Number.isFinite(Number(count))?`<b>${Number(count)}</b>`:''}</button>`;
+}
+function lead360Timeline(items=[]){
+ return `<div class="timeline">${items.map(t=>`<div class="timeline-item"><div class="small">${timestamp(t.occurred_at)} Â· ${esc(t.source)}</div><h3>${esc(t.summary)}</h3><div class="timeline-meta">${esc(t.actor||'Imported')} Â· ${esc(t.verification||'Saved')} Â· ${Math.round(Number(t.confidence||1)*100)}% source confidence</div></div>`).join('')||empty('No activity yet','New emails, tasks, calls and notes will appear here.')}</div>`;
+}
+function lead360Emails(payload={}){
+ const emails=payload.emails||payload.items||[];
+ return `<div class="lead360-list">${emails.map(email=>`<div class="person-row"><div class="person-main"><strong>${esc(email.subject||'(No subject)')}</strong><p>${timestamp(email.received_at||email.date)} Â· ${esc(email.direction||'email')} ${email.response_at?'Â· responded':'Â· awaiting response'}</p></div><button class="icon-button" data-act="open-email" data-id="${esc(email.id)}" aria-label="Open email">${icon('mail')}</button></div>`).join('')||empty('No emails for this lead')}</div>`;
+}
+function lead360Tasks(payload={}){
+ const tasks=payload.tasks||payload.items||[];
+ return `<div class="lead360-list">${tasks.map(task=>taskRow(task)).join('')||empty('No tasks for this lead')}</div>`;
+}
+function lead360Applications(payload={}){
+ const apps=payload.applications||payload.items||[];
+ return `<div class="lead360-list">${apps.map(a=>{const summary=clientAdmissionSummary(a),outstanding=summary.outstanding_requirements||[];return `<div class="person-row"><div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme||'No programme')} · ${esc(a.intake||'No intake')} · ${esc(outstanding.length)} outstanding · Updated ${date(a.updated_at||a.created_at)}</p></div>${badge(summary.admissions_stage||a.status)}<button class="icon-button" data-go="applications/${esc(a.id)}" aria-label="Open application">${icon('chevron')}</button></div>`;}).join('')||empty('No application yet','Start an application when this lead is ready for review.')}</div>`;
+}
+function lead360Meetings(payload={}){
+ const meetings=payload.events||payload.items||[];
+ return `<div class="lead360-list">${meetings.map(m=>`<div class="person-row"><div class="person-main"><strong>${esc(m.name||m.title||'Meeting')}</strong><p>${timestamp(m.start_at)} Â· ${esc(m.location||m.provider||'Zoom')}</p></div>${m.zoom_link||m.meeting_link?`<a class="icon-button" href="${esc(m.zoom_link||m.meeting_link)}" target="_blank" rel="noreferrer" aria-label="Open meeting">${icon('link')}</a>`:''}</div>`).join('')||empty('No meetings linked to this lead')}</div>`;
+}
+function lead360Calls(payload={}){
+ const calls=payload.calls||payload.items||[];
+ return `<div class="lead360-list">${calls.map(call=>`<div class="person-row"><div class="person-main"><strong>${esc(call.outcome||call.direction||'Call')}</strong><p>${timestamp(call.started_at)} Â· ${esc(call.caller_number||'')}${call.callee_number?` â†’ ${esc(call.callee_number)}`:''}</p></div><span class="badge">${esc(call.duration||'Saved')}</span></div>`).join('')||empty('No saved calls linked to this lead')}</div>`;
+}
+function lead360Notes(payload={}){
+ const notes=payload.notes||payload.items||[];
+ return `<div class="lead360-list">${notes.map(note=>`<div class="timeline-item"><div class="small">${timestamp(note.occurred_at)} Â· ${esc(note.actor||'Workspace')}</div><h3>${esc(note.note||note.action||'Note added')}</h3></div>`).join('')||empty('No notes yet')}</div>`;
+}
+function lead360Files(payload={}){
+ const files=payload.files||payload.items||[];
+ return `<div class="lead360-list">${files.map(file=>`<div class="person-row"><div class="person-main"><strong>${esc(file.title||'Evidence')}</strong><p>${esc(file.filename)} Â· Version ${esc(file.version||1)} Â· ${esc(file.status||'Pending')}</p></div><a class="icon-button" href="${esc(file.download_url||'/api/evidence/'+encodeURIComponent(file.id)+'/file')}" download aria-label="Download file">${icon('download')}</a></div>`).join('')||empty('No files uploaded for this lead')}</div>`;
+}
+function lead360TabContent(id,active){
+ const key=`${id}:${active}`,payload=lead360State.tabs[key],loading=lead360State.loading[key];
+ if(loading)return `<div class="panel-body">${empty('Loading section')}</div>`;
+ if(!payload)return `<div class="panel-body">${empty('Choose this section to load it')}</div>`;
+ const html=active==='timeline'?lead360Timeline(payload.items):active==='emails'?lead360Emails(payload):active==='tasks'?lead360Tasks(payload):active==='application'?lead360Applications(payload):active==='meetings'?lead360Meetings(payload):active==='calls'?lead360Calls(payload):active==='files'?lead360Files(payload):lead360Notes(payload);
+ return `<div class="panel-body">${html}${payload.has_more?`<button class="button full" data-act="lead-tab-more" data-id="${esc(id)}" data-tab="${esc(active)}">Load more</button>`:''}</div>`;
+}
 async function leadDetail(id){
- const detail=await api('/api/leads/'+id),l=detail.lead,app=data.applications.find(a=>a.lead_id===id);
+ const detail=await getLead360Detail(id),l=detail.lead,active=lead360State.active[id]||'timeline';
+ if(active==='timeline'&&!lead360State.tabs[`${id}:timeline`])lead360State.tabs[`${id}:timeline`]={items:detail.recent_activity||detail.timeline||[],has_more:false,next_cursor:''};
+ const app=(lead360State.tabs[`${id}:application`]?.applications||[])[0]||null;
  return `${pageBreadcrumb('Lead 360')}<button class="text-button" data-go="leads">${icon('back')} All leads</button><div class="detail-header">${avatar(l,0,true)}<div><h1>${esc(fullName(l))}</h1><p>${esc(l.employer)} · ${esc(l.city||'Location not recorded')}</p></div>${badge(l.stage)}</div>
- <div class="actions">${data.permissions.sales?`${btn('Log a call','log-call',id,'primary')}${btn('Add follow-up','add-task',id)}${btn('Update stage','update-lead',id)}${btn('Add programme','add-programme',id)}${btn('Record email','record-email',id)}${btn('Delete lead','delete-lead',id,'danger')}`:''}${data.permissions.sales||data.permissions.review?btn('Add note','add-note',id):''}${!app&&(data.permissions.sales||data.permissions.review)?btn('Start application','apply',id,'soft'):''}${app?'<button class="button soft" data-go="applications">View application</button>':''}</div>${leadEmailGroups(l)}
+ <div class="actions">${data.permissions.sales?`${btn('Log a call','log-call',id,'primary')}${btn('Add follow-up','add-task',id)}${btn('Update stage','update-lead',id)}${btn('Add programme','add-programme',id)}${btn('Record email','record-email',id)}${btn('Delete lead','delete-lead',id,'danger')}`:''}${data.permissions.sales||data.permissions.review?btn('Add note','add-note',id):''}${!app&&(data.permissions.sales||data.permissions.review)?btn('Start application','apply',id,'soft'):''}${app?`<button class="button soft" data-go="applications/${esc(app.id)}">View application</button>`:''}</div>${leadEmailGroups(l)}
  <div class="detail-grid"><div><section class="panel"><div class="panel-header"><h2>The Golden Record</h2>${icon('users')}</div><div class="panel-body"><dl class="definition"><dt>Programme</dt><dd>${esc(l.programme)} · ${esc(l.level)}</dd><dt>Email</dt><dd>${esc(l.email)}</dd><dt>Phone</dt><dd>${esc(l.phone||'Not provided')}</dd><dt>Owner</dt><dd>${esc(l.owner)}</dd><dt>Contact consent</dt><dd>${esc(l.contact_permission)}</dd><dt>Priority</dt><dd>${esc(l.priority)}</dd><dt>Next action</dt><dd>${l.next_action_at?timestamp(l.next_action_at):'No open follow-up'}</dd><dt>Person ID</dt><dd class="mono">${esc(l.person_id)}</dd></dl></div></section>
  <section class="panel mt"><div class="panel-header"><div><h2>Enrolled journey touches</h2><p>Start, second and end touch descriptions for attribution.</p></div>${icon('link')}</div><div class="panel-body">${journeyTouchDefinition(l,app)}<dl class="definition"><dt>Captured</dt><dd>${timestamp(l.created_at)}</dd></dl><div class="info-strip">${icon('shield')}Source history is preserved with your record.</div></div></section>
  <section class="panel mt"><div class="panel-header"><h2>Open actions</h2></div><div class="panel-body">${data.tasks.filter(t=>t.lead_id===id&&t.status==='Open').map(taskRow).join('')||empty('No open actions')}</div></section></div>
  <section class="panel"><div class="panel-header"><div><h2>A connected journey</h2><p>Activity for this programme opportunity</p></div>${icon('clock')}</div><div class="panel-body timeline">${detail.timeline.map(t=>`<div class="timeline-item"><div class="small">${timestamp(t.occurred_at)} · ${esc(t.source)}</div><h3>${esc(t.summary)}</h3><div class="timeline-meta">${esc(t.actor||'Imported')} · ${esc(t.verification)} · ${Math.round(t.confidence*100)}% source confidence</div></div>`).join('')||empty('The journey starts here')}</div></section></div>`;
+}
+async function leadDetail360(id){
+ const detail=await getLead360Detail(id),l=detail.lead,active=lead360State.active[id]||'timeline';
+ if(active==='timeline'&&!lead360State.tabs[`${id}:timeline`])lead360State.tabs[`${id}:timeline`]={items:detail.recent_activity||detail.timeline||[],has_more:false,next_cursor:''};
+ const app=(lead360State.tabs[`${id}:application`]?.applications||[])[0]||null;
+ return `${pageBreadcrumb('Lead 360')}<button class="text-button" data-go="leads">${icon('back')} All leads</button><div class="detail-header">${avatar(l,0,true)}<div><h1>${esc(fullName(l))}</h1><p>${esc(l.employer)} Â· ${esc(l.city||'Location not recorded')}</p></div>${badge(l.stage)}</div>
+ <div class="actions">${data.permissions.sales?`${btn('Log a call','log-call',id,'primary')}${btn('Add follow-up','add-task',id)}${btn('Update stage','update-lead',id)}${btn('Add programme','add-programme',id)}${btn('Record email','record-email',id)}${btn('Delete lead','delete-lead',id,'danger')}`:''}${data.permissions.sales||data.permissions.review?btn('Add note','add-note',id):''}${!app&&(data.permissions.sales||data.permissions.review)?btn('Start application','apply',id,'soft'):''}${app?`<button class="button soft" data-go="applications/${esc(app.id)}">View application</button>`:''}</div>${leadEmailGroups(l)}
+ <div class="stats-grid lead360-stats">${stat('Open tasks',detail.summary?.open_tasks||0,'Actions still active','check')}${stat('Unanswered emails',detail.summary?.unanswered_emails||0,'Need a response','mail')}${stat('Applications',detail.summary?.applications||0,'Programme records','file')}${stat('Meetings',detail.summary?.meetings||0,'Linked sessions','video')}</div>
+ <div class="detail-grid"><div><section class="panel"><div class="panel-header"><h2>The Golden Record</h2>${icon('users')}</div><div class="panel-body"><dl class="definition"><dt>Programme</dt><dd>${esc(l.programme)} Â· ${esc(l.level)}</dd><dt>Email</dt><dd>${esc(l.email)}</dd><dt>Phone</dt><dd>${esc(l.phone||'Not provided')}</dd><dt>Owner</dt><dd>${esc(l.owner)}</dd><dt>Contact consent</dt><dd>${esc(l.contact_permission)}</dd><dt>Priority</dt><dd>${esc(l.priority)}</dd><dt>Next action</dt><dd>${detail.next_action?.id?timestamp(detail.next_action.due_at||detail.next_action.occurred_at):l.next_action_at?timestamp(l.next_action_at):'No open follow-up'}</dd><dt>Person ID</dt><dd class="mono">${esc(l.person_id)}</dd></dl></div></section>
+ <section class="panel mt"><div class="panel-header"><div><h2>Enrolled journey touches</h2><p>Start, second and end touch descriptions for attribution.</p></div>${icon('link')}</div><div class="panel-body">${journeyTouchDefinition(l,app)}<dl class="definition"><dt>Captured</dt><dd>${timestamp(l.created_at)}</dd></dl><div class="info-strip">${icon('shield')}Source history is preserved with your record.</div></div></section>
+ <section class="panel mt"><div class="panel-header"><h2>Next action</h2></div><div class="panel-body">${detail.next_action?.id?taskRow(detail.next_action):empty('No open actions')}</div></section></div>
+ <section class="panel lead360-panel"><div class="lead360-tabs">${lead360Tabs.map(tab=>lead360TabButton(id,tab,active)).join('')}</div><div class="panel-header"><div><h2>${esc(lead360Tabs.find(tab=>tab[0]===active)?.[1]||'Timeline')}</h2><p>Loaded only when this section is opened.</p></div>${icon('clock')}</div>${lead360TabContent(id,active)}</section></div>`;
 }
 async function planner(){
  await Promise.allSettled([ensureTasksLoaded(),ensureLeadsLoaded(),ensureEventsLoaded()]);
@@ -1318,14 +1768,14 @@ async function planner(){
  const filtered=plannerTasks(),emails=(data.emails||[]).filter(emailNeedsResponse).sort((a,b)=>new Date(emailDueAt(a)||0)-new Date(emailDueAt(b)||0)).slice(0,6),events=(data.events||[]).filter(e=>eventDateValue(e)>=new Date()).sort((a,b)=>eventDateValue(a)-eventDateValue(b)).slice(0,5);
  const listLimit=filters.planner==='Done'?PLANNER_DONE_LIMIT:PLANNER_LIST_LIMIT;
  return heading('Planner.','Tasks, email follow-ups and event actions in one place.',data.permissions.sales?`<button class="button primary" data-act="add-task">${icon('plus')}New task</button>`:'')+
- `${pageNewNotice('planner')}<div class="stats-grid planner-stats">${stat('Overdue',overdue.length,'Needs attention now','clock')}${stat('Due today',today.length,'Calls and follow-ups','calendar')}${stat('Upcoming',upcoming.length,'Scheduled next steps','arrow')}${stat('Completed',done.length,'Closed actions','check')}</div>
+ `${pageNewNotice('planner')}${savedViewsBar('tasks')}<div class="stats-grid planner-stats">${stat('Overdue',overdue.length,'Needs attention now','clock')}${stat('Due today',today.length,'Calls and follow-ups','calendar')}${stat('Upcoming',upcoming.length,'Scheduled next steps','arrow')}${stat('Completed',done.length,'Closed actions','check')}</div>
  <div class="planner-layout">
   <section class="planner-main">
    <div class="planner-board">${plannerColumn('Overdue','Open actions past their due date.',overdue,'overdue')}${plannerColumn('Today','Work to clear before end of day.',today,'today')}${plannerColumn('Upcoming','Next scheduled conversations.',upcoming.slice(0,120),'upcoming')}</div>
   </section>
   <aside class="planner-side">
    <section class="panel planner-email-panel"><div class="panel-header"><div><h2>Email follow-ups</h2><p>Incoming messages still waiting.</p></div><button class="text-button" data-go="inbox">Inbox ${icon('arrow')}</button></div><div class="panel-body planner-mini-list">${emails.map(plannerEmailCard).join('')||empty('No email follow-ups')}</div></section>
-   <section class="panel mt planner-events-panel"><div class="panel-header"><div><h2>Upcoming events</h2><p>Sessions that may create follow-up work.</p></div><button class="text-button" data-go="events">Events ${icon('arrow')}</button></div><div class="panel-body planner-mini-list">${events.map(plannerEventCard).join('')||empty('No upcoming events')}</div></section>
+   <section class="panel mt planner-events-panel"><div class="panel-header"><div><h2>Upcoming events</h2><p>Sessions that may create follow-up work.</p></div></div><div class="panel-body planner-mini-list">${events.map(plannerEventCard).join('')||empty('No upcoming events')}</div></section>
   </aside>
   <div class="planner-task-list-panel"><div class="chips planner-chips planner-list-filter">${['Open','Overdue','Today','Upcoming','Done','All'].map(s=>`<button class="chip ${filters.planner===s?'active':''}" data-act="planner-filter" data-id="${s}">${s}</button>`).join('')}</div><section class="panel"><div class="panel-header"><div><h2>${esc(filters.planner)} task list</h2><p>${filtered.length} ${filtered.length===1?'task':'tasks'} in this view</p></div>${icon('calendar')}</div><div class="panel-body planner-list">${filtered.slice(0,listLimit).map(plannerTaskCard).join('')||empty('Nothing here right now','Create a task or change the filter.')}</div>${filtered.length>listLimit?`<div class="crm-more">Showing latest ${listLimit} tasks. Use the filter chips to narrow the list.</div>`:''}</section></div>
  </div>`;
@@ -1345,14 +1795,42 @@ function applicationCard(a){
  return `<article class="app-card"><div class="email-header">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(a.programme)} · ${esc(a.intake)}</p></div>${status}</div>${learner}<button class="text-button" data-go="leads/${a.lead_id}">Open Lead 360 ${icon('arrow')}</button></article>`;
 }
 async function applications(){
- const result=await api('/api/applications?limit=50',undefined,'GET',{silent:true});
- data.applications=result.applications||[];
+ admissionsState.pipeline=await api('/api/admissions/pipeline',undefined,'GET',{silent:true});
+ const firstNonEmpty=(admissionsState.pipeline.stages||[]).find(s=>s.count>0)?.stage||admissionsState.stage||'In review';
+ if(!ADMISSIONS_STAGE_ORDER.includes(admissionsState.stage))admissionsState.stage=firstNonEmpty;
+ if(!admissionsState.stagePayload||admissionsState.stagePayload.stage!==admissionsState.stage)await loadAdmissionsStage(admissionsState.stage,0);
+ const payload=admissionsState.stagePayload||{applications:[]},apps=payload.applications||[];
+ data.applications=apps;
  const canAdd=data.permissions.sales||data.permissions.review;
  const action=canAdd?`<button class="button primary" data-act="add-application">${icon('plus')}Manual application</button>`:'';
- return heading('Enrolled learner applications.','Confirmed learner records, evidence and enrolment snapshots.',action)+
-  pageNewNotice('applications')+
-  (data.demo?'<div class="notice">Demo evidence requirements are examples. Your admissions team must configure programme and intake rules before live use.</div>':'')+
-  `<div class="application-grid">${data.applications.map(applicationCard).join('')}</div>${data.applications.length?'':empty('No enrolled applications yet','Enrolled leads will appear here with their evidence documents.')}`;
+ return heading('Admissions workflow.','Lead to application, documents, review, decision and enrolment.',action)+
+  pageNewNotice('applications')+savedViewsBar('applications')+
+  (data.demo?'<div class="notice">Evidence requirements must be configured from real programme and intake rules before live use.</div>':'')+
+  `<div class="stats-grid admissions-stage-grid">${(admissionsState.pipeline.stages||[]).map(admissionsStageCard).join('')}</div>
+  <section class="panel table-wrap mt"><div class="panel-header"><div><h2>${esc(admissionsState.stage)}</h2><p>${fmtNumber(apps.length)} loaded from the selected stage</p></div>${icon('file')}</div><table><thead><tr><th>Applicant</th><th>Programme</th><th>Status</th><th>Owner</th><th>Requirements</th><th>Next action</th><th></th></tr></thead><tbody>${apps.map(admissionsRow).join('')}</tbody></table>${apps.length?'':empty('No applications in this stage','Open another stage or create an application from a lead.')}${payload.has_more?`<div class="crm-more"><button class="button" data-act="admissions-more" data-id="${esc(admissionsState.stage)}">Load more</button></div>`:''}</section>`;
+}
+function admissionsStageCard(stage){
+ const active=admissionsState.stage===stage.stage;
+ return `<button class="pipeline-stage ${active?'active':''}" data-act="admissions-stage" data-id="${esc(stage.stage)}"><span>${esc(stage.stage)}</span><strong>${fmtNumber(stage.count||0)}</strong><small>${stage.oldest_created_at?`Oldest ${date(stage.oldest_created_at)}`:'No records'}</small></button>`;
+}
+function admissionsRow(a){
+ const lead=a.lead||(data.leads||[]).find(l=>String(l.id)===String(a.lead_id))||{};
+ return `<tr><td><strong>${esc(fullName(a))}</strong><div class="small muted">${esc(lead.email||'No email')} · ${esc(a.id)}</div></td><td>${esc(a.programme||'No programme')}<div class="small muted">${esc(a.intake||'No intake')}</div></td><td>${badge(a.status||'In review')}</td><td>${esc(a.manager||lead.owner||'Unassigned')}</td><td>${esc(a.outstanding_count||0)} outstanding</td><td>${esc(a.next_action?.label||'No action')}</td><td><button class="icon-button" data-go="applications/${esc(a.id)}" aria-label="Open application">${icon('chevron')}</button></td></tr>`;
+}
+async function loadAdmissionsStage(stage=admissionsState.stage,offset=0){
+ admissionsState.stage=stage;
+ const result=await api(`/api/admissions/stage/${encodeURIComponent(stage)}?limit=25&offset=${offset}`,undefined,'GET',{silent:true});
+ admissionsState.stagePayload=offset?{...result,applications:[...(admissionsState.stagePayload?.applications||[]),...(result.applications||[])]}:result;
+ return admissionsState.stagePayload;
+}
+async function applicationDetail(id){
+ const result=await api(`/api/applications/${encodeURIComponent(id)}`,undefined,'GET',{silent:true}),a=result.application,lead=result.lead||{};
+ const actionButtons=[...(result.allowed_transitions||[]).map(status=>`<button class="button ${status==='Eligible'?'primary':''}" data-act="application-transition" data-id="${esc(a.id)}" data-status="${esc(status)}">${esc(status)}</button>`),data.permissions.review?btn('Verify agreement','contract',a.id):'',data.permissions.review?btn('Confirm enrolment','enrol',a.id,'soft'):''].filter(Boolean).join('');
+ return heading('Application detail.','One canonical application record with documents, tasks and stage history.',`<button class="button" data-go="applications">${icon('arrow')}Pipeline</button>`)+
+ `<section class="panel"><div class="panel-header"><div><h2>${esc(fullName(a))}</h2><p>${esc(a.programme||'No programme')} · ${esc(a.intake||'No intake')}</p></div>${badge(a.admissions_stage||a.status)}</div><div class="stats-grid">${stat('Status',a.status||'In review','Production application value','file')}${stat('Outstanding',a.outstanding_count||0,'Documents or reviews','clock')}${stat('Stage age',a.stage_age?.age_days??'n/a',a.stage_age?.source||'No reliable transition audit','calendar')}${stat('Next action',a.next_action?.label||'No action','Deterministic rule','check')}</div><div class="actions">${actionButtons||'<span class="small muted">No available status transitions.</span>'}</div></section>
+ <div class="dashboard-grid mt"><section class="panel"><div class="panel-header"><div><h2>Applicant</h2><p>${esc(lead.email||'No linked email')}</p></div><button class="text-button" data-go="leads/${esc(a.lead_id)}">Lead 360 ${icon('arrow')}</button></div><div class="panel-body"><div class="person-row">${avatar(a)}<div class="person-main"><strong>${esc(fullName(a))}</strong><p>${esc(lead.stage||'No lead stage')} · ${esc(lead.owner||a.manager||'Unassigned')}</p></div></div></div></section><section class="panel"><div class="panel-header"><div><h2>Enrolment</h2><p>${result.enrolment?'Confirmed':'Not confirmed yet'}</p></div>${icon('shield')}</div><div class="panel-body">${result.enrolment?`<div class="info-strip">${icon('shield')}Reference ${esc(result.enrolment.external_reference||'Saved')}</div><p class="small muted">${timestamp(result.enrolment.enrolled_at)}</p>`:empty('No enrolment record','The existing application enrol endpoint will save the learner reference.')}</div></section></div>
+ <section class="panel mt"><div class="panel-header"><div><h2>Requirements checklist</h2><p>Uses the existing application requirements and evidence records.</p></div>${icon('file')}</div><div class="requirements">${(result.requirements||[]).map(r=>applicationRequirement(a,r)).join('')||empty('No requirements configured')}</div></section>
+ <div class="dashboard-grid mt"><section class="panel"><div class="panel-header"><div><h2>Open tasks</h2><p>Shared with My Day and planner.</p></div>${icon('check')}</div><div class="panel-body">${(result.tasks||[]).map(taskRow).join('')||empty('No open tasks')}</div></section><section class="panel"><div class="panel-header"><div><h2>Stage history</h2><p>Audit-backed when available.</p></div>${icon('clock')}</div><div class="panel-body lead360-list">${(result.stage_history||[]).map(item=>`<div class="timeline-item"><div class="small">${timestamp(item.at)} · ${esc(item.actor||'Workspace')}</div><h3>${esc(item.action||'Application activity')}</h3><p>${esc(item.source||'audit')}</p></div>`).join('')||empty('No stage history yet')}</div></section></div>`;
 }
 function requirement(a,r){return `<div class="requirement"><div class="requirement-top">${icon('file')}<span>${esc(r.title)}</span>${badge(r.latest?.status||'Missing',!r.latest?'amber':'')}</div>${r.latest?`<p class="small">${esc(r.latest.filename)} · Version ${r.latest.version}${r.latest.reviewer?' · Reviewed by '+esc(r.latest.reviewer):''}</p>`:''}<div class="actions">${data.permissions.sales||data.permissions.review?`<button class="button" data-act="upload" data-id="${a.id}" data-req="${r.id}">${r.latest?'Upload new version':'Upload document'}</button>`:''}${r.latest&&data.permissions.review?`<a class="button" href="/api/evidence/${r.latest.id}/file" download>Download</a>${btn('Review','review-evidence',r.latest.id)}`:''}${r.latest&&(data.permissions.sales||data.permissions.review)?btn('Delete evidence','delete-evidence',r.latest.id,'danger'):''}</div></div>`;}
 async function attribution(){const result=await api('/api/attribution?limit=100',undefined,'GET',{silent:true});data.attribution=result.attribution||[];return heading('Know where progress begins.','Trace acquisition through to confirmed enrolment.')+`<div class="dashboard-grid"><section class="panel"><div class="panel-header"><h2>Acquisition sources</h2></div><div class="panel-body source-bars">${sourceBars()}<p class="bottom-note">One lead is counted for each programme opportunity.</p></div></section><section class="panel"><div class="panel-header"><h2>First-touch outcomes</h2></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>Enrolled</th></tr></thead><tbody>${data.source_counts.map(s=>`<tr><td>${esc(s.source)}</td><td>${s.leads}</td><td>${s.enrolled}</td></tr>`).join('')}</tbody></table></div></section></div><section class="panel mt"><div class="panel-header"><div><h2>Enrolment snapshots</h2><p>Saved at confirmation · First-touch model</p></div>${icon('shield')}</div><div class="panel-body">${data.attribution.map(s=>`<div class="person-row">${avatar(s)}<div class="person-main"><strong>${esc(fullName(s))}</strong><p>${esc(s.programme)}<br>First: ${esc(s.snapshot.first_touch)} · Capture: ${esc(s.snapshot.lead_capture)}<br>Conversion: ${esc(s.snapshot.conversion_source)}</p></div>${badge('100% '+s.snapshot.first_touch,'green')}</div>`).join('')||empty('No enrolment snapshots yet','A snapshot is saved automatically when enrolment is confirmed.')}</div></section>`;}
@@ -1594,11 +2072,11 @@ function zohoRecordsPanel(payload){
  const tabs=modules.map(item=>`<span class="badge">${esc(item.module)} ${fmtNumber(item.loaded ?? item.total ?? 0)}</span>`).join('');
  const rows=modules.flatMap(item=>(item.records||[]).map(record=>({module:item.module,...record}))).slice(0,previewLimit);
  const detail=payload?.preview_limited?`Opening this page reads only the latest ${fmtNumber(previewLimit)} stored records. Full sync still saves everything in the database.`:'Leads, Contacts, Accounts, Deals, Tasks, Calls, Events, Campaigns and Notes stored locally.';
- return `<section class="panel mt"><div class="panel-header"><div><h2>Zoho CRM records</h2><p>${esc(detail)}</p></div><button class="button soft" data-act="zoho-full-sync">${icon('arrow')}Full resync</button></div><div class="panel-body"><div class="actions">${tabs}</div>${payload?.error?`<div class="notice warning">${esc(payload.error)}</div>`:''}<div id="zoho-sync-status">${zohoSyncProgress({moduleResults})}</div><div class="table-wrap"><table><thead><tr><th>Module</th><th>Name</th><th>Status</th><th>Owner</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.module)}</td><td><strong>${esc(row.title||row.name||row.id)}</strong><div class="small muted">${esc(row.email||row.company||row.phone||'')}</div></td><td>${esc(row.status||'')}</td><td>${esc(row.owner||'')}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No Zoho records loaded yet','Run a sync after connecting Zoho CRM.')}</div></div></section>`;
+ return `<section class="panel mt"><div class="panel-header"><div><h2>Zoho CRM records</h2><p>${esc(detail)}</p></div><button class="button soft" data-act="zoho-sync">${icon('arrow')}Sync changes</button></div><div class="panel-body"><div class="actions">${tabs}</div>${payload?.error?`<div class="notice warning">${esc(payload.error)}</div>`:''}<div id="zoho-sync-status">${zohoSyncProgress({moduleResults})}</div><div class="table-wrap"><table><thead><tr><th>Module</th><th>Name</th><th>Status</th><th>Owner</th></tr></thead><tbody>${rows.map(row=>`<tr><td>${esc(row.module)}</td><td><strong>${esc(row.title||row.name||row.id)}</strong><div class="small muted">${esc(row.email||row.company||row.phone||'')}</div></td><td>${esc(row.status||'')}</td><td>${esc(row.owner||'')}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No Zoho records loaded yet','Run a sync after connecting Zoho CRM.')}</div></div></section>`;
 }
 function zohoSyncProgress(status={}){
  const moduleResults=status.moduleResults||{};
- const rows=Object.entries(moduleResults).map(([module,result])=>`<div class="monitoring-list-row"><span>${esc(module)}</span><b>${fmtNumber(result.added||0)} added / ${fmtNumber(result.updated||0)} updated</b></div>`).join('');
+ const rows=Object.entries(moduleResults).map(([module,result])=>`<div class="monitoring-list-row"><span>${esc(module)}</span><b>${fmtNumber(result.scanned||0)} processed / ${fmtNumber(result.added||0)} inserted / ${fmtNumber(result.updated||0)} updated / ${fmtNumber(result.unchanged||0)} unchanged</b></div>`).join('');
  const state=status.status?`<div class="notice">${esc(status.status)}${status.progress_percent!==undefined?` · ${esc(status.progress_percent)}%`:''}</div>`:'';
  return `<div class="zoho-sync-progress">${state}${rows?`<div class="monitoring-list">${rows}</div>`:''}</div>`;
 }
@@ -1635,7 +2113,7 @@ async function zohoPage(){
  const statusLabel=connected?'Connected':configured?'Ready to connect':'Needs credentials';
  const statusKind=connected?'green':configured?'amber':'red';
  const actions=connected
-  ? `<button class="button primary" data-act="zoho-full-sync">${icon('arrow')}Full resync</button><button class="button soft" data-act="zoho-connect">${icon('link')}Reconnect</button>`
+  ? `<button class="button primary" data-act="zoho-sync">${icon('arrow')}Sync changes</button><button class="button soft" data-act="zoho-connect">${icon('link')}Reconnect</button>`
   : configured
     ? `<button class="button primary" data-act="zoho-connect">${icon('link')}Connect Zoho</button>`
     : `<button class="button" data-act="zoho-help">${icon('settings')}Setup details</button>`;
@@ -1687,11 +2165,225 @@ function integrationActions(i){
   return `<div class="actions"><button class="button" data-act="apollo-help">${icon('settings')}Setup details</button></div>`;
  }
  if(i.name==='Zoho CRM'||i.name==='Zoho'){
-  if(i.status==='Connected')return `<div class="actions"><button class="button soft" data-act="zoho-full-sync">${icon('arrow')}Full resync</button><button class="button soft" data-act="zoho-connect">${icon('link')}Reconnect</button></div>`;
+  if(i.status==='Connected')return `<div class="actions"><button class="button soft" data-act="zoho-sync">${icon('arrow')}Sync changes</button><button class="button soft" data-act="zoho-connect">${icon('link')}Reconnect</button></div>`;
   if(i.status==='Ready to connect')return `<div class="actions"><button class="button primary" data-act="zoho-connect">${icon('link')}Connect Zoho</button></div>`;
   return `<div class="actions"><button class="button" data-act="zoho-help">${icon('settings')}Setup details</button></div>`;
  }
  return '';
+}
+async function loadIntegrationCentre(force=false){
+ if(integrationCentreState.overview&&!force)return integrationCentreState.overview;
+ integrationCentreState.loading=true;integrationCentreState.error='';
+ try{
+  const payload=await api('/api/integrations/overview',undefined,'GET',{silent:true});
+  integrationCentreState.overview=payload;
+  if(!payload.integrations?.some(item=>item.id===integrationCentreState.selected))integrationCentreState.selected=payload.integrations?.[0]?.id||'zoho';
+  return payload;
+ }catch(error){
+  integrationCentreState.error=error.message;
+  throw error;
+ }finally{integrationCentreState.loading=false;}
+}
+async function loadIntegrationDetail(id,force=false){
+ if(integrationCentreState.details[id]&&!force)return integrationCentreState.details[id];
+ const payload=await api(`/api/integrations/${encodeURIComponent(id)}`,undefined,'GET',{silent:true});
+ integrationCentreState.details[id]=payload;
+ return payload;
+}
+function integrationKind(value){
+ if(['healthy','completed'].includes(value))return'green';
+ if(['warning','queued','running','retrying','idle'].includes(value))return'amber';
+ if(['error','failed','disconnected'].includes(value))return'red';
+ return'';
+}
+function integrationMetric(label,value,detail){
+ return `<div class="integration-metric"><span>${esc(label)}</span><b>${esc(value)}</b><small>${esc(detail||'')}</small></div>`;
+}
+function integrationCard(item){
+ const selected=integrationCentreState.selected===item.id,last=item.last_success_at?timestamp(item.last_success_at):item.last_attempt_at?`Attempted ${timestamp(item.last_attempt_at)}`:'No sync recorded';
+ const sync=item.async_supported&&item.connected?`<button class="button soft" data-act="integration-sync" data-id="${esc(item.id)}">${icon('arrow')}Sync now</button>`:'';
+ const reconnect=item.reconnect_url?`<button class="button soft" data-act="integration-reconnect" data-id="${esc(item.id)}">${icon('link')}${item.connected?'Reconnect':'Connect'}</button>`:'';
+ return `<article class="integration-centre-card ${selected?'active':''}" data-act="integration-view" data-id="${esc(item.id)}"><div class="integration-centre-card-head"><div><h3>${esc(item.name)}</h3><p>${esc(item.detail?.message||item.detail?.account||'Local operational state')}</p></div>${badge(item.health,integrationKind(item.health))}</div><div class="integration-centre-meta"><span>${icon('clock')}${esc(last)}</span><span>${icon('settings')}${esc(item.sync_status||'idle')}</span></div><div class="actions">${sync}${reconnect}<button class="button" data-act="integration-view" data-id="${esc(item.id)}">Details</button></div></article>`;
+}
+function integrationDetailPanel(payload){
+ if(!payload?.integration)return `<section class="panel mt"><div class="panel-body">${empty('Choose an integration','Select a card to inspect status and safe history.')}</div></section>`;
+ const item=payload.integration,history=payload.history||[],errors=payload.recent_safe_errors||[],audit=payload.audit||[];
+ return `<section class="panel mt integration-detail-panel"><div class="panel-header"><div><h2>${esc(item.name)} detail</h2><p>${esc(item.detail?.message||item.detail?.account||'No account detail shown')}</p></div>${badge(item.health,integrationKind(item.health))}</div><div class="panel-body"><div class="integration-metrics">${integrationMetric('Configured',item.configured?'Yes':'No',item.connected?'Connected':'Not connected')}${integrationMetric('Sync state',item.sync_status||'idle',item.running?'Job running':'No active job')}${integrationMetric('Last success',item.last_success_at?timestamp(item.last_success_at):'Never',`${fmtNumber(item.records_processed||0)} records`)}</div>${item.last_error?`<div class="notice warning">${esc(item.last_error)}</div>`:''}<div class="integration-history-grid"><div><h3>Recent sync history</h3>${history.length?history.slice(0,8).map(job=>`<div class="monitoring-list-row"><span>${esc(job.status||job.sync_status||'unknown')}</span><b>${job.created_at?timestamp(job.created_at):job.updated_at?timestamp(job.updated_at):'No time'}</b></div>`).join(''):'<p class="small muted">No safe job history available.</p>'}</div><div><h3>Safe errors</h3>${errors.length?errors.slice(0,6).map(error=>`<div class="monitoring-list-row"><span>${esc(error.message||error.last_error||'Error')}</span><b>${error.occurred_at?timestamp(error.occurred_at):''}</b></div>`).join(''):'<p class="small muted">No recent safe errors.</p>'}</div></div>${audit.length?`<div class="integration-audit"><h3>Audit</h3>${audit.slice(0,5).map(row=>`<div class="monitoring-list-row"><span>${esc(row.action||row.entity||'integration')}</span><b>${row.occurred_at?timestamp(row.occurred_at):''}</b></div>`).join('')}</div>`:''}</div></section>`;
+}
+async function integrationCentre(){
+ const overview=await loadIntegrationCentre();
+ const selected=integrationCentreState.selected||overview.integrations?.[0]?.id||'';
+ const detail=selected?await loadIntegrationDetail(selected).catch(error=>({error:error.message,integration:overview.integrations.find(item=>item.id===selected)})):null;
+ const metrics=overview.metrics||{};
+ return heading('Integration Control Centre.','Operational health, safe sync state and connection history.',`<button class="button soft" data-act="integration-refresh">${icon('arrow')}Refresh</button>`)+
+ `<div class="stats-grid integration-centre-stats">${stat('Healthy',fmtNumber(metrics.healthy||0),'Connected and clean','check')}${stat('Warnings',fmtNumber((metrics.warning||0)+(metrics.disconnected||0)),'Needs attention or connect','bell')}${stat('Errors',fmtNumber(metrics.error||0),'Failed latest status','shield')}${stat('Running',fmtNumber(metrics.running||0),'Async jobs in progress','clock')}</div>
+ <div class="integration-centre-grid">${(overview.integrations||[]).map(integrationCard).join('')||empty('No integrations found','Only real configured adapters are listed here.')}</div>
+ ${detail?.error?`<div class="notice warning mt">${esc(detail.error)}</div>`:''}${integrationDetailPanel(detail)}
+ <section class="panel mt"><div class="panel-header"><div><h2>Recent activity</h2><p>Local job and audit signals only.</p></div><span class="small muted">${overview.generated_at?timestamp(overview.generated_at):''}</span></div><div class="panel-body">${(overview.recent_activity||[]).slice(0,8).map(row=>`<div class="monitoring-list-row"><span>${esc(row.provider||row.action||'integration')}</span><b>${row.created_at?timestamp(row.created_at):row.occurred_at?timestamp(row.occurred_at):''}</b></div>`).join('')||'<p class="small muted">No recent integration activity.</p>'}</div></section>`;
+}
+function analyticsQuery(){
+ const f=analyticsState.filters,params=new URLSearchParams();
+ Object.entries(f).forEach(([key,value])=>{if(value)params.set(key,value);});
+ return params.toString();
+}
+async function loadAnalytics(force=false){
+ if(analyticsState.payload&&!force)return analyticsState.payload;
+ analyticsState.loading=true;analyticsState.error='';
+ try{
+  const query=analyticsQuery();
+  analyticsState.payload=await api(`/api/analytics/overview${query?`?${query}`:''}`,undefined,'GET',{silent:true});
+  return analyticsState.payload;
+ }catch(error){
+  analyticsState.error=error.message;
+  throw error;
+ }finally{analyticsState.loading=false;}
+}
+function analyticsValue(value,suffix=''){
+ if(value===null||value===undefined||Number.isNaN(Number(value)))return DASH;
+ return `${fmtNumber(value)}${suffix||''}`;
+}
+function analyticsBar(value,max){
+ const width=max?Math.max(4,Math.min(100,Number(value||0)/max*100)):0;
+ return `<span class="bar-track analytics-bar"><i style="width:${width}%"></i></span>`;
+}
+function analyticsFilterBar(payload){
+ const f=analyticsState.filters;
+ return `<div class="analytics-filters"><select id="analytics-preset" aria-label="Date range">${[['7d','7 days'],['30d','30 days'],['90d','90 days'],['this_month','This month'],['last_month','Last month'],['custom','Custom']].map(([v,t])=>`<option value="${v}" ${f.preset===v?'selected':''}>${t}</option>`).join('')}</select><input id="analytics-from" type="date" aria-label="From date" value="${esc(f.from||payload.filters?.from||'')}"><input id="analytics-to" type="date" aria-label="To date" value="${esc(f.to||payload.filters?.to||'')}"><select id="analytics-programme" aria-label="Programme"><option value="">All programmes</option>${(data.programmes||[]).map(p=>`<option value="${esc(p.id)}" ${f.programme_id===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select><select id="analytics-owner" aria-label="Owner"><option value="">All owners</option>${(data.owners||data.users||[]).map(o=>`<option value="${esc(o.id)}" ${f.owner_id===o.id?'selected':''}>${esc(o.name)}</option>`).join('')}</select><select id="analytics-source" aria-label="Source"><option value="">All sources</option>${(data.sources||[]).map(s=>`<option value="${esc(s)}" ${f.lead_source===s?'selected':''}>${esc(s)}</option>`).join('')}</select><button class="button soft" data-act="analytics-refresh">${icon('arrow')}Refresh</button></div>`;
+}
+function analyticsKpis(payload){
+ return `<div class="stats-grid analytics-kpis">${(payload.kpis||[]).map(kpi=>stat(kpi.label,analyticsValue(kpi.value,kpi.suffix),kpi.comparison_pct===null||kpi.comparison_pct===undefined?'Selected period':`${kpi.comparison_pct>0?'+':''}${kpi.comparison_pct}% vs previous`,kpi.id?.includes('response')?'clock':kpi.id?.includes('enrolled')?'check':kpi.id?.includes('application')?'file':'chart')).join('')}</div>`;
+}
+function analyticsFunnel(payload){
+ const stages=payload.funnel?.stages||[],max=Math.max(1,...stages.map(s=>Number(s.value||0)));
+ return `<section class="panel analytics-funnel"><div class="panel-header"><div><h2>Conversion Funnel</h2><p>Cohort based on lead captured date.</p></div>${payload.funnel?.largest_dropoff?badge(`Largest drop ${payload.funnel.largest_dropoff.drop}%`,'amber'):''}</div><div class="panel-body">${stages.map((s,index)=>`<div class="analytics-funnel-row"><div><strong>${esc(s.label)}</strong><span>${index?s.conversion_from_previous===null?'No denominator':`${s.conversion_from_previous}% from previous`: 'Start of funnel'}</span></div>${analyticsBar(s.value,max)}<b>${fmtNumber(s.value)}</b></div>`).join('')}</div></section>`;
+}
+function analyticsPerformanceTable(title,rows,labelKey='source'){
+ const max=Math.max(1,...(rows||[]).map(r=>Number(r.leads||0)));
+ return `<section class="panel table-wrap"><div class="panel-header"><div><h2>${esc(title)}</h2><p>Volume and conversion, not ROI.</p></div></div><table><thead><tr><th>Name</th><th>Leads</th><th>Applications</th><th>Approved</th><th>Enrolled</th><th>Lead → App</th></tr></thead><tbody>${(rows||[]).map(r=>`<tr><td><strong>${esc(r[labelKey]||r.label||'Other')}</strong>${analyticsBar(r.leads,max)}</td><td>${fmtNumber(r.leads)}</td><td>${fmtNumber(r.applications)}</td><td>${fmtNumber(r.approved)}</td><td>${fmtNumber(r.enrolled)}</td><td>${analyticsValue(r.application_rate,'%')}</td></tr>`).join('')}</tbody></table>${rows?.length?'':empty('No data for this period')}</section>`;
+}
+function analyticsResponse(payload){
+ const rt=payload.response_time||{},max=Math.max(1,...(rt.buckets||[]).map(b=>Number(b.value||0)));
+ return `<section class="panel"><div class="panel-header"><div><h2>Response Time</h2><p>Inbound linked emails with recorded responses.</p></div>${badge(`${fmtNumber(rt.responded||0)} measured`)}</div><div class="panel-body"><div class="integration-metrics">${integrationMetric('Average',analyticsValue(rt.average_minutes,' min'),'Responded emails')}${integrationMetric('Median',analyticsValue(rt.median_minutes,' min'),'Outlier resistant')}${integrationMetric('Events',fmtNumber(rt.responded||0),'Included emails')}</div><div class="analytics-buckets">${(rt.buckets||[]).map(b=>`<div class="analytics-bucket"><span>${esc(b.label)}</span>${analyticsBar(b.value,max)}<b>${fmtNumber(b.value)}</b></div>`).join('')}</div></div></section>`;
+}
+function analyticsOwners(payload){
+ const rows=payload.owners||[];
+ return `<section class="panel table-wrap"><div class="panel-header"><div><h2>Owner Workload</h2><p>Operational load, not a ranking.</p></div></div><table><thead><tr><th>Owner</th><th>Cohort leads</th><th>Open leads</th><th>Applications</th><th>Overdue tasks</th><th>Median response</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${esc(r.owner||'Unassigned')}</strong></td><td>${fmtNumber(r.cohort_leads)}</td><td>${fmtNumber(r.open_leads)}</td><td>${fmtNumber(r.applications)}</td><td>${fmtNumber(r.overdue_tasks)}</td><td>${analyticsValue(r.median_response_minutes,' min')}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No owner data')}</section>`;
+}
+function analyticsAgeing(payload){
+ const rows=payload.ageing||[];
+ return `<section class="panel table-wrap"><div class="panel-header"><div><h2>Stage Ageing</h2><p>Observational current age where stage-entry history is incomplete.</p></div></div><table><thead><tr><th>Area</th><th>Stage</th><th>Records</th><th>Median</th><th>P75</th><th>P90</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.area)}</td><td><strong>${esc(r.stage)}</strong></td><td>${fmtNumber(r.records)}</td><td>${analyticsValue(r.median_days,'d')}</td><td>${analyticsValue(r.p75_days,'d')}</td><td>${analyticsValue(r.p90_days,'d')}</td></tr>`).join('')}</tbody></table>${rows.length?'':empty('No ageing data')}</section>`;
+}
+function analyticsTrend(payload){
+ const points=payload.trends?.points||[],max=Math.max(1,...points.flatMap(p=>[p.leads,p.applications,p.enrolments].map(Number)));
+ return `<section class="panel"><div class="panel-header"><div><h2>Trend</h2><p>${esc(payload.trends?.granularity||'day')} buckets for selected range.</p></div></div><div class="panel-body"><div class="analytics-trend">${points.slice(-24).map(p=>`<div class="analytics-trend-point"><div><span style="height:${Math.max(3,Math.min(100,Number(p.leads||0)/max*100))}%"></span><span style="height:${Math.max(3,Math.min(100,Number(p.applications||0)/max*100))}%"></span><span style="height:${Math.max(3,Math.min(100,Number(p.enrolments||0)/max*100))}%"></span></div><small>${date(p.bucket,{month:'short',day:'numeric'})}</small></div>`).join('')||'<p class="small muted">No trend points.</p>'}</div><div class="analytics-legend"><span><i></i>Leads</span><span><i></i>Applications</span><span><i></i>Enrolments</span></div></div></section>`;
+}
+async function analytics(){
+ const payload=await loadAnalytics();
+ return heading('Analytics.','Operational conversion, response and bottleneck metrics.',`<button class="button soft" data-act="analytics-refresh">${icon('arrow')}Refresh</button>`)+analyticsFilterBar(payload)+analyticsKpis(payload)+`<div class="analytics-grid">${analyticsFunnel(payload)}${analyticsResponse(payload)}</div><div class="analytics-grid">${analyticsPerformanceTable('Source Performance',payload.sources,'source')}${analyticsPerformanceTable('Programme Performance',payload.programmes,'programme')}</div><div class="analytics-grid">${analyticsOwners(payload)}${analyticsAgeing(payload)}</div>${analyticsTrend(payload)}<div class="notice mt">${esc((payload.meta?.limitations||[])[0]||'Analytics generated from bounded aggregates.')} Generated ${payload.generated_at?timestamp(payload.generated_at):'now'}.</div>`;
+}
+async function loadNotificationCount(){
+ try{
+  const payload=await api('/api/notifications/unread-count',undefined,'GET',{silent:true});
+  notificationsState.unread_count=Number(payload.unread_count||0);
+ }catch{notificationsState.unread_count=null;}
+}
+async function loadNotifications(reset=false){
+ notificationsState.loading=true;notificationsState.error='';
+ const cursor=reset?'':notificationsState.next_cursor;
+ try{
+  const payload=await api(`/api/notifications?limit=50&filter=${encodeURIComponent(filters.notifications||'all')}${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,undefined,'GET',{silent:true});
+  notificationsState.items=reset?(payload.items||payload.notifications||[]):[...notificationsState.items,...(payload.items||payload.notifications||[])];
+  notificationsState.next_cursor=payload.next_cursor||'';
+  await loadNotificationCount();
+  return payload;
+ }catch(error){
+  notificationsState.error=error.message;
+  throw error;
+ }finally{notificationsState.loading=false;}
+}
+function notificationKind(item){
+ if(item.priority==='high')return'red';
+ if(item.read_at)return'';
+ if(/due|action|required|warning/i.test(item.type))return'amber';
+ return'blue';
+}
+function notificationRow(item){
+ const open=item.route?`<button class="button soft" data-go="${esc(item.route)}">${icon('chevron')}Open</button>`:'';
+ return `<article class="notification-row ${item.read_at?'read':'unread'}"><div class="notification-icon">${icon(item.type?.includes('task')?'calendar':item.type?.includes('integration')?'link':item.type?.includes('automation')?'settings':item.type?.includes('data')?'shield':'bell')}</div><div class="notification-copy"><div class="notification-top"><strong>${esc(item.title)}</strong>${badge(item.priority||'normal',notificationKind(item))}</div><p>${esc(item.message||item.type||'Notification')}</p><span>${item.created_at?timestamp(item.created_at):''}${item.read_at?' · read':' · unread'}</span></div><div class="actions compact-actions">${open}<button class="button" data-act="${item.read_at?'notification-unread':'notification-read'}" data-id="${esc(item.id)}">${item.read_at?'Unread':'Read'}</button></div></article>`;
+}
+async function notifications(){
+ if(!notificationsState.items.length&&!notificationsState.loading)await loadNotifications(true);
+ const filtersList=[['all','All'],['unread','Unread'],['high','High Priority'],['today','Today']];
+ return heading('Notification Centre.','Actionable workspace alerts scoped to your account.',`<div class="actions"><button class="button soft" data-act="notifications-refresh">${icon('arrow')}Refresh</button><button class="button primary" data-act="notifications-read-all">${icon('check')}Read all</button></div>`)+
+ `<div class="chips">${filtersList.map(([id,label])=>`<button class="chip ${filters.notifications===id?'active':''}" data-act="notifications-filter" data-id="${id}">${esc(label)}</button>`).join('')}</div>
+ <section class="panel notification-centre"><div class="panel-header"><div><h2>${esc(filtersList.find(item=>item[0]===filters.notifications)?.[1]||'All')}</h2><p>${fmtNumber(notificationsState.unread_count||0)} unread notification${notificationsState.unread_count===1?'':'s'}</p></div>${icon('bell')}</div><div class="panel-body"><div class="notification-list">${notificationsState.items.map(notificationRow).join('')||empty('No notifications','Nothing needs attention in this filter.')}</div>${notificationsState.next_cursor?`<div class="crm-more"><button class="button soft" data-act="notifications-more">${icon('arrow')}Load more</button></div>`:''}</div></section>`;
+}
+function documentsQuery(){
+ const params=new URLSearchParams();
+ if(filters.documentsSearch)params.set('search',filters.documentsSearch);
+ if(filters.documentsType)params.set('file_type',filters.documentsType);
+ return params.toString();
+}
+async function loadDocuments(reset=false){
+ documentsState.loading=true;documentsState.error='';
+ const cursor=reset?'':documentsState.next_cursor,query=documentsQuery();
+ try{
+  const payload=await api(`/api/documents?limit=50${query?`&${query}`:''}${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,undefined,'GET',{silent:true});
+  documentsState.items=reset?(payload.items||payload.documents||[]):[...documentsState.items,...(payload.items||payload.documents||[])];
+  documentsState.next_cursor=payload.next_cursor||'';
+  return payload;
+ }catch(error){
+  documentsState.error=error.message;
+  throw error;
+ }finally{documentsState.loading=false;}
+}
+function documentRow(doc){
+ return `<tr><td><strong>${esc(doc.title||doc.filename)}</strong><div class="small muted">${esc(doc.filename)}</div></td><td>${esc(doc.file_type||'file')}</td><td><button class="text-button" data-go="${esc(doc.application_id?`applications/${doc.application_id}`:doc.lead_id?`leads/${doc.lead_id}`:'documents')}">${esc(doc.lead_name||doc.lead_id||doc.entity_id)}</button><div class="small muted">${esc(doc.programme||'')}</div></td><td>${esc(doc.owner||doc.owner_id||'')}</td><td>${badge(doc.status||'Uploaded')}</td><td>${doc.uploaded_at?timestamp(doc.uploaded_at):'—'}</td><td><a class="button soft" href="${esc(doc.download_url||`/api/documents/${encodeURIComponent(doc.id)}/download`)}" download>${icon('download')}Download</a></td></tr>`;
+}
+async function documents(){
+ if(!documentsState.items.length&&!documentsState.loading)await loadDocuments(true);
+ return heading('Documents Centre.','Uploaded application evidence and safe download links.',`<button class="button soft" data-act="documents-refresh">${icon('arrow')}Refresh</button>`)+
+ `<section class="panel"><div class="panel-body"><div class="toolbar"><div class="search">${icon('search')}<input id="documents-search" placeholder="Search filename, learner or programme" value="${esc(filters.documentsSearch||'')}"></div><select id="documents-type"><option value="">All file types</option><option value="pdf" ${filters.documentsType==='pdf'?'selected':''}>PDF</option><option value="image" ${filters.documentsType==='image'?'selected':''}>Images</option></select></div></div></section>
+ <section class="panel table-wrap mt"><table><thead><tr><th>Document</th><th>Type</th><th>Record</th><th>Owner</th><th>Status</th><th>Uploaded</th><th></th></tr></thead><tbody>${documentsState.items.map(documentRow).join('')}</tbody></table>${documentsState.items.length?'':empty('No documents found','Uploaded evidence files will appear here.')}${documentsState.next_cursor?`<div class="crm-more"><button class="button soft" data-act="documents-more">${icon('arrow')}Load more</button></div>`:''}</section>
+ <div class="notice mt">Downloads use authenticated evidence routes; document ids alone do not grant access.</div>`;
+}
+function adminAuditQuery(){
+ const params=new URLSearchParams(),f=filters.adminAudit;
+ Object.entries(f).forEach(([key,value])=>{if(value)params.set(key,value);});
+ return params.toString();
+}
+async function loadAdminAudit(reset=false){
+ adminAuditState.loading=true;adminAuditState.error='';
+ const cursor=reset?'':adminAuditState.next_cursor,query=adminAuditQuery();
+ try{
+  const [overview,audit]=await Promise.all([
+   adminAuditState.overview&&!reset?Promise.resolve(adminAuditState.overview):api('/api/admin-audit/overview',undefined,'GET',{silent:true}),
+   api(`/api/admin-audit/audit?limit=50${query?`&${query}`:''}${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,undefined,'GET',{silent:true})
+  ]);
+  adminAuditState.overview=overview;
+  adminAuditState.audit=reset?(audit.items||audit.audit||[]):[...adminAuditState.audit,...(audit.items||audit.audit||[])];
+  adminAuditState.next_cursor=audit.next_cursor||'';
+  return {overview,audit};
+ }catch(error){
+  adminAuditState.error=error.message;
+  throw error;
+ }finally{adminAuditState.loading=false;}
+}
+function adminAuditFilters(){
+ const f=filters.adminAudit;
+ return `<div class="analytics-filters admin-audit-filters"><input id="admin-audit-actor" placeholder="Actor" value="${esc(f.actor)}"><input id="admin-audit-action" placeholder="Action" value="${esc(f.action)}"><select id="admin-audit-entity"><option value="">All entities</option>${['lead','application','task','email','user','integration','automation'].map(x=>`<option value="${x}" ${f.entity===x?'selected':''}>${x}</option>`).join('')}</select><input id="admin-audit-from" type="date" value="${esc(f.from)}"><input id="admin-audit-to" type="date" value="${esc(f.to)}"><button class="button soft" data-act="admin-audit-refresh">${icon('arrow')}Apply</button></div>`;
+}
+function adminAuditRow(row){
+ const record=row.route?`<button class="text-button" data-go="${esc(row.route)}">${esc(row.entity)}<div class="small muted mono">${esc(row.entity_id)}</div></button>`:`${esc(row.entity)}<div class="small muted mono">${esc(row.entity_id)}</div>`;
+ return `<tr><td>${row.occurred_at?timestamp(row.occurred_at):'—'}</td><td>${esc(row.actor)}</td><td>${esc(row.action)}</td><td>${record}</td></tr>`;
+}
+async function adminAuditCentre(){
+ if(!adminAuditState.overview&&!adminAuditState.loading)await loadAdminAudit(true);
+ const overview=adminAuditState.overview||{},automation=overview.automation?.status||{},users=overview.users||[];
+ return heading('Admin & Audit Centre.','Bounded audit review, safe user visibility and automation operations.',`<button class="button soft" data-act="admin-audit-refresh">${icon('arrow')}Refresh</button>`)+
+ `<div class="stats-grid">${stat('Audit rows',fmtNumber(adminAuditState.audit.length),'Loaded page','shield')}${stat('Users',fmtNumber(users.length),overview.permissions?.user_management?'Developer-visible':'Hidden for this role','users')}${stat('Pending jobs',fmtNumber(automation.pending_jobs||0),'Automation queue','clock')}${stat('Failed jobs',fmtNumber(automation.failed_jobs||0),'Needs review','bell')}</div>
+ ${users.length?`<section class="panel table-wrap mt"><div class="panel-header"><div><h2>User management</h2><p>Existing developer-only actions remain enforced by the server.</p></div></div><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${users.map(user=>`<tr><td><strong>${esc(user.name)}</strong><div class="small muted">${esc(user.email)}</div></td><td>${esc(user.role_label||user.role)}</td><td>${user.password_temporary?badge('Temporary','amber'):badge('Private','green')}</td><td>${user.is_configured_developer?badge('Protected','blue'):`<button class="button soft" data-act="reset-user-password" data-id="${esc(user.id)}">Reset</button>`}</td></tr>`).join('')}</tbody></table></section>`:''}
+ <section class="panel table-wrap mt"><div class="panel-header"><div><h2>Audit trail</h2><p>Safe fields only; no secrets or raw payloads.</p></div></div>${adminAuditFilters()}<table><thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Record</th></tr></thead><tbody>${adminAuditState.audit.map(adminAuditRow).join('')}</tbody></table>${adminAuditState.audit.length?'':empty('No audit rows found','Adjust filters or check later.')}${adminAuditState.next_cursor?`<div class="crm-more"><button class="button soft" data-act="admin-audit-more">${icon('arrow')}Load more</button></div>`:''}</section>`;
 }
 function isDeveloperAccount(){return data?.permissions?.developer===true;}
 const DEV_ROLE_OPTIONS=[['member','Member'],['monitor','Monitor'],['developer','Developer']];
@@ -1715,8 +2407,50 @@ async function developer(){
   <section class="dev-panel"><div class="dev-panel-header"><div><h2>Runtime</h2><p class="dev-muted">Storage mode: ${esc(config.storage)}</p></div></div><div class="table-wrap"><table class="dev-table"><thead><tr><th>Key</th><th>Status</th><th>Value</th></tr></thead><tbody>${(config.server||[]).map(item=>`<tr><td><strong>${esc(item.label)}</strong><br><code>${esc(item.key)}</code></td><td>${devPill(item.configured?'Configured':'Missing',item.configured?'ok':'warn')}</td><td><code>${esc(item.value||'Not set')}</code></td></tr>`).join('')}</tbody></table></div></section>`;
 }
 async function settings(){const dev=isDeveloperAccount(),zohoRecords=await loadZohoRecordsPreview();return heading('A connected workspace.','Your account, integrations and application settings.')+`<section class="panel"><div class="panel-header"><div><h2>${esc(data.user.name)}</h2><p>${esc(data.user.email)} · ${esc(dev?'Developer':data.user.role)}</p></div>${btn('Sign out','logout')}</div><div class="panel-body"><div class="actions">${deferredInstall?btn('Install on this device','install','','primary'):btn('Install instructions','install-help')}${btn('Change password','password')}<button class="button soft" data-act="reconcile-leads">${icon('link')}Link imported data</button>${dev?`<button class="button soft" data-go="developer">${icon('shield')}Developer</button>`:''}</div><p class="small muted">Sessions expire after eight hours. Your permissions are enforced by the server.</p></div></section><div class="heading mt"><div><h2>Source integrations</h2><p class="muted small">Authorize accounts after the provider adapters are configured.</p></div></div><div class="integration-grid">${data.integrations.map(i=>`<div class="integration">${icon('link')}<h3>${esc(i.name)}</h3>${badge(i.status)}<p>${esc(i.detail)}</p>${integrationActions(i)}</div>`).join('')}</div>${zohoRecordsPanel(zohoRecords)}<p class="bottom-note">Kent Business College 1.0 · Mobile operations MVP. Advanced personas, advertising reports, forecasting and automated provider sync are outside this build.</p>`;}
+async function automations(){
+ const [rulesResult,statusPayload]=await Promise.all([api('/api/automations?limit=100',undefined,'GET',{silent:true}).then(payload=>({payload})).catch(error=>({error})),api('/api/automations/status',undefined,'GET',{silent:true}).catch(()=>({}))]);
+ if(rulesResult.error)return heading('Automation Engine.','Safe internal rules with preview, idempotent jobs and audit history.')+`<section class="panel"><div class="panel-body">${empty('Automation migration is not applied yet','Apply sql/2026-10-12_automation_engine.sql before enabling rules.')}</div></section>`;
+ const rulesPayload=rulesResult.payload||{};
+ const rules=rulesPayload.rules||[];
+ const action=`<div class="actions"><button class="button primary" data-act="automation-new">${icon('plus')}New rule</button><button class="button soft" data-act="automation-worker">${icon('clock')}Run worker</button></div>`;
+ return heading('Automation Engine.','Safe internal rules with preview, idempotent jobs and audit history.',action)+
+ `<div class="stats-grid">${stat('Enabled rules',statusPayload.enabled_rules||0,'Ready for future events','settings')}${stat('Pending jobs',statusPayload.pending_jobs||0,'Waiting for worker','clock')}${stat('Retry jobs',statusPayload.retry_jobs||0,'Backoff queue','bell')}${stat('Failed jobs',statusPayload.failed_jobs||0,'Needs review','shield')}</div>
+ <section class="panel table-wrap mt"><table><thead><tr><th>Rule</th><th>Status</th><th>Trigger</th><th>Last run</th><th>Runs</th><th></th></tr></thead><tbody>${rules.map(rule=>`<tr><td><strong>${esc(rule.name)}</strong><div class="small muted">${esc(rule.description||'No description')}</div></td><td>${badge(rule.status,rule.enabled?'green':rule.status==='draft'?'amber':'')}</td><td>${esc(rule.trigger_type)}</td><td>${rule.last_run_at?timestamp(rule.last_run_at):'Never'}</td><td>${Number(rule.successful_runs||0)} ok · ${Number(rule.failed_runs||0)} failed</td><td><div class="actions"><button class="button soft" data-act="automation-preview" data-id="${esc(rule.id)}">Test</button>${rule.enabled?btn('Disable','automation-disable',rule.id):btn('Enable','automation-enable',rule.id,'primary')}</div></td></tr>`).join('')}</tbody></table>${rules.length?'':empty('No automation rules yet','Create a draft rule and preview it before enabling.')}</section>`;
+}
 async function auditView(){const result=await api('/api/audit?limit=100',undefined,'GET',{silent:true});data.audit=result.audit||[];return heading('Every decision leaves a trail.','Recorded actions, reviewers and changes.')+`<section class="panel table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th></tr></thead><tbody>${data.audit.map(a=>`<tr><td>${timestamp(a.occurred_at)}</td><td>${esc(a.actor)}</td><td>${esc(a.action)}</td><td>${esc(a.entity)}<div class="small muted mono">${esc(a.entity_id)}</div></td></tr>`).join('')}</tbody></table>${data.audit.length?'':empty('No audit records available for this role')}</section>`;}
-function more(){return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.slice(4),['settings','settings','Settings'],...(isDeveloperAccount()? [['developer','shield','Developer']] : []),...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Demo workspace · Fictional sample records':''}</div>${btn('Sign out','logout')}`;}
+function more(){const primary=new Set(['today','leads','inbox','planner']);return heading('Your workspace.','Every part of the learner journey.')+`<div class="more-grid">${[...navs.filter(n=>!primary.has(n[0])&&(!['data-quality','admin-audit'].includes(n[0])||data.permissions?.review||data.permissions?.admin||data.permissions?.developer)&&(n[0]!=='integration-centre'||canUseTeamViews())),['settings','settings','Settings'],...(isDeveloperAccount()? [['developer','shield','Developer']] : []),...(['admin','qa','director'].includes(data.user.role)?[['audit','shield','Audit trail']]:[])].map(n=>`<button class="more-tile" data-go="${n[0]}">${icon(n[1])}${n[2]}</button>`).join('')}</div><div class="notice mt">Signed in as ${esc(data.user.name)} · ${esc(data.user.role)}${data.demo?'<br>Workspace records':''}</div>${btn('Sign out','logout')}`;}
+const DATA_QUALITY_TYPES=[['duplicate_leads','Duplicate Leads','users'],['missing_email','Missing Email','mail'],['invalid_email','Invalid Email','mail'],['missing_phone','Missing Phone','phone'],['invalid_phone','Invalid Phone','phone'],['missing_owner','Missing Owner','users'],['missing_programme','Missing Programme','file'],['orphan_task','Orphan Tasks','calendar'],['orphan_application','Orphan Applications','file'],['orphan_email_relation','Email Relations','mail'],['duplicate_external_id','External ID Conflicts','link'],['zoho_mismatch','Zoho Mismatches','link'],['stale_lead','Stale Leads','clock'],['stale_application','Stale Applications','clock'],['incomplete_application','Incomplete Applications','file']];
+async function loadDataQuality(reset=false){
+ if(reset)dataQualityState.next_cursor='';
+ dataQualityState.loading=true;dataQualityState.error='';
+ const cursor=reset?'':dataQualityState.next_cursor;
+ const [summary,issues]=await Promise.all([
+  dataQualityState.summary?Promise.resolve(dataQualityState.summary):api('/api/data-quality/summary',undefined,'GET',{silent:true}),
+  api(`/api/data-quality/issues?type=${encodeURIComponent(dataQualityState.type)}&limit=25${cursor?`&cursor=${encodeURIComponent(cursor)}`:''}`,undefined,'GET',{silent:true})
+ ]);
+ dataQualityState.summary=summary;
+ dataQualityState.issues=reset?issues.issues||[]:[...dataQualityState.issues,...(issues.issues||[])];
+ dataQualityState.next_cursor=issues.next_cursor||'';
+ dataQualityState.loading=false;
+}
+function dataQualityMetricCard(type,label,iconName){
+ const count=Number(dataQualityState.summary?.metrics?.[type]||0),active=dataQualityState.type===type;
+ return `<button class="stat data-quality-stat ${active?'active':''}" data-act="dq-filter" data-id="${esc(type)}"><div class="stat-head"><span>${esc(label)}</span>${icon(iconName)}</div><div class="stat-value">${fmtNumber(count)}</div><div class="stat-foot">${active?'Showing issues':'Review queue'}</div></button>`;
+}
+function dataQualityIssue(issue){
+ const records=issue.records||[];
+ return `<article class="panel data-quality-issue"><div class="panel-header"><div><h2>${esc(issue.title)}</h2><p>${esc(issue.why)}</p></div>${badge(issue.confidence||issue.severity||'review')}</div><div class="panel-body"><div class="data-quality-records">${records.map(record=>`<button class="person-row" data-go="${esc(record.route||'leads/'+record.id)}"><div class="person-main"><strong>${esc(record.name||record.title||record.id)}</strong><p>${esc([record.email,record.phone,record.programme,record.stage,record.missing_lead_id?'Missing lead '+record.missing_lead_id:''].filter(Boolean).join(' · '))}</p></div>${icon('chevron')}</button>`).join('')||'<p class="muted">No record details returned.</p>'}</div><div class="notice">${esc(issue.suggested_review||'Review before changing records.')}</div></div></article>`;
+}
+async function dataQuality(){
+ if(!dataQualityState.summary||!dataQualityState.issues.length)await loadDataQuality(true);
+ const label=DATA_QUALITY_TYPES.find(item=>item[0]===dataQualityState.type)?.[1]||'Issues';
+ return heading('Data Quality.','Detect, explain and review CRM data issues without destructive cleanup.',`<button class="button soft" data-act="dq-refresh">${icon('arrow')}Refresh</button>`)+
+ `<div class="stats-grid data-quality-grid">${DATA_QUALITY_TYPES.slice(0,6).map(([type,labelText,iconName])=>dataQualityMetricCard(type,labelText,iconName)).join('')}</div>
+ <div class="chips data-quality-tabs">${DATA_QUALITY_TYPES.map(([type,labelText])=>`<button class="chip ${dataQualityState.type===type?'active':''}" data-act="dq-filter" data-id="${esc(type)}">${esc(labelText)}</button>`).join('')}</div>
+ <section class="panel data-quality-summary"><div class="panel-header"><div><h2>${esc(label)}</h2><p>Snapshot ${dataQualityState.summary?.snapshot?.stale?'stale; refresh queued':'ready'} · generated ${dataQualityState.summary?.generated_at?timestamp(dataQualityState.summary.generated_at):'now'}</p></div>${icon('shield')}</div></section>
+ <div class="data-quality-list">${dataQualityState.issues.map(dataQualityIssue).join('')||empty('No issues in this category','The rule returned no records.')}</div>
+ ${dataQualityState.next_cursor?`<div class="crm-more"><button class="button" data-act="dq-more">${icon('arrow')}Load more</button></div>`:''}`;
+}
 async function render(){
  if(!data)return;
  const id=++viewId,current=route(),currentPage=current.split('/')[0];
@@ -1724,17 +2458,21 @@ async function render(){
  diagMark('render-start',{route:current});
  acknowledgeVisibleSeenPage(currentPage);
  if(current==='developer'&&!isDeveloperAccount()){go('settings');return;}
+ if(current==='data-quality'&&!(data.permissions?.review||data.permissions?.admin||data.permissions?.developer)){go('today');return;}
+ if(current==='integration-centre'&&!canUseTeamViews()){go('today');return;}
+ if(current==='admin-audit'&&!(data.permissions?.review||data.permissions?.admin||data.permissions?.developer)){go('today');return;}
  if(['phases','attribution'].includes(currentPage)){go('today');return;}
  try{
   let html;
-  if(current.startsWith('leads/'))html=await leadDetail(current.split('/')[1]);
+  if(current.startsWith('leads/'))html=await leadDetail360(current.split('/')[1]);
+  else if(current.startsWith('applications/'))html=await applicationDetail(current.split('/')[1]);
   else{
-   const view=({today:cockpitToday,monitoring,leads,planner,inbox,applications,events,zoom,zoho:zohoPage,settings,developer,audit:auditView,more}[current]||cockpitToday);
+   const view=({'my-day':myDay,today:cockpitToday,notifications,documents,monitoring,analytics,'data-quality':dataQuality,'integration-centre':integrationCentre,'admin-audit':adminAuditCentre,leads,planner,inbox,applications,events,zoho:zohoPage,automations,settings,developer,audit:auditView,more}[current]||cockpitToday);
    html=await view();
   }
   if(seenPages.includes(currentPage))markPageSeen(currentPage);
   if(id===viewId){
-   $('#app').innerHTML=shell(html,current);
+   $('#app').innerHTML=shell(workspaceDataNotice()+html,current);
    if(isDeveloperAccount()){
     const manageLabel=[...document.querySelectorAll('.sidebar .eyebrow')].find(item=>item.textContent.trim()==='Manage');
     if(manageLabel&&!document.querySelector('.sidebar [data-go="developer"]'))manageLabel.insertAdjacentHTML('afterend',navButton(['developer','shield','Developer'],currentPage));
@@ -1749,7 +2487,7 @@ async function render(){
   diagMark('render-complete',{route:current,duration_ms:Math.round((performance.now()-renderStarted)*10)/10});
  }catch(e){
   if(id===viewId&&data){
-   $('#app').innerHTML=shell(empty('Unable to load this view',e.message)+btn('Try again','reload'),current);
+   $('#app').innerHTML=shell(workspaceDataNotice()+empty('Unable to load this view',e.message)+btn('Try again','reload'),current);
    hydrateSelectMenus($('#app'));
   }
   diagMark('render-error',{route:current,message:e.message,duration_ms:Math.round((performance.now()-renderStarted)*10)/10});
@@ -1916,8 +2654,35 @@ async function action(act,id='',target=null){
  if(act==='close')return $('#dialog').close();
  if(act==='reload')return refresh();
  if(act==='dashboard-retry'){loadDashboardWidgets();return;}
+ if(act==='my-day-refresh'){await loadMyDay(true);toast('My Day refreshed.');return;}
+ if(act==='my-day-filter'){filters.myDay=id||'All';return render();}
+ if(act==='my-day-open'){
+  const action=(myDayState.payload?.priority_actions||[]).find(item=>String(item.entity_id||'')===String(id));
+  if(!action)return;
+  if(action.type==='unanswered_email'){
+   if(!data.emails.some(email=>email.id===id))data.emails.unshift({id,lead_id:action.lead_id||'',subject:action.title||'Email',first_name:'',last_name:'',email:'',direction:'inbound',received_at:action.due_at||new Date().toISOString(),due_at:action.due_at||'',response_at:null,gmail_labels:['UNREAD'],gmail_label_names:['Unread'],is_read:false});
+   return openEmailDialog(id);
+  }
+  go(action.route||'my-day');
+  return;
+ }
  if(act==='dash-complete-task'){await api(`/api/tasks/${encodeURIComponent(id)}/complete`,{},'POST',{silent:true});toast('Task completed.');loadDashboardWidgets(['summary','work']);return;}
  if(act==='mark-page-seen'){markPageSeen(target.dataset.page||route().split('/')[0]);return render();}
+ if(act==='integration-refresh'){integrationCentreState.overview=null;integrationCentreState.details={};await loadIntegrationCentre(true);toast('Integration Centre refreshed.');return render();}
+ if(act==='integration-view'){integrationCentreState.selected=id;await loadIntegrationDetail(id,true);return render();}
+ if(act==='integration-sync'){const result=await api(`/api/integrations/control/${encodeURIComponent(id)}/sync`,{mode:'incremental'},'POST',{silent:true});integrationCentreState.overview=null;integrationCentreState.details={};toast(`${result.provider||id} sync queued.`);if(id==='zoho')scheduleZohoSyncPoll(result.jobId||result.id);return render();}
+ if(act==='integration-reconnect'){const item=(integrationCentreState.overview?.integrations||[]).find(row=>row.id===id);if(item?.reconnect_url)location.href=item.reconnect_url;return;}
+ if(act==='analytics-refresh'){analyticsState.payload=null;await loadAnalytics(true);toast('Analytics refreshed.');return render();}
+ if(act==='notifications'){await loadNotifications(true).catch(()=>null);go('notifications');return;}
+ if(act==='notifications-refresh'){notificationsState.items=[];notificationsState.next_cursor='';await loadNotifications(true);toast('Notifications refreshed.');return render();}
+ if(act==='notifications-filter'){filters.notifications=id||'all';notificationsState.items=[];notificationsState.next_cursor='';await loadNotifications(true);return render();}
+ if(act==='notifications-more'){const before=notificationsState.items.length;await loadNotifications(false);await render();toast(`${notificationsState.items.length-before} more notifications loaded.`);return;}
+ if(act==='notification-read'||act==='notification-unread'){await api(`/api/notifications/${encodeURIComponent(id)}/read`,{read:act==='notification-read'},'PATCH',{silent:true});notificationsState.items=[];notificationsState.next_cursor='';await loadNotifications(true);return render();}
+ if(act==='notifications-read-all'){await api('/api/notifications/read-all',{},'POST',{silent:true});notificationsState.items=[];notificationsState.next_cursor='';await loadNotifications(true);toast('Notifications marked read.');return render();}
+ if(act==='documents-refresh'){documentsState.items=[];documentsState.next_cursor='';await loadDocuments(true);toast('Documents refreshed.');return render();}
+ if(act==='documents-more'){const before=documentsState.items.length;await loadDocuments(false);await render();toast(`${documentsState.items.length-before} more documents loaded.`);return;}
+ if(act==='admin-audit-refresh'){adminAuditState.overview=null;adminAuditState.audit=[];adminAuditState.next_cursor='';await loadAdminAudit(true);toast('Admin & Audit refreshed.');return render();}
+ if(act==='admin-audit-more'){const before=adminAuditState.audit.length;await loadAdminAudit(false);await render();toast(`${adminAuditState.audit.length-before} more audit rows loaded.`);return;}
  if(act==='logout'){await api('/api/logout',{});data=null;location.hash='';login();return;}
  if(act==='reconcile-leads'){const result=await api('/api/leads/reconcile',{},'POST',{silent:true});await refresh({silent:true});const s=result.summary||{};toast(`${s.leads_created||0} leads created, ${s.attendees_linked||0} attendees linked, ${s.calls_linked||0} calls linked.`);return;}
  if(act==='reset-user-password')return showDialog('Reset temporary password','Leave blank to generate a secure temporary password.',`<label class="field"><span>New temporary password</span><input name="password" type="text" maxlength="128" autocomplete="off" placeholder="Leave blank to generate"></label>`,async v=>{const result=await api(`/api/users/${encodeURIComponent(id)}/reset-password`,{password:v.password||''});await showTemporaryPassword(result.temporary_password);},'Reset password');
@@ -1927,13 +2692,22 @@ async function action(act,id='',target=null){
  if(act==='delete-email'){if(!await confirmAction({title:'Delete email record?',message:'This removes the CRM copy of this email record.',confirmLabel:'Delete email'}))return;const result=await api(`/api/emails/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});const dialog=$('#dialog');if(dialog?.open)dialog.close();await applyServerMutation(result);toast('Email deleted.');return;}
  if(act==='delete-application'){const app=data.applications.find(a=>a.id===id);if(!await confirmAction({title:'Delete application?',message:app?`${fullName(app)} · ${app.programme||'Application'}`:'This application will be removed.',confirmLabel:'Delete application'}))return;const result=await api(`/api/applications/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});await applyServerMutation(result);toast('Application deleted.');return;}
  if(act==='delete-evidence'){if(!await confirmAction({title:'Delete evidence file?',message:'The uploaded document will be removed from this application.',confirmLabel:'Delete file'}))return;const result=await api(`/api/evidence/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});await applyServerMutation(result);toast('Evidence deleted.');return;}
-  if(act==='notifications'){if(overdueEmailCount()){Object.assign(filters,{inbox:'Overdue',inboxSort:'due-soon',inboxDate:'due',inboxLabel:'All'});go('inbox');return;}filters.planner='Overdue';go('planner');return;}
+  
   if(act==='planner-filter'){filters.planner=id;return render();}
  if(act==='lead-view'){filters.leadView=id==='board'?'board':'table';return render();}
+ if(act==='lead-tab'){const tab=target?.dataset?.tab||'timeline';lead360State.active[id]=tab;await loadLead360Tab(id,tab);return render();}
+ if(act==='lead-tab-more'){
+  const tab=target?.dataset?.tab||'timeline',key=`${id}:${tab}`,current=lead360State.tabs[key]||{},cursor=current.next_cursor;
+  if(!cursor)return;
+  const more=await api(`/api/leads/${encodeURIComponent(id)}/${tab}?limit=30&cursor=${encodeURIComponent(cursor)}`,undefined,'GET',{silent:true});
+  const items=[...(current.items||[]),...(more.items||[])],alias=tab==='emails'?'emails':tab==='tasks'?'tasks':tab==='application'?'applications':tab==='meetings'?'events':tab==='calls'?'calls':tab==='files'?'files':tab==='notes'?'notes':'items';
+  lead360State.tabs[key]={...more,items,[alias]:items};
+  return render();
+ }
  if(act==='event-hub-view'){filters.eventView=id;return render();}
  if(act==='event-hub-range'){filters.eventRange=id;return render();}
  if(act==='event-open')return eventInfoDialog(id);
- if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'Unanswered'});await loadInboxEmails(true);return render();}
+ if(act==='inbox-clear'){Object.assign(filters,{inboxSearch:'',inboxDay:'',inboxSort:'newest',inboxDate:'received',inboxLabel:'All',inbox:'All'});await loadInboxEmails(true);return render();}
  if(act==='load-more-emails'){const result=await loadInboxEmails(false);await render();toast(`${(result.emails||[]).length} more emails loaded.`);return;}
  if(act==='load-more-zoom-calls'){const calls=await loadZoomCalls(false);await render();toast(`${calls.length} more Zoom call${calls.length===1?'':'s'} loaded.`);return;}
  if(act==='load-more-leads'){const leads=await loadMoreLeads();await render();toast(`${leads.length} more lead${leads.length===1?'':'s'} loaded.`);return;}
@@ -1949,21 +2723,67 @@ async function action(act,id='',target=null){
  if(act==='gmail-sync'){await runGmailSyncAuto();return;}
  if(act==='gmail-help')return information('Connect Gmail',`<p>Add a <span class="mono">.env</span> file beside <span class="mono">server.js</span> with:</p><p class="mono">GMAIL_CLIENT_ID=...<br>GMAIL_CLIENT_SECRET=...<br>GMAIL_REDIRECT_URI=http://127.0.0.1:5500/api/integrations/gmail/callback</p><p class="small muted">Then restart the Kent Business College backend and open Settings again. The Gmail card will change to Ready to connect.</p>`);
  if(act==='zoho-connect'){location.href='/api/integrations/zoho/connect';return;}
- if(act==='zoho-full-sync'||act==='zoho-sync'){zohoRecordsPreviewCache=null;zohoStatusCache=null;const result=await api('/api/integrations/zoho/sync',{full_sync:true},'POST',{silent:true});scheduleZohoSyncPoll(result.jobId||result.id);toast('Zoho full sync queued.');return;}
+ if(act==='zoho-full-sync'||act==='zoho-sync'){zohoRecordsPreviewCache=null;zohoStatusCache=null;const result=await api('/api/integrations/zoho/sync',{mode:'incremental'},'POST',{silent:true});scheduleZohoSyncPoll(result.jobId||result.id);toast('Zoho sync queued.');return;}
  if(act==='zoho-help')return information('Connect Zoho CRM',`<p>Add Zoho OAuth settings to <span class="mono">.env</span>, then connect from Settings.</p><p class="mono">ZOHO_CLIENT_ID=...<br>ZOHO_CLIENT_SECRET=...<br>ZOHO_REDIRECT_URI=...</p><p class="small muted">The sync stores safe module summaries for Leads, Contacts, Accounts, Deals, Tasks, Calls, Events, Campaigns and Notes.</p>`);
  if(act==='eventbrite-connect'){location.href='/api/integrations/eventbrite/connect';return;}
- if(act==='eventbrite-sync'){const result=await api('/api/integrations/eventbrite/sync',{max_events:10},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported_events} Eventbrite event${result.imported_events===1?'':'s'} and ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported${result.deleted_events?`; ${result.deleted_events} removed`:''}${result.attendee_errors?`; ${result.attendee_errors} attendee list${result.attendee_errors===1?'':'s'} unavailable`:''}.`);return;}
+ if(act==='eventbrite-sync'){const result=await api('/api/integrations/eventbrite/sync',{max_events:10},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported_events} Eventbrite event${result.imported_events===1?'':'s'} imported, ${result.updated_events||0} updated, ${result.unchanged_events||0} unchanged, and ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported${result.soft_merged_duplicates?`; ${result.soft_merged_duplicates} duplicate event${result.soft_merged_duplicates===1?'':'s'} marked`:''}${result.attendee_errors?`; ${result.attendee_errors} attendee list${result.attendee_errors===1?'':'s'} unavailable`:''}.`);return;}
  if(act==='eventbrite-help')return information('Connect Eventbrite',`<p>Create an Eventbrite API app, then add these values to <span class="mono">.env</span>:</p><p class="mono">EVENTBRITE_CLIENT_ID=...<br>EVENTBRITE_CLIENT_SECRET=...<br>EVENTBRITE_REDIRECT_URI=http://127.0.0.1:5500/api/integrations/eventbrite/callback</p><p class="small muted">Use that exact redirect URI in the Eventbrite app settings. Then restart the Kent Business College backend and open Settings again.</p>`);
  if(act==='zoom-sync'){const result=await api('/api/integrations/zoom/sync',{max_meetings:2000,report_history_months:6},'POST',{silent:true});await refresh({silent:true});const warnings=(result.history_warnings||[]).filter(Boolean),windowMonths=result.report_history_months||result.history_months||6,skipped=result.report_history_skipped||0;toast(`Zoom sync complete. ${result.imported_events} added, ${result.updated_events} updated, ${result.scanned} scanned${result.users?` from ${result.users} user${result.users===1?'':'s'}`:''}${result.accounts?` across ${result.accounts} account${result.accounts===1?'':'s'}`:''}${result.imported_attendees!==undefined?`, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'}`:''}${result.imported_phones!==undefined?`, ${result.imported_phones} phone${result.imported_phones===1?'':'s'}`:''}${result.history?`. Historical import window: ${windowMonths} month${windowMonths===1?'':'s'}`:''}. Older saved meetings were preserved${skipped?`; report history skipped for ${skipped} user/account pair${skipped===1?'':'s'} not supported by Zoom plan/scope`:''}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
  if(act==='zoom-calls-sync'){const result=await api('/api/integrations/zoom/calls/sync',{max_calls:5000,call_history_months:12},'POST',{silent:true});await refresh({silent:true});const warnings=(result.warnings||[]).filter(Boolean);toast(`Zoom calls sync complete. ${result.imported_calls} added, ${result.updated_calls} updated, ${result.scanned} scanned across ${result.accounts||0} account${result.accounts===1?'':'s'} over ${result.call_history_months||12} month${(result.call_history_months||12)===1?'':'s'}${warnings.length?`; warning: ${warnings[0]}`:''}.`);return;}
  if(act==='zoom-help')return information('Connect Zoom Meetings',`<p>Create a Zoom Server-to-Server OAuth app, then add these values to <span class="mono">.env</span>:</p><p class="mono">ZOOM_ACCOUNT_ID=...<br>ZOOM_CLIENT_ID=...<br>ZOOM_CLIENT_SECRET=...<br>ZOOM_SYNC_ALL_USERS=true<br>ZOOM_MEETING_TYPE=all<br>ZOOM_INCLUDE_HISTORY=true<br>ZOOM_REPORT_HISTORY_MONTHS=6</p><p class="small muted">For all users, the Zoom app needs meeting read and user read scopes. To pull report history, also add the Zoom Reports read scope, commonly <span class="mono">report:read:user:admin</span>. Zoom report history is limited to the recent 6 months; older records already saved in the CRM remain there.</p>`);
+ if(act==='automation-worker'){const result=await api('/api/automations/run-worker',{limit:10},'POST',{silent:true});toast(`Automation worker claimed ${result.claimed||0} job${result.claimed===1?'':'s'}.`);return render();}
+ if(act==='automation-enable'){await api(`/api/automations/${encodeURIComponent(id)}/enable`,{},'POST',{silent:true});toast('Automation rule enabled.');return render();}
+ if(act==='automation-disable'){await api(`/api/automations/${encodeURIComponent(id)}/disable`,{},'POST',{silent:true});toast('Automation rule disabled.');return render();}
+ if(act==='automation-preview'){const result=await api(`/api/automations/${encodeURIComponent(id)}/preview`,{},'POST',{silent:true});return information('Automation preview',`<p>${result.matched||0} matching record${result.matched===1?'':'s'} found. Preview did not change any data.</p>${(result.matches||[]).slice(0,8).map(match=>`<div class="person-row"><div class="person-main"><strong>${esc(match.label||match.entity_id)}</strong><p>${esc(match.entity_type)} · ${esc(match.entity_id)}</p></div>${badge(`${(match.actions||[]).length} action${(match.actions||[]).length===1?'':'s'}`)}</div>`).join('')||'<p class="muted">No matching records.</p>'}`);}
+ if(act==='automation-new')return showDialog('New automation rule','Create a draft rule. Preview it before enabling.',field('name','Rule name','','text','maxlength="160"')+select('trigger_type','When',['lead_created','lead_stage_changed','application_status_changed','task_completed','no_activity_for'])+field('condition_field','IF field','source','text','maxlength="80"')+select('condition_operator','Operator',['equals','not_equals','in','not_in','is_empty','is_not_empty'])+field('condition_value','Value','','text','maxlength="160"')+select('action_type','THEN',['create_task','add_note','mark_follow_up_required'])+field('action_title','Task title / note','Automation follow-up','text','maxlength="180"'),async v=>{const condition=v.condition_field?{field:v.condition_field,operator:v.condition_operator,value:v.condition_operator.includes('_in')?v.condition_value.split(',').map(item=>item.trim()).filter(Boolean):v.condition_value}:null;const action=v.action_type==='create_task'?{type:'create_task',title:v.action_title,due_in_hours:1,priority:'P1'}:v.action_type==='add_note'?{type:'add_note',note:v.action_title}:{type:'mark_follow_up_required'};await api('/api/automations',{name:v.name,description:'Draft rule created from the structured builder.',status:'draft',trigger_type:v.trigger_type,conditions:condition?[condition]:[],condition_mode:'all',actions:[action]},'POST',{silent:true});toast('Automation draft saved.');return render();},'Save draft');
  if(act==='import-events')return showDialog('Import events','Upload Excel/CSV or paste a Google Sheets link. Use columns like Event Name, Date, Location, Meeting Link, First Name, Last Name, Email and Attended.',`<label class="field"><span>Google Sheets link</span><input name="google_url" type="url" placeholder="https://docs.google.com/spreadsheets/d/..."></label><label class="field"><span>Excel or CSV file</span><input type="file" name="spreadsheet" accept=".xlsx,.xls,.csv"></label>`,async(v,form)=>{const file=form.querySelector('[name="spreadsheet"]').files[0],google_url=String(v.google_url||'').trim();if(!file&&!google_url)throw new Error('Paste a Google Sheets link or choose an Excel file first.');const file_base64=file?await fileToBase64(file):'';const result=await api('/api/events/import',{filename:file?.name||'google-sheet',file_base64,google_url});toast(`${result.imported_events} event${result.imported_events===1?'':'s'} added, ${result.updated_events} updated, ${result.imported_attendees} attendee${result.imported_attendees===1?'':'s'} imported.`);},'Import');
  if(act==='meta-sync'){const result=await api('/api/integrations/meta/sync',{max_leads:50},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported} Meta lead${result.imported===1?'':'s'} imported from ${result.forms} form${result.forms===1?'':'s'}.`);return;}
  if(act==='meta-help')return information('Connect Meta Lead Ads',`<p>Add a Page access token and Page ID to <span class="mono">.env</span>:</p><p class="mono">META_ACCESS_TOKEN=...<br>META_PAGE_ID=...<br>META_GRAPH_VERSION=v22.0</p><p class="small muted">The token needs Lead Ads permissions such as <span class="mono">leads_retrieval</span> and page access. Optional: set <span class="mono">META_FORM_IDS</span> to a comma-separated list if you only want specific forms.</p>`);
  if(act==='apollo-sync'){const result=await api('/api/integrations/apollo/sync',{max_people:25},'POST',{silent:true});await refresh({silent:true});toast(`${result.imported} Apollo prospect${result.imported===1?'':'s'} created, ${result.updated} updated, ${result.scanned} scanned.`);return;}
  if(act==='apollo-help')return information('Connect Apollo',`<p>Add your Apollo API key and optional search filters to <span class="mono">.env</span>:</p><p class="mono">APOLLO_API_KEY=...<br>APOLLO_KEYWORDS=marketing apprenticeships<br>APOLLO_PERSON_TITLES=Marketing Manager,Sales Director<br>APOLLO_PERSON_LOCATIONS=United Kingdom<br>APOLLO_PER_PAGE=25</p><p class="small muted">People Search creates prospect leads from available person and company data. Apollo does not return email addresses or phone numbers from this search endpoint; enrichment can be added next.</p>`);
 
+ if(act==='saved-view-save'){
+  const entity=target?.dataset?.entity||id;
+  return showDialog('Save view','Save the current filters for this page. Records are not copied.',field('name','View name','','text','maxlength="80"')+`<label class="field checkbox"><input type="checkbox" name="is_default"><span>Use as default for this section</span></label>`,async v=>{const result=await api('/api/saved-views',{entity_type:entity,name:v.name,filters:savedViewEntityFilters(entity),is_default:v.is_default==='on'},'POST',{silent:true});const current=savedViewsState[entity]||{};savedViewsState[entity]={items:[result.saved_view,...(current.items||[]).filter(view=>view.id!==result.saved_view.id)],loaded:true,loading:false,error:'',default_applied:true};toast('Saved view created.');await render();return false;},'Save view');
+ }
+ if(act==='saved-view-apply'){
+  const entity=target?.dataset?.entity||'',view=(savedViewsState[entity]?.items||[]).find(item=>item.id===id);
+  if(view)return applySavedView(entity,view);
+ }
+ if(act==='saved-view-manage'){
+  const entity=target?.dataset?.entity||id,views=savedViewsState[entity]?.items||[];
+  return information('Manage saved views',views.map(view=>`<div class="person-row"><div class="person-main"><strong>${esc(view.name)}</strong><p>${esc(view.is_default?'Default view':'Personal view')}</p></div><button class="button soft" data-act="saved-view-rename" data-id="${esc(view.id)}" data-entity="${esc(entity)}">Rename</button><button class="button soft" data-act="saved-view-default" data-id="${esc(view.id)}" data-entity="${esc(entity)}">Default</button><button class="button danger" data-act="saved-view-delete" data-id="${esc(view.id)}" data-entity="${esc(entity)}">Delete</button></div>`).join('')||'<p class="muted">No saved views yet.</p>');
+ }
+ if(act==='saved-view-rename'){
+  const entity=target?.dataset?.entity||'',view=(savedViewsState[entity]?.items||[]).find(item=>item.id===id);
+  if(!view)return;
+  return showDialog('Rename saved view','Update the label only. The saved filters stay the same.',field('name','View name',view.name||'','text','maxlength="80"'),async v=>{const result=await api(`/api/saved-views/${encodeURIComponent(id)}`,{name:v.name},'PATCH',{silent:true});savedViewsState[entity]={items:(savedViewsState[entity]?.items||[]).map(item=>item.id===id?result.saved_view:item),loaded:true,loading:false,error:'',default_applied:true};toast('Saved view renamed.');await render();return false;},'Rename view');
+ }
+ if(act==='saved-view-default'){
+  const entity=target?.dataset?.entity||'',result=await api(`/api/saved-views/${encodeURIComponent(id)}`,{is_default:true},'PATCH',{silent:true});
+  savedViewsState[entity]={items:(savedViewsState[entity]?.items||[]).map(view=>({...view,is_default:view.id===id})),loaded:true,loading:false,error:''};
+  if(result.saved_view)savedViewsState[entity].items=savedViewsState[entity].items.map(view=>view.id===id?result.saved_view:view);
+  toast('Default view updated.');return render();
+ }
+ if(act==='saved-view-delete'){
+  const entity=target?.dataset?.entity||'';
+  if(!await confirmAction({title:'Delete saved view?',message:'This only deletes the saved filter, not CRM records.',confirmLabel:'Delete view'}))return;
+  await api(`/api/saved-views/${encodeURIComponent(id)}`,{},'DELETE',{silent:true});
+  savedViewsState[entity]={items:(savedViewsState[entity]?.items||[]).filter(view=>view.id!==id),loaded:true,loading:false,error:''};
+  toast('Saved view deleted.');return render();
+ }
+ if(act==='dq-filter'){dataQualityState.type=id;dataQualityState.issues=[];dataQualityState.next_cursor='';await loadDataQuality(true);return render();}
+ if(act==='dq-more'){await loadDataQuality(false);return render();}
+ if(act==='dq-refresh'){dataQualityState.summary=null;dataQualityState.issues=[];dataQualityState.next_cursor='';await loadDataQuality(true);toast('Data Quality refreshed.');return render();}
  if(act==='add-application')return openManualApplicationDialog();
+ if(act==='admissions-stage'){await loadAdmissionsStage(id,0);return render();}
+ if(act==='admissions-more'){await loadAdmissionsStage(id,admissionsState.stagePayload?.next_offset||0);return render();}
+ if(act==='application-transition'){
+  const status=target?.dataset?.status||'';
+  if(status==='Enrolled')return showDialog('Confirm learner enrolment','Save the external learner reference before moving to enrolled.',field('external_reference','Aptem / LMS confirmation reference','','text','maxlength="180"')+area('note','How the enrolment was confirmed'),async v=>{const result=await api(`/api/applications/${encodeURIComponent(id)}/status`,{...v,status},'PATCH',{silent:true});await applyServerMutation(result);toast('Application status updated.');return false;},'Confirm enrolment');
+  const result=await api(`/api/applications/${encodeURIComponent(id)}/status`,{status},'PATCH',{silent:true});
+  await applyServerMutation(result);toast('Application status updated.');return;
+ }
  if(act==='add-lead')return showDialog('A new learner journey','Create one canonical person record. A first-contact task will be assigned automatically.',`<div class="form-grid">${field('first_name','First name','','text','maxlength="80" autocomplete="given-name"')}${field('last_name','Last name','','text','maxlength="80" autocomplete="family-name"')}</div>${field('email','Email address','','email','maxlength="254"')}${field('employer','Employer','','text','maxlength="160"')}<label class="field"><span>Phone (optional)</span><input name="phone" type="tel" maxlength="24" placeholder="+44…"></label><label class="field"><span>City (optional)</span><input name="city" maxlength="100"></label>${select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name+' · '+p.level]))}<div class="form-grid">${select('source','Acquisition source',data.sources)}${select('priority','Priority',['P0','P1','P2','P3'],'P2')}</div>${ownerSelect()}${select('contact_permission','Recorded contact permission',['Unknown','Granted','Declined'])}`,async values=>{const result=await api('/api/leads',values);await applyServerMutation(result);toast('Lead created with an application and first-contact task.');go('leads/'+result.id);return false;},'Create lead');
  if(act==='add-programme')return showDialog('Add a programme opportunity','Reuse this person’s Golden Record and preserve their source history.',select('programme_id','Programme',data.programmes.map(p=>[p.id,p.name])),async v=>{const result=await api(`/api/leads/${id}/opportunities`,v);await applyServerMutation(result);toast('Programme opportunity created.');go('leads/'+result.id);return false;},'Create opportunity');
  if(act==='update-lead')return showDialog('Update opportunity','Stage changes and assignment changes are recorded in the audit trail.',select('stage','Stage',data.stages.filter(s=>!['Application Submitted','Eligibility','Ready for Enrolment','Enrolled','Not Eligible','Call Completed','Duplicate'].includes(s)),lead.stage)+ownerSelect(lead.owner_id)+select('priority','Priority',['P0','P1','P2','P3'],lead.priority)+area('reason','Reason for this change'),async values=>{const result=await api('/api/leads/'+id,values,'PATCH');if(result.lead){Object.assign(lead,result.lead);data=syncClientDerived(data);await render();}toast('Opportunity updated.');return false;});
@@ -1972,7 +2792,7 @@ async function action(act,id='',target=null){
  if(act==='log-call')return showDialog('Log the conversation',`Record the outcome for ${fullName(lead)} and give the next step an owner and due time.`,select('outcome','Call outcome',['Completed','No-show','Cancelled'])+area('note','Outcome and notes')+field('next_action','Next action','','text','maxlength="180"')+field('due_at','Follow-up date and time',localInput(new Date(Date.now()+86400000)),'datetime-local'),async v=>{v.lead_id=id;v.follow_up=true;v.due_at=new Date(v.due_at).toISOString();const result=await api('/api/calls',v);await applyServerMutation(result);toast('Call logged and follow-up scheduled.');return false;},'Save call & follow-up');
  if(act==='record-email')return showDialog('Record an inbound email','This records an email received outside Kent Business College. The response SLA is two days from receipt.',leadSelect(id)+field('subject','Subject','','text','maxlength="200"')+area('body','Message content')+field('received_at','Received date and time',localInput(),'datetime-local'),async v=>{v.received_at=new Date(v.received_at).toISOString();const result=await api('/api/emails',v);await applyServerMutation(result);toast('Email added to the response queue.');return false;});
  if(act==='resolve-email')return showDialog('Record a response','Use this after you have responded outside Kent Business College. No message is sent by this action.',field('response_at','When did you respond?',localInput(),'datetime-local')+area('note','Response summary'),async v=>{v.response_at=new Date(v.response_at).toISOString();const result=await api(`/api/emails/${id}/resolve`,v);await applyServerMutation(result);toast('Response recorded.');return false;},'Record response');
- if(act==='send-email-response')return showDialog('Send response','This sends a Gmail response to this sender and marks the message as responded.',area('message','Response message'),async v=>{await api(`/api/emails/${id}/reply`,v);const email=data.emails.find(item=>item.id===id);if(email){email.response_at=new Date().toISOString();email.response_note=v.message;data=syncClientDerived(data);await render();}toast('Response sent and recorded.');return false;},'Send response');
+ if(act==='send-email-response')return showDialog('Send response','This sends a Gmail response to this sender and marks the message as responded.',area('message','Response message'),async v=>{const result=await api(`/api/emails/${id}/reply`,v);const email=data.emails.find(item=>item.id===id);if(email){Object.assign(email,result.email||{response_at:new Date().toISOString(),response_note:v.message});}if(result.reply&&!data.emails.some(item=>item.id===result.reply.id))data.emails.unshift(result.reply);data=syncClientDerived(data);await render();toast('Response sent and recorded.');return false;},'Send response');
  if(act==='apply')return showDialog('Start an application',`Open eligibility review for ${fullName(lead)}.`,applicationIntakeSelect(id)+applicationExistingLearnerFields(),async(v,form)=>{v.lead_id=id;if(v.intake_id===DEFAULT_INTAKE_ID)v.intake_id='';v.already_enrolled=v.already_enrolled==='on';v.evidence_files=await applicationEvidencePayloads(form);APPLICATION_DOCUMENT_TEMPLATES.forEach(([key])=>delete v[`doc_${key}`]);const result=await api('/api/applications',v);await applyServerMutation(result);toast(v.already_enrolled?'Enrolled learner added with documents.':'Application created. Evidence review is pending.');go('applications');return false;},'Submit application');
  if(act==='upload'){
  const req=app.requirements.find(r=>r.id===target.dataset.req);
@@ -2055,22 +2875,35 @@ function updateDashboardFiltersFromControl(target){
  return true;
 }
 function globalSearchSections(result){
- const section=(label,rows)=>rows?.length?`<div class="global-search-section"><b>${esc(label)}</b>${rows.map(row=>`<button data-go="${esc(row.route||'today')}"><span>${esc(row.title||row.id)}</span><small>${esc(row.detail||'')}</small></button>`).join('')}</div>`:'';
- return section('Leads',result.leads)+section('Emails',result.emails)+section('Applications',result.applications)+section('Tasks',result.tasks);
+ const groups=result.groups?.length?result.groups:[
+  {label:'Leads',items:result.leads||[]},{label:'Applications',items:result.applications||[]},{label:'Tasks',items:result.tasks||[]},{label:'Emails',items:result.emails||[]},{label:'Meetings',items:result.meetings||[]},{label:'Calls',items:result.calls||[]}
+ ].filter(group=>group.items?.length);
+ globalSearchState.items=groups.flatMap(group=>group.items||[]);
+ const section=(label,rows)=>rows?.length?`<div class="global-search-section"><b>${esc(label)}</b>${rows.map(row=>{const index=globalSearchState.items.findIndex(item=>item===row);return `<button class="${index===globalSearchState.active?'active':''}" data-search-index="${index}" data-go="${esc(row.route||'today')}"><span>${esc(row.title||row.id)}</span><small>${esc(row.subtitle||row.meta||row.detail||'')}</small></button>`;}).join('')}</div>`:'';
+ return groups.map(group=>section(group.label,group.items)).join('');
+}
+function renderGlobalSearchResult(result){
+ const box=$('#global-search-results');
+ if(!box)return;
+ globalSearchState.result=result||null;
+ const html=globalSearchSections(result||{});
+ box.innerHTML=html||`<div class="global-search-empty">No matches.</div>`;
+ const active=box.querySelector('.global-search-section button.active');
+ if(active)active.scrollIntoView({block:'nearest'});
 }
 async function runGlobalSearch(query){
  const box=$('#global-search-results');
  if(!box)return;
  if(globalSearchController)globalSearchController.abort();
  const q=String(query||'').trim();
- if(q.length<2){box.hidden=true;box.innerHTML='';return;}
+ if(q.length<2){globalSearchState={items:[],active:0,query:q,result:null};box.hidden=true;box.innerHTML='';return;}
  globalSearchController=new AbortController();
  box.hidden=false;
  box.innerHTML=dashboardLoading();
  try{
-  const result=await api(`/api/dashboard/search?q=${encodeURIComponent(q)}`,undefined,'GET',{silent:true,signal:globalSearchController.signal});
-  const html=globalSearchSections(result);
-  box.innerHTML=html||`<div class="global-search-empty">No matches.</div>`;
+  const result=await api(`/api/search?q=${encodeURIComponent(q)}&limit=5`,undefined,'GET',{silent:true,signal:globalSearchController.signal});
+  globalSearchState.query=q;globalSearchState.active=0;
+  renderGlobalSearchResult(result);
  }catch(error){
   if(error.name!=='AbortError')box.innerHTML='<div class="global-search-empty">Unable to search workspace.</div>';
  }
@@ -2132,14 +2965,38 @@ document.addEventListener('submit',async event=>{
  }
 });
 document.addEventListener('keydown',event=>{
+ if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){
+  event.preventDefault();
+  const input=$('#global-search');
+  if(input){input.focus();input.select();$('#global-search-results')?.removeAttribute('hidden');}
+  return;
+ }
+ if(event.target?.id==='global-search'){
+  if(event.key==='Escape'){event.target.value='';$('#global-search-results')?.setAttribute('hidden','');return;}
+  if(['ArrowDown','ArrowUp'].includes(event.key)){
+   event.preventDefault();
+   const count=globalSearchState.items.length;
+   if(count){globalSearchState.active=(globalSearchState.active+(event.key==='ArrowDown'?1:-1)+count)%count;renderGlobalSearchResult(globalSearchState.result);}
+   return;
+  }
+  if(event.key==='Enter'){
+   const item=globalSearchState.items[globalSearchState.active];
+   if(item?.route){event.preventDefault();go(item.route);$('#global-search-results')?.setAttribute('hidden','');}
+   return;
+  }
+ }
  if(event.key==='Escape')closeSelectMenus();
 });
 document.addEventListener('input',event=>{
 if(event.target.id==='lead-search'){filters.search=event.target.value;scheduleLeadFilterRefresh();return;}
-if(event.target.id==='global-search'){clearTimeout(globalSearchTimer);globalSearchTimer=setTimeout(()=>runGlobalSearch(event.target.value),180);return;}
+if(event.target.id==='global-search'){clearTimeout(globalSearchTimer);globalSearchTimer=setTimeout(()=>runGlobalSearch(event.target.value),240);return;}
 if(event.target.id==='event-search'){filters.eventSearch=event.target.value;scheduleEventFilterRefresh();return;}
 if(event.target.id==='zoom-search'){filters.zoomSearch=event.target.value;updateZoomResults();return;}
 if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;scheduleInboxFilterRefresh();return;}
+if(event.target.id==='documents-search'){filters.documentsSearch=event.target.value;clearTimeout(leadFilterTimer);leadFilterTimer=setTimeout(async()=>{documentsState.items=[];documentsState.next_cursor='';await loadDocuments(true);render();},280);return;}
+if(event.target.id&&event.target.id.startsWith('admin-audit-')&&['admin-audit-actor','admin-audit-action'].includes(event.target.id)){
+ const key=event.target.id.replace('admin-audit-','');filters.adminAudit[key]=event.target.value;clearTimeout(dashboardFilterTimer);dashboardFilterTimer=setTimeout(async()=>{adminAuditState.overview=null;adminAuditState.audit=[];adminAuditState.next_cursor='';await loadAdminAudit(true);render();},320);return;
+}
  if(event.target.id==='inbox-day'){
   event.target.value=formatDateInputValue(event.target.value);
   filters.inboxDay=event.target.value;
@@ -2148,6 +3005,25 @@ if(event.target.id==='inbox-search'){filters.inboxSearch=event.target.value;sche
 });
 document.addEventListener('change',async event=>{
  if(updateDashboardFiltersFromControl(event.target))return;
+ if(event.target.id==='documents-type'){filters.documentsType=event.target.value;documentsState.items=[];documentsState.next_cursor='';await loadDocuments(true);return render();}
+ if(event.target.id&&event.target.id.startsWith('admin-audit-')){
+  const key=event.target.id.replace('admin-audit-','');
+  if(Object.prototype.hasOwnProperty.call(filters.adminAudit,key)){
+   filters.adminAudit[key]=event.target.value;
+   adminAuditState.overview=null;adminAuditState.audit=[];adminAuditState.next_cursor='';
+   await loadAdminAudit(true);
+   return render();
+  }
+ }
+ if(event.target.id&&event.target.id.startsWith('analytics-')){
+  const key={ 'analytics-preset':'preset','analytics-from':'from','analytics-to':'to','analytics-programme':'programme_id','analytics-owner':'owner_id','analytics-source':'lead_source' }[event.target.id];
+  if(key){
+   analyticsState.filters[key]=event.target.value;
+   if(['from','to'].includes(key))analyticsState.filters.preset='custom';
+   analyticsState.payload=null;
+   return render();
+  }
+ }
  const roleControl=event.target.closest('[data-dev-role]');
  if(roleControl){
   const previous=roleControl.dataset.previous||roleControl.value;
@@ -2323,7 +3199,7 @@ function inboxLoadedSummary(list){
  return `${loaded.toLocaleString()} ${noun} loaded${available}${page.has_more?'. Read more loads the next 50.':''}`;
 }
 function inboxToolbar(list){
- return `<div class="toolbar inbox-toolbar"><div class="search">${icon('search')}<input id="inbox-search" aria-label="Search inbox" placeholder="Search name, email, subject or message..." value="${esc(filters.inboxSearch)}"></div><select id="inbox-label" aria-label="Filter by label">${inboxLabelOptions().map(label=>`<option value="${esc(label)}" ${filters.inboxLabel===label?'selected':''}>${esc(label==='All'?'All labels':label)}</option>`).join('')}</select><select id="inbox-date-field" aria-label="Date field"><option value="received" ${filters.inboxDate==='received'?'selected':''}>Received date</option><option value="due" ${filters.inboxDate==='due'?'selected':''}>Due date</option></select>${datePickerField('inbox-day','Filter day',filters.inboxDay)}<select id="inbox-status" aria-label="Filter by response status">${['Unanswered','Unread','Seen, no reply','Overdue','Resolved','Sent','All','Trash'].map(status=>`<option value="${esc(status)}" ${filters.inbox===status?'selected':''}>${esc(status)}</option>`).join('')}</select><select id="inbox-sort" aria-label="Sort inbox"><option value="newest" ${filters.inboxSort==='newest'?'selected':''}>Newest first</option><option value="oldest" ${filters.inboxSort==='oldest'?'selected':''}>Oldest first</option><option value="due-soon" ${filters.inboxSort==='due-soon'?'selected':''}>Due soon</option><option value="name" ${filters.inboxSort==='name'?'selected':''}>Name A-Z</option><option value="name-desc" ${filters.inboxSort==='name-desc'?'selected':''}>Name Z-A</option></select><button class="button inbox-clear-button" data-act="inbox-clear" aria-label="Clear filters" title="Clear filters">${icon('close')}</button></div><div class="result-summary">${esc(inboxLoadedSummary(list))}</div>`;
+ return `<div class="toolbar inbox-toolbar"><div class="search">${icon('search')}<input id="inbox-search" aria-label="Search inbox" placeholder="Search name, email, subject or message..." value="${esc(filters.inboxSearch)}"></div><select id="inbox-label" aria-label="Filter by label">${inboxLabelOptions().map(label=>`<option value="${esc(label)}" ${filters.inboxLabel===label?'selected':''}>${esc(label==='All'?'All labels':label)}</option>`).join('')}</select><select id="inbox-date-field" aria-label="Date field"><option value="received" ${filters.inboxDate==='received'?'selected':''}>Received date</option><option value="due" ${filters.inboxDate==='due'?'selected':''}>Due date</option></select>${datePickerField('inbox-day','Filter day',filters.inboxDay)}<select id="inbox-status" aria-label="Filter by response status">${['All','Unanswered','Unread','Seen, no reply','Overdue','Resolved','Sent','Trash'].map(status=>`<option value="${esc(status)}" ${filters.inbox===status?'selected':''}>${esc(status)}</option>`).join('')}</select><select id="inbox-sort" aria-label="Sort inbox"><option value="newest" ${filters.inboxSort==='newest'?'selected':''}>Newest first</option><option value="oldest" ${filters.inboxSort==='oldest'?'selected':''}>Oldest first</option><option value="due-soon" ${filters.inboxSort==='due-soon'?'selected':''}>Due soon</option><option value="name" ${filters.inboxSort==='name'?'selected':''}>Name A-Z</option><option value="name-desc" ${filters.inboxSort==='name-desc'?'selected':''}>Name Z-A</option></select><button class="button inbox-clear-button" data-act="inbox-clear" aria-label="Clear filters" title="Clear filters">${icon('close')}</button></div><div class="result-summary">${esc(inboxLoadedSummary(list))}</div>`;
 }
 function updateInboxResults(){
  const list=inboxResults(),results=$('#inbox-results'),summary=$('.result-summary');
@@ -2334,12 +3210,12 @@ function inboxLoadMoreButton(){
  const page=data.email_paging||{};
  if(!page.has_more)return '';
  const loaded=Number(page.loaded||data.emails?.length||0);
- return `<div class="crm-more inbox-load-more"><button class="button soft" data-act="load-more-emails">Read more</button><span class="small muted">${loaded.toLocaleString()} emails loaded. Next click loads 50 more.</span></div>`;
+ return `<div class="crm-more inbox-load-more"><button class="button soft" data-act="load-more-emails">Read more</button><span class="small muted">${loaded.toLocaleString()} emails loaded. Keep reading to fetch the remaining conversations.</span></div>`;
 }
 async function inbox(){
  if(data.email_paging?.filter_key!==inboxFilterKey())await loadInboxEmails(true,{silent:true});
  const list=inboxResults();
- return heading('Every conversation matters.','Incoming mail that still needs a company response.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+pageNewNotice('inbox')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>${inboxLoadMoreButton()}`;
+ return heading('Every conversation matters.','All inbox, sent, resolved and response-tracked email conversations.',data.permissions.sales?btn('Record email','record-email','','primary'):'')+pageNewNotice('inbox')+savedViewsBar('inbox')+`${inboxToolbar(list)}<div id="inbox-results">${emailCards(list)}</div>${inboxLoadMoreButton()}`;
 }
 function emailLead(e){return data.leads.find(l=>l.id===e.lead_id);}
 const GMAIL_SYSTEM_LABELS={INBOX:'Inbox',SENT:'Sent',TRASH:'Trash',SPAM:'Spam',DRAFT:'Draft',STARRED:'Starred',IMPORTANT:'Important',UNREAD:'Unread',CATEGORY_PERSONAL:'Personal',CATEGORY_SOCIAL:'Social',CATEGORY_PROMOTIONS:'Promotions',CATEGORY_UPDATES:'Updates',CATEGORY_FORUMS:'Forums'};
@@ -2457,10 +3333,12 @@ function emailThreadMessages(email){
 }
 function emailConversationItems(email){
  const items=[];
- emailThreadMessages(email).forEach(item=>{
+ const messages=emailThreadMessages(email);
+ const hasOutboundReply=messages.some(item=>item.direction==='outbound');
+ messages.forEach(item=>{
   const received=safeDate(item.received_at)||safeDate(item.created_at)||new Date(0);
   items.push({type:'email',id:item.id,email:item,sort_at:received});
-  if(item.response_at||String(item.response_note||'').trim()){
+  if(!hasOutboundReply&&(item.response_at||String(item.response_note||'').trim())){
    const responded=responseDate(item)||new Date(received.getTime()+1);
    items.push({type:'response',id:`${item.id}:response`,email:item,sort_at:responded});
   }
@@ -2492,7 +3370,7 @@ function emailMessageCard(email,part,index,total){
  const from=headers.find(line=>/^From:/i.test(line));
  const sent=headers.find(line=>/^(Sent|Date):/i.test(line));
  const subject=headers.find(line=>/^Subject:/i.test(line));
- const title=index===0?fullName(email):(from?from.replace(/^From:\s*/i,''):`Quoted email ${index+1}`);
+ const title=index===0?(email.direction==='outbound'?(email.from_name||email.owner||'Our response'):fullName(email)):(from?from.replace(/^From:\s*/i,''):`Quoted email ${index+1}`);
  const body=lines.join('\n').trim()||part||'No message body';
  const snippet=body.replace(/\s+/g,' ').slice(0,180);
  const actions=emailNeedsResponse(email)&&data.permissions.sales?`${data.integrations.find(i=>i.name==='Gmail')?.status==='Connected'?btn('Send response','send-email-response',email.id,'primary'):''}${btn('Record response','resolve-email',email.id,data.integrations.find(i=>i.name==='Gmail')?.status==='Connected'?'':'primary')}`:`<span class="small muted">${esc(emailStatusLabel(email))} ${responseDate(email)?timestamp(responseDate(email)):''}</span>`;
@@ -2557,11 +3435,14 @@ function emailThreadRow(item,activeId,gmailConnected){
  if(item.type==='response')return emailResponseThreadRow(item);
  const email=item.email||item;
  const expanded=email.id===activeId,label=primaryEmailLabel(email),lead=emailLead(email);
+ const outbound=email.direction==='outbound';
+ const title=outbound?(email.from_name||email.owner||'Our response'):fullName(email);
+ const subtitle=outbound?`to ${email.email}`:email.email;
  return `<article class="email-thread-item ${expanded?'expanded':''}">
   <div class="email-thread-summary">
-   ${avatar(email)}
+   ${avatar(outbound?{name:title}:email)}
    <div class="email-thread-main">
-    <div class="email-thread-title"><strong>${esc(fullName(email))}</strong><span>${esc(email.email)}</span></div>
+    <div class="email-thread-title"><strong>${esc(title)}</strong><span>${esc(subtitle)}</span></div>
     <div class="email-thread-subject">${esc(email.subject)}</div>
     ${expanded?'':`<button class="email-thread-preview" data-act="open-email" data-id="${esc(email.id)}">${esc(emailSnippet(email))}</button>`}
     <div class="email-thread-labels"><span class="gmail-label ${label.kind}">${esc(label.text)}</span>${badge(emailStatusLabel(email),emailStatusClass(email))}<span>Owner: ${esc(email.owner)}</span>${lead?`<span>${esc(fullName(lead))}</span>`:''}</div>
@@ -2604,3 +3485,7 @@ async function openEmailDialog(id){
 }
 if(route().startsWith('reset-password'))resetPassword();
 else refresh().catch(()=>{if(!data)login();});
+
+
+
+

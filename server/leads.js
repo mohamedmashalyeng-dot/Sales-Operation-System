@@ -15,6 +15,7 @@ const Applications = require('./applications');
 const Bootstrap = require('./bootstrap');
 const Zoom = require('./integrations/zoom');
 const Authorization = require('./authorization');
+const Automations = require('./automations');
 
 let identityCleanupRunning = false;
 function refreshLeadSoftDelete(trace = null, { force = false } = {}) {
@@ -79,6 +80,12 @@ function addLeadSource(lead, source, detail = {}) {
 }
 
 function mergeLeadData(target, incoming) {
+  const sameProviderRecord = Boolean(
+    (incoming.meta_lead_id && target.meta_lead_id === incoming.meta_lead_id) ||
+    (incoming.eventbrite_attendee_id && target.eventbrite_attendee_id === incoming.eventbrite_attendee_id) ||
+    (incoming.apollo_person_id && target.apollo_person_id === incoming.apollo_person_id) ||
+    (incoming.zoho_record_id && target.zoho_record_id === incoming.zoho_record_id)
+  );
   if (incoming.programme_id && (!target.programme_id || (Programmes.isPlaceholderProgramme(target) && !Programmes.isPlaceholderProgramme(incoming)))) {
     target.programme_id = incoming.programme_id;
     target.programme = incoming.programme;
@@ -86,6 +93,11 @@ function mergeLeadData(target, incoming) {
   }
   for (const key of ['first_name', 'last_name', 'email', 'employer', 'phone', 'city', 'owner_id', 'owner', 'priority', 'contact_permission']) {
     if (!target[key] && incoming[key]) target[key] = incoming[key];
+  }
+  if (sameProviderRecord) {
+    for (const key of ['first_name', 'last_name', 'email', 'employer', 'phone', 'city', 'contact_permission']) {
+      if (incoming[key] && target[key] !== incoming[key]) target[key] = incoming[key];
+    }
   }
   for (const key of ['eventbrite_attendee_id', 'meta_lead_id', 'meta_form_id', 'meta_form_name', 'apollo_person_id', 'zoho_record_id', 'zoho_module']) {
     if (incoming[key] && !target[key]) target[key] = incoming[key];
@@ -600,35 +612,254 @@ async function loadLeadPage(options = {}, trace = null) {
   });
 }
 
-// Lead detail reads only this lead and the rows linked to it.
+const LEAD_360_DEFAULT_LIMIT = 30;
+const LEAD_360_MAX_LIMIT = 100;
+
+function lead360PageOptions(options = {}) {
+  const rawLimit = Number.parseInt(options.limit, 10);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, LEAD_360_MAX_LIMIT)) : LEAD_360_DEFAULT_LIMIT;
+  const cursor = Util.decodePageCursor(options.cursor, 'lead 360 cursor');
+  return { limit, offset: Math.max(0, Number.parseInt(cursor?.offset, 10) || 0) };
+}
+
+function lead360Page(items, limit, offset, extra = {}) {
+  const visible = items.slice(0, limit);
+  const nextOffset = offset + visible.length;
+  const nextCursor = items.length > limit ? Util.encodePageCursor({ offset: nextOffset }) : '';
+  return { items: visible, limit, has_more: Boolean(nextCursor), hasMore: Boolean(nextCursor), next_cursor: nextCursor, nextCursor, ...extra };
+}
+
+function lead360Summary(row) {
+  const lead = row?.data || row || {};
+  return {
+    ...lead,
+    id: row?.id || lead.id,
+    person_id: row?.person_id || lead.person_id || row?.id || lead.id,
+    first_name: row?.first_name ?? lead.first_name,
+    last_name: row?.last_name ?? lead.last_name,
+    email: row?.email ?? lead.email,
+    employer: row?.employer ?? lead.employer,
+    phone: row?.phone ?? lead.phone,
+    city: row?.city ?? lead.city,
+    programme_id: row?.programme_id ?? lead.programme_id,
+    programme: row?.programme ?? lead.programme,
+    level: row?.level ?? lead.level,
+    owner_id: row?.owner_id ?? lead.owner_id,
+    owner: row?.owner ?? lead.owner,
+    stage: row?.stage ?? lead.stage,
+    priority: row?.priority ?? lead.priority,
+    source_first_touch: row?.source_first_touch ?? lead.source_first_touch,
+    source_lead_capture: row?.source_lead_capture ?? lead.source_lead_capture,
+    contact_permission: row?.contact_permission ?? lead.contact_permission,
+    created_at: row?.created_at ? new Date(row.created_at).toISOString() : (lead.created_at || null),
+    next_action_at: row?.next_action_at ? new Date(row.next_action_at).toISOString() : (lead.next_action_at || null)
+  };
+}
+
+function lead360EmailNotTrashedSql(alias = 'e') {
+  return `coalesce(${alias}.data->>'trashed_at', '') = '' and not (coalesce(${alias}.data->'gmail_labels', '[]'::jsonb) ? 'TRASH')`;
+}
+
+function lead360Timestamp(value) {
+  return value ? new Date(value).toISOString() : null;
+}
+
+function lead360TaskItem(task = {}) {
+  return {
+    id: task.id,
+    kind: task.kind || 'Task',
+    title: task.title || 'Task',
+    status: task.status || '',
+    due_at: task.due_at || null,
+    completed_at: task.completed_at || null,
+    priority: task.priority || '',
+    owner_id: task.owner_id || '',
+    occurred_at: task.completed_at || task.due_at || task.created_at || null
+  };
+}
+
+function lead360AuditItem(item = {}) {
+  return {
+    id: item.id,
+    action: item.action || '',
+    note: item.note || item.detail || item.description || '',
+    actor: item.actor || '',
+    occurred_at: item.occurred_at || null
+  };
+}
+
+function lead360FileItems(app = {}) {
+  return (app.requirements || []).flatMap(req => {
+    const latest = req.latest;
+    if (!latest?.id) return [];
+    return [{
+      id: latest.id,
+      application_id: app.id,
+      requirement_id: req.id,
+      title: req.title || req.name || 'Evidence',
+      filename: latest.filename || 'Document',
+      version: latest.version || 1,
+      status: latest.status || 'Pending',
+      reviewer: latest.reviewer || '',
+      uploaded_at: latest.uploaded_at || latest.created_at || app.created_at || null,
+      download_url: `/api/evidence/${encodeURIComponent(latest.id)}/file`
+    }];
+  });
+}
+
+function publicLead360Application(app = {}) {
+  return Applications.publicApplication(app);
+}
+
+function lead360CallMatchesLead(call = {}, leadId = '') {
+  return String(call.lead_id || call.caller_lead_id || call.callee_lead_id || '') === String(leadId);
+}
+
+async function lead360CallsFromWorkspace(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(`select meta->'zoom' as zoom from app_workspace where id = $1`, ['main']);
+  const calls = (result.rows[0]?.zoom?.calls || [])
+    .filter(call => lead360CallMatchesLead(call, leadId))
+    .map(call => {
+      const { raw, participants, ...item } = call;
+      return {
+        id: item.id || item.call_id || item.uuid || `${item.started_at || ''}-${item.caller_number || ''}-${item.callee_number || ''}`,
+        direction: item.direction || item.call_type || '',
+        started_at: item.started_at || item.date_time || item.created_at || null,
+        duration: item.duration || item.duration_seconds || '',
+        outcome: item.outcome || item.result || item.status || '',
+        caller_number: item.caller_number || '',
+        callee_number: item.callee_number || '',
+        owner_name: item.owner_name || item.user_name || item.zoom_account_label || ''
+      };
+    })
+    .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
+  return lead360Page(calls.slice(offset, offset + limit + 1), limit, offset, { calls: calls.slice(offset, offset + limit) });
+}
+
+// Lead detail is now a compact core payload. Tabs below load their own bounded pages.
 async function loadLeadDetailDb(leadId, mergedFrom = null) {
   await refreshLeadSoftDelete();
-  const row = (await State.postgresPool.query(`select data${State.leadSoftDelete.enabled ? ', merged_into_id' : ''} from app_leads where id = $1`, [leadId])).rows[0];
+  const row = (await State.postgresPool.query(`select id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data${State.leadSoftDelete.enabled ? ', merged_into_id' : ''} from app_leads where id = $1`, [leadId])).rows[0];
   // A merged duplicate opens its master (old links and bookmarks keep working).
   if (row?.merged_into_id && !mergedFrom) return { ...(await loadLeadDetailDb(row.merged_into_id, leadId)), merged_from: leadId };
-  const lead = row?.data;
+  const lead = lead360Summary(row);
   if (!lead) throw Http.statusError(404, 'Lead not found.');
-  const [tasks, emails, applications, audit] = await Promise.all([
-    State.postgresPool.query(`select data from app_tasks where lead_id = $1 order by coalesce(completed_at, due_at) desc nulls last limit 200`, [leadId]),
+  const [summary, nextTask, recent] = await Promise.all([
     State.postgresPool.query(
-      `select jsonb_build_object(
-         'lead_id', lead_id, 'subject', data->'subject', 'received_at', received_at, 'owner', data->'owner',
-         'direction', data->'direction', 'response_at', response_at, 'gmail_labels', data->'gmail_labels',
-         'dashboard_folder', data->'dashboard_folder', 'trashed_at', data->'trashed_at'
-       ) as data
-       from app_emails where lead_id = $1 order by received_at desc nulls last limit 200`,
+      `select
+         (select count(*)::int from app_tasks where lead_id = $1 and coalesce(status, data->>'status', '') <> 'Done') as open_tasks,
+         (select count(*)::int from app_emails e where e.lead_id = $1 and ${lead360EmailNotTrashedSql('e')} and coalesce(e.response_at::text, '') = '' and coalesce(e.data->>'direction', 'inbound') <> 'outbound') as unanswered_emails,
+         (select count(*)::int from app_applications where lead_id = $1) as applications,
+         (select count(*)::int from app_events e where exists (select 1 from jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) a where a->>'lead_id' = $1)) as meetings,
+         (select count(*)::int from app_audit where entity = 'lead' and entity_id = $1 and action = 'Note added') as notes`,
       [leadId]
     ),
-    State.postgresPool.query(`select data from app_applications where lead_id = $1`, [leadId]),
-    State.postgresPool.query(`select data from app_audit where entity_id = $1 order by occurred_at desc nulls last limit 200`, [leadId])
+    State.postgresPool.query(`select data from app_tasks where lead_id = $1 and coalesce(status, data->>'status', '') <> 'Done' order by due_at asc nulls last, id desc limit 1`, [leadId]),
+    loadLead360TimelineDb(leadId, { limit: 8 })
   ]);
-  const related = {
-    tasks: tasks.rows.map(row => row.data).filter(Boolean),
-    emails: emails.rows.map(row => row.data).filter(Boolean),
-    applications: applications.rows.map(row => row.data).filter(Boolean),
-    audit: audit.rows.map(row => row.data).filter(Boolean)
+  return {
+    lead,
+    summary: summary.rows[0] || {},
+    next_action: lead360TaskItem(nextTask.rows[0]?.data || {}),
+    recent_activity: recent.items,
+    timeline: recent.items,
+    tabs: ['timeline', 'emails', 'tasks', 'application', 'meetings', 'calls', 'notes', 'files'],
+    merged_from: mergedFrom || undefined
   };
-  return { lead, timeline: timeline(related, lead), tasks: related.tasks };
+}
+
+async function loadLead360TimelineDb(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(
+    `with items as (
+       select l.created_at as occurred_at, 'Lead capture' as source,
+              concat(coalesce(l.first_name, l.data->>'first_name', ''), ' ', coalesce(l.last_name, l.data->>'last_name', ''), ' entered the ', coalesce(l.programme, l.data->>'programme', 'programme'), ' pipeline.') as summary,
+              coalesce(l.owner, l.data->>'owner', '') as actor, 'System recorded' as verification, 1::numeric as confidence, l.id as id
+       from app_leads l where l.id = $1
+       union all
+       select coalesce(t.completed_at, t.due_at, (t.data->>'created_at')::timestamptz), coalesce(t.kind, t.data->>'kind', 'Task'),
+              concat(coalesce(t.status, t.data->>'status', ''), ' task: ', coalesce(t.title, t.data->>'title', 'Task')),
+              '', case when coalesce(t.status, t.data->>'status', '') = 'Done' then 'Completed' else 'Scheduled' end, 0.9::numeric, t.id
+       from app_tasks t where t.lead_id = $1
+       union all
+       select e.received_at, 'Email', coalesce(e.subject, e.data->>'subject', '(No subject)'),
+              coalesce(e.owner, e.data->>'owner', ''), case when e.response_at is not null then 'Responded' when coalesce(e.data->>'direction', 'inbound') = 'outbound' then 'Sent by us' else 'Awaiting response' end, 0.92::numeric, e.id
+       from app_emails e where e.lead_id = $1 and ${lead360EmailNotTrashedSql('e')}
+       union all
+       select a.created_at, 'Application', concat('Application status: ', coalesce(a.status, a.data->>'status', 'In review')),
+              coalesce(a.manager, a.data->>'manager', ''), 'Human review required', 0.95::numeric, a.id
+       from app_applications a where a.lead_id = $1
+       union all
+       select ev.start_at, 'Meeting', coalesce(ev.name, ev.data->>'name', 'Meeting'),
+              coalesce(ev.data->>'zoom_host_label', ev.data->>'owner', ''), coalesce(ev.location, ev.data->>'location', 'Meeting'), 0.9::numeric, ev.id
+       from app_events ev where exists (select 1 from jsonb_array_elements(case when jsonb_typeof(ev.attendees) = 'array' then ev.attendees else '[]'::jsonb end) attendee where attendee->>'lead_id' = $1)
+       union all
+       select au.occurred_at, 'Workspace', coalesce(au.action, au.data->>'action', 'Activity'),
+              coalesce(au.actor, au.data->>'actor', ''), 'Audit trail', 1::numeric, au.id
+       from app_audit au where au.entity = 'lead' and au.entity_id = $1
+     )
+     select jsonb_build_object('id', id, 'occurred_at', occurred_at, 'source', source, 'summary', summary, 'actor', actor, 'verification', verification, 'confidence', confidence) as data
+     from items
+     order by occurred_at desc nulls last, id desc
+     limit $2 offset $3`,
+    [leadId, limit + 1, offset]
+  );
+  return lead360Page(result.rows.map(row => row.data), limit, offset);
+}
+
+async function loadLead360EmailsDb(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(
+    `select ${Emails.emailSummaryDataSql()} as data
+     from app_emails e
+     where e.lead_id = $1 and ${lead360EmailNotTrashedSql('e')}
+     order by e.received_at desc nulls last, e.id desc
+     limit $2 offset $3`,
+    [leadId, limit + 1, offset]
+  );
+  const page = lead360Page(result.rows.map(row => row.data), limit, offset);
+  return { ...page, emails: page.items };
+}
+
+async function loadLead360TasksDb(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(
+    `select data from app_tasks where lead_id = $1 order by coalesce(completed_at, due_at) desc nulls last, id desc limit $2 offset $3`,
+    [leadId, limit + 1, offset]
+  );
+  const page = lead360Page(result.rows.map(row => lead360TaskItem(row.data)), limit, offset);
+  return { ...page, tasks: page.items };
+}
+
+async function loadLead360ApplicationsDb(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(`select data from app_applications where lead_id = $1 order by created_at desc nulls last, id desc limit $2 offset $3`, [leadId, limit + 1, offset]);
+  const page = lead360Page(result.rows.map(row => publicLead360Application(row.data)), limit, offset);
+  return { ...page, applications: page.items, application: page.items[0] || null };
+}
+
+async function loadLead360MeetingsDb(leadId, options = {}) {
+  return Zoom.loadZoomEventPageDb({ ...options, lead_id: leadId }, null);
+}
+
+async function loadLead360CallsDb(leadId, options = {}) {
+  return lead360CallsFromWorkspace(leadId, options);
+}
+
+async function loadLead360FilesDb(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(`select data from app_applications where lead_id = $1 order by created_at desc nulls last, id desc`, [leadId]);
+  const files = result.rows.flatMap(row => lead360FileItems(publicLead360Application(row.data))).sort((a, b) => new Date(b.uploaded_at || 0) - new Date(a.uploaded_at || 0));
+  const page = lead360Page(files.slice(offset, offset + limit + 1), limit, offset);
+  return { ...page, files: page.items };
+}
+
+async function loadLead360NotesDb(leadId, options = {}) {
+  const { limit, offset } = lead360PageOptions(options);
+  const result = await State.postgresPool.query(`select data from app_audit where entity = 'lead' and entity_id = $1 and action = 'Note added' order by occurred_at desc nulls last, id desc limit $2 offset $3`, [leadId, limit + 1, offset]);
+  const page = lead360Page(result.rows.map(row => lead360AuditItem(row.data)), limit, offset);
+  return { ...page, notes: page.items };
 }
 
 function leadIdentityKey(lead) {
@@ -665,6 +896,8 @@ async function updateLeadFastDb(id, body, user) {
       auditAction: 'Application auto-created for lead'
     });
     await Audit.appendAuditFast(client, user, 'Opportunity updated', 'lead', lead.id, body.reason);
+    if (body.stage !== undefined) await Automations.recordAutomationEvent(client, 'lead_stage_changed', 'lead', lead.id, { lead, stage: lead.stage, reason: body.reason || '' });
+    else await Automations.recordAutomationEvent(client, 'lead_updated', 'lead', lead.id, { lead, reason: body.reason || '' });
     await client.query('commit');
     State.dbCache = null;
     return { ok: true, lead, application: automaticApplication ? Applications.publicApplication(automaticApplication.application) : null, attribution: automaticApplication?.attribution || null };
@@ -782,6 +1015,7 @@ async function createLeadFastDb(body, user) {
       auditAction: created ? 'Application auto-created for new lead' : 'Application auto-created for duplicate lead'
     });
     await Audit.appendAuditFast(client, user, created ? 'Lead created' : 'Lead updated from duplicate submission', 'lead', lead.id);
+    await Automations.recordAutomationEvent(client, created ? 'lead_created' : 'lead_updated', 'lead', lead.id, { lead, created });
     await client.query('commit');
     State.dbCache = null;
     return { id: lead.id, lead, task, created, application: automaticApplication ? Applications.publicApplication(automaticApplication.application) : null, attribution: automaticApplication?.attribution || null };
@@ -955,6 +1189,14 @@ exports.buildLeadPageQuery = buildLeadPageQuery;
 exports.explainBootstrapAndLeads = explainBootstrapAndLeads;
 exports.loadLeadPage = loadLeadPage;
 exports.loadLeadDetailDb = loadLeadDetailDb;
+exports.loadLead360TimelineDb = loadLead360TimelineDb;
+exports.loadLead360EmailsDb = loadLead360EmailsDb;
+exports.loadLead360TasksDb = loadLead360TasksDb;
+exports.loadLead360ApplicationsDb = loadLead360ApplicationsDb;
+exports.loadLead360MeetingsDb = loadLead360MeetingsDb;
+exports.loadLead360CallsDb = loadLead360CallsDb;
+exports.loadLead360FilesDb = loadLead360FilesDb;
+exports.loadLead360NotesDb = loadLead360NotesDb;
 exports.uniqueLeadsByIdentity = uniqueLeadsByIdentity;
 exports.updateLeadFastDb = updateLeadFastDb;
 exports.addLeadNoteFastDb = addLeadNoteFastDb;

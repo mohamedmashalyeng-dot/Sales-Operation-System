@@ -1,6 +1,7 @@
 'use strict';
 
 const State = require('./state');
+const Config = require('./config');
 const Storage = require('./storage');
 const Auth = require('./auth');
 const Workspace = require('./workspace');
@@ -592,14 +593,58 @@ async function loadDashboardAdminOverviewDb(filters, user) {
   const emailWhere = emailDashboardWhere(filters);
   const appWhere = applicationDashboardWhere(filters);
   const eventWhere = dashboardWhere(filters, { date: dashboardEventDateExpression('ev') });
-  const enrolledAppWhereSql = appendSqlCondition(appWhere.sql, "(a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled')");
-  const [leadStats, emailStats, appStats, sourceStats, stageStats, eventStats, enrolledProgrammeStats, qualityStats] = await Promise.all([
+  const [leadOverview, emailStats, appOverview, eventStats] = await Promise.all([
     State.postgresPool.query(`
+      with filtered as materialized (
+        select
+          ${dashboardLeadIdentitySql('l')} as lead_key,
+          coalesce(l.stage, l.data->>'stage', 'Unstaged') as stage,
+          coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other') as source,
+          coalesce(nullif(l.source_lead_capture, ''), nullif(l.source_first_touch, ''), nullif(l.data->>'source_lead_capture', ''), nullif(l.data->>'source_first_touch', '')) as source_value,
+          l.email,
+          l.phone,
+          coalesce(nullif(l.programme_id, ''), nullif(l.programme, ''), nullif(l.data->>'programme_id', '')) as programme_value
+        from app_leads l
+        ${leadWhere.sql}
+      ),
+      source_rows as (
+        select source, count(distinct lead_key)::int as leads, count(distinct lead_key) filter (where lower(stage) = 'enrolled')::int as enrolled
+        from filtered
+        group by source
+        order by leads desc, source
+        limit 6
+      ),
+      stage_rows as (
+        select stage as label, count(distinct lead_key)::int as value
+        from filtered
+        group by stage
+        order by value desc, label
+        limit 8
+      ),
+      quality as (
+        select
+          count(*) filter (where coalesce(nullif(email, ''), nullif(phone, '')) is null)::int as missing_contact,
+          count(*) filter (where programme_value is null)::int as missing_programme,
+          count(*) filter (where source_value is null)::int as missing_source,
+          (select count(*)::int from (
+            select lower(email) as email_key
+            from filtered
+            where coalesce(email, '') <> ''
+            group by lower(email)
+            having count(*) > 1
+          ) duplicate_emails) as duplicate_email_groups
+        from filtered
+      )
       select
-        count(distinct ${dashboardLeadIdentitySql('l')})::int as new_leads,
-        count(distinct ${dashboardLeadIdentitySql('l')}) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled')::int as enrolled_leads
-      from app_leads l
-      ${leadWhere.sql}
+        (select count(distinct lead_key)::int from filtered) as new_leads,
+        (select count(distinct lead_key) filter (where lower(stage) = 'enrolled')::int from filtered) as enrolled_leads,
+        coalesce((select jsonb_agg(to_jsonb(source_rows)) from source_rows), '[]'::jsonb) as source_rows,
+        coalesce((select jsonb_agg(to_jsonb(stage_rows)) from stage_rows), '[]'::jsonb) as stage_rows,
+        quality.missing_contact,
+        quality.missing_programme,
+        quality.missing_source,
+        quality.duplicate_email_groups
+      from quality
     `, leadWhere.params),
     State.postgresPool.query(`
       select
@@ -635,34 +680,32 @@ async function loadDashboardAdminOverviewDb(filters, user) {
       ${emailWhere.sql}
     `, emailWhere.params),
     State.postgresPool.query(`
+      with filtered as materialized (
+        select
+          a.id,
+          a.lead_id,
+          (a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled') as enrolled,
+          coalesce(a.programme, l.programme, a.data->>'programme', 'No programme') as programme_label
+        from app_applications a
+        left join app_leads l on l.id = a.lead_id
+        ${appWhere.sql}
+      ),
+      programme_rows as (
+        select
+          programme_label as label,
+          count(distinct coalesce(nullif(lead_id, ''), id))::int as value
+        from filtered
+        where enrolled
+        group by label
+        order by value desc, label
+        limit 8
+      )
       select
         count(*)::int as applications,
-        count(*) filter (where a.learner is not null or lower(coalesce(a.status, a.data->>'status', '')) = 'enrolled')::int as enrolled
-      from app_applications a
-      left join app_leads l on l.id = a.lead_id
-      ${appWhere.sql}
+        count(*) filter (where enrolled)::int as enrolled,
+        coalesce((select jsonb_agg(to_jsonb(programme_rows)) from programme_rows), '[]'::jsonb) as programme_rows
+      from filtered
     `, appWhere.params),
-    State.postgresPool.query(`
-      select
-        coalesce(l.source_lead_capture, l.source_first_touch, l.data->>'source_lead_capture', l.data->>'source_first_touch', 'Other') as source,
-        count(distinct ${dashboardLeadIdentitySql('l')})::int as leads,
-        count(distinct ${dashboardLeadIdentitySql('l')}) filter (where lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled')::int as enrolled
-      from app_leads l
-      ${leadWhere.sql}
-      group by source
-      order by leads desc, source
-      limit 6
-    `, leadWhere.params),
-    State.postgresPool.query(`
-      select
-        coalesce(l.stage, l.data->>'stage', 'Unstaged') as label,
-        count(distinct ${dashboardLeadIdentitySql('l')})::int as value
-      from app_leads l
-      ${leadWhere.sql}
-      group by label
-      order by value desc, label
-      limit 8
-    `, leadWhere.params),
     State.postgresPool.query(`
       select
         count(*)::int as total_events,
@@ -677,43 +720,16 @@ async function loadDashboardAdminOverviewDb(filters, user) {
         coalesce(sum(coalesce(ev.attendance, 0)), 0)::int as attendance
       from app_events ev
       ${eventWhere.sql}
-    `, eventWhere.params),
-    State.postgresPool.query(`
-      select
-        coalesce(a.programme, l.programme, a.data->>'programme', 'No programme') as label,
-        count(distinct coalesce(nullif(a.lead_id, ''), a.id))::int as value
-      from app_applications a
-      left join app_leads l on l.id = a.lead_id
-      ${enrolledAppWhereSql}
-      group by label
-      order by value desc, label
-      limit 8
-    `, appWhere.params),
-    State.postgresPool.query(`
-      with filtered as (
-        select l.*
-        from app_leads l
-        ${leadWhere.sql}
-      )
-      select
-        count(*) filter (where coalesce(nullif(email, ''), nullif(phone, '')) is null)::int as missing_contact,
-        count(*) filter (where coalesce(nullif(programme_id, ''), nullif(programme, ''), nullif(data->>'programme_id', '')) is null)::int as missing_programme,
-        count(*) filter (where coalesce(nullif(source_lead_capture, ''), nullif(source_first_touch, ''), nullif(data->>'source_lead_capture', ''), nullif(data->>'source_first_touch', '')) is null)::int as missing_source,
-        (select count(*)::int from (
-          select lower(email) as email_key
-          from filtered
-          where coalesce(email, '') <> ''
-          group by lower(email)
-          having count(*) > 1
-        ) duplicate_emails) as duplicate_email_groups
-      from filtered l
-    `, leadWhere.params)
+    `, eventWhere.params)
   ]);
-  const leads = leadStats.rows[0] || {};
+  const leads = leadOverview.rows[0] || {};
   const emails = emailStats.rows[0] || {};
-  const apps = appStats.rows[0] || {};
+  const apps = appOverview.rows[0] || {};
   const eventRow = eventStats.rows[0] || {};
-  const quality = qualityStats.rows[0] || {};
+  const quality = leads;
+  const sourceRows = Array.isArray(leads.source_rows) ? leads.source_rows : [];
+  const stageRows = Array.isArray(leads.stage_rows) ? leads.stage_rows : [];
+  const enrolledProgrammeRows = Array.isArray(apps.programme_rows) ? apps.programme_rows : [];
   const newLeads = Number(leads.new_leads || 0);
   const apprenticeshipInterested = Number(emails.apprenticeship_interested || 0);
   const enrolled = Math.max(Number(apps.enrolled || 0), Number(leads.enrolled_leads || 0));
@@ -752,14 +768,14 @@ async function loadDashboardAdminOverviewDb(filters, user) {
       { label: 'Replied', value: Number(emails.replied_messages || 0) },
       { label: 'Avg reply', value: Math.round(Number(emails.reply_average_ms || 0)), display: Math.round(Number(emails.reply_average_ms || 0)) }
     ],
-    lead_sources: sourceStats.rows,
+    lead_sources: sourceRows,
     charts: [
       { title: 'Lead funnel', type: 'bar', rows: [{ label: 'New leads', value: newLeads }, { label: 'Interested', value: apprenticeshipInterested }, { label: 'Enrolled', value: enrolled }] },
-      { title: 'Lead stages', type: 'bar', rows: stageStats.rows },
-      { title: 'Lead sources', type: 'bar', rows: sourceStats.rows.map(row => ({ label: row.source || 'Other', value: Number(row.leads || 0), display: `${Number(row.leads || 0)} / ${Number(row.enrolled || 0)} enrolled` })) },
+      { title: 'Lead stages', type: 'bar', rows: stageRows },
+      { title: 'Lead sources', type: 'bar', rows: sourceRows.map(row => ({ label: row.source || 'Other', value: Number(row.leads || 0), display: `${Number(row.leads || 0)} / ${Number(row.enrolled || 0)} enrolled` })) },
       { title: 'Email health', type: 'pie', rows: [{ label: 'Inbound', value: Number(emails.inbound_messages || 0) }, { label: 'Outbound', value: Number(emails.outbound_messages || 0) }, { label: 'Unanswered', value: unansweredEmails }, { label: 'Unread', value: unreadEmails }, { label: 'Replied', value: Number(emails.replied_messages || 0) }] },
       { title: 'Events & Zoom', type: 'pie', rows: [{ label: 'Events', value: Math.max(0, totalEvents - zoomMeetings) }, { label: 'Zoom', value: zoomMeetings }, { label: 'Upcoming', value: upcomingEvents }, { label: 'Past', value: Number(eventRow.past || 0) }] },
-      { title: 'Enrolled by programme', type: 'bar', rows: enrolledProgrammeStats.rows },
+      { title: 'Enrolled by programme', type: 'bar', rows: enrolledProgrammeRows },
       { title: 'Data quality', type: 'pie', rows: [{ label: 'Missing contact', value: Number(quality.missing_contact || 0) }, { label: 'Missing programme', value: Number(quality.missing_programme || 0) }, { label: 'Missing source', value: Number(quality.missing_source || 0) }, { label: 'Duplicate emails', value: Number(quality.duplicate_email_groups || 0) }] }
     ]
   };
@@ -942,6 +958,341 @@ async function loadDashboardPriorityLeadsDb(filters) {
   };
 }
 
+function myDayBounds(options = {}) {
+  return Monitoring.parseDayBounds({
+    today_start: options.today_start || options.todayStart,
+    tomorrow_start: options.tomorrow_start || options.tomorrowStart
+  });
+}
+
+function myDayActiveLead(lead = {}) {
+  return Boolean(lead?.id && !lead.deleted_at && !['enrolled', 'lost', 'not eligible', 'deferred', 'duplicate'].includes(String(lead.stage || '').trim().toLowerCase()));
+}
+
+function myDayEmailNeedsResponse(db, email = {}) {
+  return Emails.emailNeedsResponse(db, email);
+}
+
+function myDayApplicationNeedsAction(app = {}) {
+  const status = String(app.status || '').trim().toLowerCase();
+  const statusNeedsAction = ['in review', 'submitted', 'pending', 'eligible'].includes(status);
+  const requirementsNeedAction = (app.requirements || []).some(req => !req.latest || ['pending', 'missing', 'draft'].includes(String(req.latest.status || '').trim().toLowerCase()));
+  return statusNeedsAction || requirementsNeedAction;
+}
+
+function myDayRouteFor(type, id, leadId = '') {
+  if (type === 'unanswered_email') return `inbox`;
+  if (type === 'application_action') return 'applications';
+  if (type === 'meeting_today') return 'zoom';
+  if (type === 'overdue_task' || type === 'task_due_today') return 'planner';
+  return leadId || id ? `leads/${leadId || id}` : 'leads';
+}
+
+function daysLabel(ms, unit = 'overdue by') {
+  const hours = Math.max(0, Math.floor(ms / 3600000));
+  if (hours < 24) return `${unit} ${hours || 1} hour${hours === 1 ? '' : 's'}`;
+  const days = Math.floor(hours / 24);
+  return `${unit} ${days} day${days === 1 ? '' : 's'}`;
+}
+
+function loadDashboardMyDayLocal(db, user, options = {}) {
+  const bounds = myDayBounds(options);
+  const todayStart = new Date(bounds.todayStart);
+  const tomorrowStart = new Date(bounds.tomorrowStart);
+  const ownerId = String(user?.id || '');
+  const activeLeads = (db.leads || []).filter(lead => myDayActiveLead(lead) && String(lead.owner_id || '') === ownerId);
+  const activeLeadIds = new Set(activeLeads.map(lead => String(lead.id)));
+  const leadById = new Map(activeLeads.map(lead => [String(lead.id), lead]));
+  const openTasks = (db.tasks || []).filter(task => {
+    const due = task.due_at ? new Date(task.due_at) : null;
+    return String(task.status || '').toLowerCase() === 'open' && due && due < tomorrowStart && (String(task.owner_id || '') === ownerId || activeLeadIds.has(String(task.lead_id || '')));
+  }).sort((a, b) => new Date(a.due_at || 0) - new Date(b.due_at || 0)).slice(0, 100);
+  const followUpLeads = activeLeads.filter(lead => {
+    const next = lead.next_action_at ? new Date(lead.next_action_at) : null;
+    return next && next < tomorrowStart;
+  }).sort((a, b) => new Date(a.next_action_at || 0) - new Date(b.next_action_at || 0)).slice(0, 50);
+  const unansweredEmails = (db.emails || [])
+    .filter(email => activeLeadIds.has(String(email.lead_id || '')) && myDayEmailNeedsResponse(db, email))
+    .sort((a, b) => new Date(a.due_at || a.received_at || 0) - new Date(b.due_at || b.received_at || 0))
+    .slice(0, 50);
+  const applicationsNeedingAction = (db.applications || [])
+    .filter(app => activeLeadIds.has(String(app.lead_id || '')) && myDayApplicationNeedsAction(app))
+    .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0))
+    .slice(0, 50);
+  const overdueTasks = openTasks.filter(task => task.due_at && new Date(task.due_at) < todayStart);
+  const tasksDueToday = openTasks.filter(task => task.due_at && new Date(task.due_at) >= todayStart && new Date(task.due_at) < tomorrowStart);
+  const meetingsToday = (db.events || []).filter(event => {
+    const start = new Date(event.start_at || 0);
+    if (!(start >= todayStart && start < tomorrowStart)) return false;
+    return (event.attendees || []).some(attendee => activeLeadIds.has(String(attendee.lead_id || ''))) || String(event.owner_id || event.zoom_host_id || '') === ownerId;
+  }).sort((a, b) => new Date(a.start_at || 0) - new Date(b.start_at || 0)).slice(0, 20);
+  const atRiskLeads = activeLeads
+    .filter(lead => ['P0', 'P1'].includes(String(lead.priority || '')) || new Date(lead.created_at || 0) < new Date(Date.now() - (DASHBOARD_STAGE_THRESHOLDS[lead.stage] || 7) * 86400000))
+    .sort((a, b) => Number(['P0', 'P1'].includes(String(b.priority || ''))) - Number(['P0', 'P1'].includes(String(a.priority || ''))) || new Date(a.next_action_at || a.created_at || 0) - new Date(b.next_action_at || b.created_at || 0))
+    .slice(0, 50);
+  const now = Date.now();
+  const actions = [];
+  for (const task of overdueTasks) {
+    const lead = leadById.get(String(task.lead_id || '')) || {};
+    actions.push({ type: 'overdue_task', entity_id: task.id, lead_id: task.lead_id || '', title: task.title || 'Complete overdue task', subtitle: `Task ${daysLabel(todayStart - new Date(task.due_at))}`, priority: 'high', due_at: task.due_at, route: myDayRouteFor('overdue_task'), score: 900 + Math.floor((todayStart - new Date(task.due_at)) / 86400000), related: [lead.first_name, lead.last_name].filter(Boolean).join(' ') || lead.email || '' });
+  }
+  for (const email of unansweredEmails) {
+    const dueAt = email.due_at || (email.received_at ? new Date(new Date(email.received_at).getTime() + Config.EMAIL_RESPONSE_SLA_MS).toISOString() : '');
+    actions.push({ type: 'unanswered_email', entity_id: email.id, lead_id: email.lead_id || '', title: `Reply to ${[email.first_name, email.last_name].filter(Boolean).join(' ') || email.email || 'email'}`, subtitle: email.received_at ? `Unanswered for ${daysLabel(now - new Date(email.received_at), '')}`.replace('  ', ' ') : 'Unanswered email', priority: new Date(dueAt) < new Date() ? 'high' : 'medium', due_at: dueAt, route: myDayRouteFor('unanswered_email'), score: new Date(dueAt) < new Date() ? 850 : 650, related: email.subject || '' });
+  }
+  for (const task of tasksDueToday) actions.push({ type: 'task_due_today', entity_id: task.id, lead_id: task.lead_id || '', title: task.title || 'Complete task', subtitle: 'Task due today', priority: 'medium', due_at: task.due_at, route: myDayRouteFor('task_due_today'), score: 620, related: task.kind || 'Task' });
+  for (const app of applicationsNeedingAction) actions.push({ type: 'application_action', entity_id: app.id, lead_id: app.lead_id || '', title: `Review ${[app.first_name, app.last_name].filter(Boolean).join(' ') || 'application'}`, subtitle: `${app.status || 'Application'} needs action`, priority: 'medium', due_at: app.created_at || '', route: myDayRouteFor('application_action'), score: 600, related: app.programme || '' });
+  for (const meeting of meetingsToday) actions.push({ type: 'meeting_today', entity_id: meeting.id, lead_id: '', title: meeting.name || 'Meeting today', subtitle: `Meeting at ${meeting.start_at ? new Date(meeting.start_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : 'today'}`, priority: 'medium', due_at: meeting.start_at || '', route: myDayRouteFor('meeting_today'), score: 560, related: meeting.location || 'Meeting' });
+  for (const lead of followUpLeads) actions.push({ type: 'lead_follow_up', entity_id: lead.id, lead_id: lead.id, title: `Call ${[lead.first_name, lead.last_name].filter(Boolean).join(' ') || lead.email || 'lead'}`, subtitle: lead.next_action_at ? `Follow-up ${daysLabel(tomorrowStart - new Date(lead.next_action_at))}` : 'No open follow-up task', priority: 'medium', due_at: lead.next_action_at || lead.created_at || '', route: myDayRouteFor('lead_follow_up', lead.id), score: 520, related: lead.programme || '' });
+  for (const lead of atRiskLeads) actions.push({ type: 'at_risk_lead', entity_id: lead.id, lead_id: lead.id, title: `${[lead.first_name, lead.last_name].filter(Boolean).join(' ') || lead.email || 'Lead'} at risk`, subtitle: `${lead.priority || lead.stage || 'Lead'} needs attention`, priority: ['P0', 'P1'].includes(lead.priority) ? 'high' : 'medium', due_at: lead.next_action_at || lead.created_at || '', route: myDayRouteFor('at_risk_lead', lead.id), score: ['P0', 'P1'].includes(lead.priority) ? 700 : 500, related: lead.stage || '' });
+  const deduped = new Map();
+  for (const action of actions.sort((a, b) => b.score - a.score || new Date(a.due_at || 0) - new Date(b.due_at || 0) || String(a.entity_id).localeCompare(String(b.entity_id)))) {
+    const key = action.type.includes('task') || action.type === 'meeting_today' ? `${action.type}:${action.entity_id}` : `lead:${action.lead_id || action.entity_id}`;
+    if (!deduped.has(key)) deduped.set(key, action);
+  }
+  return {
+    generated_at: new Date().toISOString(),
+    scope: { owner_id: ownerId, mode: 'mine' },
+    summary: {
+      follow_up_leads: followUpLeads.length,
+      unanswered_emails: unansweredEmails.length,
+      applications_needing_action: applicationsNeedingAction.length,
+      overdue_tasks: overdueTasks.length,
+      tasks_due_today: tasksDueToday.length,
+      meetings_today: meetingsToday.length,
+      at_risk_leads: atRiskLeads.length
+    },
+    priority_actions: [...deduped.values()].slice(0, 20).map(({ score, ...action }) => action),
+    empty: !deduped.size
+  };
+}
+
+function myDayStageThresholdSql(alias = 'l') {
+  return `case ${Object.entries(DASHBOARD_STAGE_THRESHOLDS).map(([stage, days]) => `when coalesce(${alias}.stage, ${alias}.data->>'stage', '') = '${stage.replace(/'/g, "''")}' then ${Number(days) || 7}`).join(' ')} else 7 end`;
+}
+
+async function loadDashboardMyDayDb(options = {}, user = {}, trace = null) {
+  const bounds = myDayBounds(options);
+  await Storage.ensureStorage();
+  if (!State.postgresPool || !Storage.usesPostgresStorage()) return loadDashboardMyDayLocal(await Storage.loadDb(), user, bounds);
+  const ownerId = String(user?.id || '');
+  const mailboxes = Emails.companyMailboxEmails({ gmail: {} });
+  const active = Leads.activeLeadCondition('l');
+  const attendeeActiveLead = Leads.activeLeadCondition('ml');
+  const thresholdCase = myDayStageThresholdSql('l');
+  const emailNotTrashed = dashboardEmailNotTrashedSql('e');
+  const result = await Storage.timedPostgresQuery(trace, 'dashboard_my_day', `
+    with context as (
+      select $1::text as owner_id, $2::timestamptz as today_start, $3::timestamptz as tomorrow_start
+    ), workspace as (
+      select coalesce(gmail, '{}'::jsonb) as gmail from app_workspace where id = 'main'
+    ), open_tasks as (
+      select t.id, t.lead_id, t.title, t.kind, t.due_at, l.first_name, l.last_name
+      from app_tasks t
+      left join app_leads l on l.id = t.lead_id
+      where lower(coalesce(t.status, t.data->>'status', '')) = 'open'
+        and t.due_at is not null
+        and t.due_at < $3::timestamptz
+        and (t.owner_id = $1 or l.owner_id = $1)
+      order by t.due_at asc nulls last, t.id
+      limit 100
+    ), lead_followups as (
+      select l.id, l.first_name, l.last_name, l.email, l.programme, l.next_action_at, l.created_at
+      from app_leads l
+      where l.next_action_at is not null and l.next_action_at < $3::timestamptz
+        and ${active}
+        and l.owner_id = $1
+      order by l.next_action_at asc nulls last, l.id
+      limit 50
+    ), unanswered_emails as (
+      select e.id, e.lead_id, e.first_name, e.last_name, e.email, e.subject, e.received_at, e.due_at,
+        l.first_name as lead_first_name, l.last_name as lead_last_name
+      from app_emails e
+      join app_leads l on l.id = e.lead_id
+      where ${emailNotTrashed}
+        and ${active}
+        and l.owner_id = $1
+        and coalesce(e.data->>'direction', 'inbound') <> 'outbound'
+        and e.response_at is null
+        and not (
+          lower(trim(coalesce(e.email, ''))) = any($4::text[])
+          or lower(trim(coalesce(e.email, ''))) = lower(coalesce((select gmail->>'email' from workspace limit 1), ''))
+          or lower(trim(coalesce(e.email, ''))) ~ '@(kentbusinesscollege\\.org|pathway\\.demo)$'
+        )
+      order by coalesce(e.due_at, e.received_at + interval '48 hours', e.received_at) asc nulls last, e.id
+      limit 50
+    ), applications_action as (
+      select a.id, a.lead_id, a.first_name, a.last_name, a.programme, a.status, a.created_at
+      from app_applications a
+      join app_leads l on l.id = a.lead_id
+      where ${active}
+        and l.owner_id = $1
+        and (
+          lower(coalesce(a.status, a.data->>'status', '')) in ('in review','submitted','pending','eligible')
+          or exists (
+            select 1
+            from jsonb_array_elements(case when jsonb_typeof(coalesce(a.requirements, '[]'::jsonb)) = 'array' then coalesce(a.requirements, '[]'::jsonb) else '[]'::jsonb end) req
+            where req->'latest' is null or lower(coalesce(req->'latest'->>'status', '')) in ('pending','missing','draft')
+          )
+        )
+      order by a.created_at asc nulls last, a.id
+      limit 50
+    ), meetings_today as (
+      select ev.id, ev.name, ev.start_at, ev.location, ev.campaign
+      from app_events ev
+      where ev.start_at >= $2::timestamptz and ev.start_at < $3::timestamptz
+        and (
+          coalesce(ev.data->>'zoom_meeting_id', '') <> ''
+          or coalesce(ev.data->>'zoom_meeting_uuid', '') <> ''
+          or lower(coalesce(ev.location, ev.data->>'location', '')) = 'zoom'
+          or lower(coalesce(ev.campaign, ev.data->>'campaign', '')) like 'zoom%'
+        )
+        and (
+          coalesce(ev.data->>'owner_id', '') = $1
+          or coalesce(ev.data->>'zoom_host_id', '') = $1
+          or exists (
+            select 1
+            from jsonb_array_elements(case when jsonb_typeof(ev.attendees) = 'array' then ev.attendees else '[]'::jsonb end) attendee
+            join app_leads ml on ml.id = attendee->>'lead_id'
+            where ${attendeeActiveLead} and ml.owner_id = $1
+          )
+        )
+      order by ev.start_at asc nulls last, ev.id
+      limit 20
+    ), high_priority_at_risk as (
+      select l.id, l.first_name, l.last_name, l.email,
+        coalesce(l.priority, l.data->>'priority', '') as priority,
+        coalesce(l.stage, l.data->>'stage', '') as stage,
+        l.next_action_at, l.created_at
+      from app_leads l
+      where ${active}
+        and l.owner_id = $1
+        and coalesce(l.priority, l.data->>'priority', '') in ('P0','P1')
+      order by coalesce(l.next_action_at, l.created_at) asc nulls last, l.id
+      limit 50
+    ), high_priority_at_risk_count as (
+      select count(*)::int as total from high_priority_at_risk
+    ), stale_at_risk as (
+      select l.id, l.first_name, l.last_name, l.email,
+        coalesce(l.priority, l.data->>'priority', '') as priority,
+        coalesce(l.stage, l.data->>'stage', '') as stage,
+        l.next_action_at, l.created_at
+      from app_leads l
+      where ${active}
+        and l.owner_id = $1
+        and (select total from high_priority_at_risk_count) < 50
+        and coalesce(l.priority, l.data->>'priority', '') not in ('P0','P1')
+        and coalesce(l.created_at, now()) < now() - ((${thresholdCase})::text || ' days')::interval
+      order by coalesce(l.next_action_at, l.created_at) asc nulls last, l.id
+      limit greatest(0, 50 - (select total from high_priority_at_risk_count))
+    ), at_risk_union as (
+      select * from high_priority_at_risk
+      union all
+      select * from stale_at_risk
+    ), at_risk_leads as (
+      select *
+      from at_risk_union
+      order by
+        case when priority in ('P0','P1') then 0 else 1 end,
+        coalesce(next_action_at, created_at) asc nulls last,
+        id
+      limit 50
+    ), action_pool as (
+      select 'overdue_task' as type, t.id as entity_id, coalesce(t.lead_id, '') as lead_id,
+        coalesce(t.title, 'Complete overdue task') as title,
+        'Task overdue by ' || greatest(1, ceil(extract(epoch from (c.today_start - t.due_at)) / 86400.0)::int)::text || ' day(s)' as subtitle,
+        'high' as priority, t.due_at as due_at, 'planner' as route,
+        900 + greatest(0, floor(extract(epoch from (c.today_start - t.due_at)) / 86400.0)::int) as score,
+        'task:' || t.id as dedupe_key,
+        trim(coalesce(t.first_name, '') || ' ' || coalesce(t.last_name, '')) as related
+      from open_tasks t, context c
+      where t.due_at < c.today_start
+      union all
+      select 'unanswered_email', e.id, coalesce(e.lead_id, ''),
+        'Reply to ' || coalesce(nullif(trim(coalesce(e.first_name, e.lead_first_name, '') || ' ' || coalesce(e.last_name, e.lead_last_name, '')), ''), e.email, 'email'),
+        'Unanswered for ' || greatest(1, floor(extract(epoch from (now() - coalesce(e.received_at, now()))) / 3600.0)::int)::text || ' hour(s)',
+        case when coalesce(e.due_at, e.received_at + interval '48 hours') < now() then 'high' else 'medium' end,
+        coalesce(e.due_at, e.received_at + interval '48 hours'), 'inbox',
+        case when coalesce(e.due_at, e.received_at + interval '48 hours') < now() then 850 else 650 end,
+        'lead:' || coalesce(e.lead_id, e.id),
+        coalesce(e.subject, '')
+      from unanswered_emails e
+      union all
+      select 'task_due_today', t.id, coalesce(t.lead_id, ''), coalesce(t.title, 'Complete task'),
+        'Task due today', 'medium', t.due_at, 'planner', 620, 'task:' || t.id,
+        trim(coalesce(t.first_name, '') || ' ' || coalesce(t.last_name, ''))
+      from open_tasks t, context c
+      where t.due_at >= c.today_start and t.due_at < c.tomorrow_start
+      union all
+      select 'application_action', a.id, coalesce(a.lead_id, ''),
+        'Review ' || coalesce(nullif(trim(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '')), ''), 'application'),
+        coalesce(a.status, 'Application') || ' needs action', 'medium', a.created_at, 'applications', 600,
+        'lead:' || coalesce(a.lead_id, a.id), coalesce(a.programme, '')
+      from applications_action a
+      union all
+      select 'meeting_today', ev.id, '',
+        coalesce(ev.name, 'Meeting today'), 'Meeting today', 'medium', ev.start_at, 'zoom', 560,
+        'meeting:' || ev.id, coalesce(ev.location, ev.campaign, 'Meeting')
+      from meetings_today ev
+      union all
+      select 'lead_follow_up', l.id, l.id,
+        'Call ' || coalesce(nullif(trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')), ''), l.email, 'lead'),
+        case when l.next_action_at is not null then 'Follow-up due' else 'No open follow-up task' end,
+        'medium', coalesce(l.next_action_at, l.created_at), 'leads/' || l.id, 520,
+        'lead:' || l.id, coalesce(l.programme, '')
+      from lead_followups l
+      union all
+      select 'at_risk_lead', l.id, l.id,
+        coalesce(nullif(trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')), ''), l.email, 'Lead') || ' at risk',
+        coalesce(l.priority, l.stage, 'Lead') || ' needs attention',
+        case when coalesce(l.priority, '') in ('P0','P1') then 'high' else 'medium' end,
+        coalesce(l.next_action_at, l.created_at), 'leads/' || l.id,
+        case when coalesce(l.priority, '') in ('P0','P1') then 700 else 500 end,
+        'lead:' || l.id, coalesce(l.stage, '')
+      from at_risk_leads l
+    ), ranked_actions as (
+      select *, row_number() over (partition by dedupe_key order by score desc, due_at asc nulls last, entity_id) as dedupe_rank
+      from action_pool
+    ), limited_actions as (
+      select * from ranked_actions
+      where dedupe_rank = 1
+      order by score desc, due_at asc nulls last, entity_id
+      limit 20
+    )
+    select
+      jsonb_build_object(
+        'follow_up_leads', (select count(*)::int from lead_followups),
+        'unanswered_emails', (select count(*)::int from unanswered_emails),
+        'applications_needing_action', (select count(*)::int from applications_action),
+        'overdue_tasks', (select count(*)::int from open_tasks t, context c where t.due_at < c.today_start),
+        'tasks_due_today', (select count(*)::int from open_tasks t, context c where t.due_at >= c.today_start and t.due_at < c.tomorrow_start),
+        'meetings_today', (select count(*)::int from meetings_today),
+        'at_risk_leads', (select count(*)::int from at_risk_leads)
+      ) as summary,
+      coalesce(jsonb_agg(jsonb_build_object(
+        'type', type,
+        'entity_id', entity_id,
+        'lead_id', lead_id,
+        'title', title,
+        'subtitle', subtitle,
+        'priority', priority,
+        'due_at', due_at,
+        'route', route,
+        'related', related
+      ) order by score desc, due_at asc nulls last, entity_id) filter (where entity_id is not null), '[]'::jsonb) as priority_actions
+    from limited_actions
+  `, [ownerId, bounds.todayStart, bounds.tomorrowStart, mailboxes]);
+  const row = result.rows[0] || {};
+  const actions = Array.isArray(row.priority_actions) ? row.priority_actions : [];
+  return {
+    generated_at: new Date().toISOString(),
+    scope: { owner_id: ownerId, mode: 'mine' },
+    summary: row.summary || {},
+    priority_actions: actions,
+    empty: !actions.length
+  };
+}
+
 function dashboardIntegrationRow(name, configured, connected, state, lastSyncAt, retryAction, user) {
   const lastError = state?.last_error || '';
   const status = !configured ? 'Disabled' : lastError ? 'Error' : state?.running ? 'Warning' : connected ? 'Healthy' : 'Warning';
@@ -1005,50 +1356,134 @@ async function loadDashboardActivityDb(filters, limit = 15) {
   return { activity: result.rows };
 }
 
-async function loadDashboardSearchDb(query, user) {
+
+function searchRow(type, row = {}) {
+  return {
+    type,
+    id: row.id,
+    title: row.title || row.id,
+    subtitle: row.subtitle || '',
+    meta: row.meta || '',
+    route: row.route || ''
+  };
+}
+
+async function loadDashboardSearchDb(query, user, options = {}, trace = null) {
   await Storage.ensureStorage();
   const q = String(query || '').trim();
-  if (q.length < 2) return { query: q, leads: [], emails: [], applications: [], tasks: [] };
-  const like = `%${q.toLowerCase()}%`;
+  const perEntityLimit = Math.max(1, Math.min(Number(options.limit || 5), 5));
+  if (q.length < 2) return { query: q, groups: [], leads: [], emails: [], applications: [], tasks: [], meetings: [], calls: [] };
+  const like = `%${Tasks.escapeSqlLike(q.toLowerCase())}%`;
   const permissions = Auth.permissionsForUser(user);
-  const ownerClause = permissions.review || permissions.admin || permissions.developer ? '' : 'and coalesce(l.owner_id, \'\') = $2';
-  const params = ownerClause ? [like, user.id] : [like];
-  if (!State.postgresPool || !Storage.usesPostgresStorage()) return { query: q, leads: [], emails: [], applications: [], tasks: [] };
-  const [leads, emails, applications, tasks] = await Promise.all([
-    State.postgresPool.query(`
-      select id, trim(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) as title, email as detail, 'leads/' || id as route
+  const team = permissions.review || permissions.admin || permissions.developer;
+  const ownerClause = alias => `and ($3::text = '' or coalesce(${alias}.owner_id, '') = $3)`;
+  const common = [like, perEntityLimit, team ? '' : user.id];
+  if (!State.postgresPool || !Storage.usesPostgresStorage()) return { query: q, groups: [], leads: [], emails: [], applications: [], tasks: [], meetings: [], calls: [] };
+  const [leads, emails, applications, tasks, meetings, calls] = await Promise.all([
+    Storage.timedPostgresQuery(trace, 'global_search_leads', `
+      select 'lead' as type, id,
+        trim(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) as title,
+        coalesce(programme, '') || case when coalesce(stage, '') <> '' then ' - ' || stage else '' end as subtitle,
+        coalesce(email, phone, '') as meta,
+        'leads/' || id as route
       from app_leads l
-      where ${Leads.activeLeadCondition('l')} and (lower(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) like $1 or lower(coalesce(email, '')) like $1 or lower(coalesce(phone, '')) like $1)
-      ${ownerClause}
-      order by created_at desc nulls last
-      limit 10
-    `, params),
-    State.postgresPool.query(`
-      select e.id, coalesce(e.subject, 'Email') as title, coalesce(e.email, '') as detail, 'inbox' as route
+      where ${Leads.activeLeadCondition('l')}
+        and (lower(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) like $1 escape '\\' or lower(coalesce(email, '')) like $1 escape '\\' or lower(coalesce(phone, '')) like $1 escape '\\' or lower(coalesce(id, '')) like $1 escape '\\')
+        ${ownerClause('l')}
+      order by created_at desc nulls last, id desc
+      limit $2
+    `, common),
+    Storage.timedPostgresQuery(trace, 'global_search_emails', `
+      select 'email' as type, e.id,
+        coalesce(e.subject, 'Email') as title,
+        trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) as subtitle,
+        coalesce(e.email, '') as meta,
+        'inbox' as route
       from app_emails e left join app_leads l on l.id = e.lead_id
-      where ${dashboardEmailNotTrashedSql('e')} and (lower(coalesce(e.email, '')) like $1 or lower(coalesce(e.subject, '')) like $1 or lower(coalesce(e.body, '')) like $1)
-      ${ownerClause}
-      order by e.received_at desc nulls last
-      limit 10
-    `, params),
-    State.postgresPool.query(`
-      select a.id, trim(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '')) as title, coalesce(a.programme, '') || ' · ' || coalesce(a.status, '') as detail, 'applications' as route
+      where ${dashboardEmailNotTrashedSql('e')}
+        and (lower(coalesce(e.email, '')) like $1 escape '\\' or lower(coalesce(e.subject, '')) like $1 escape '\\' or lower(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) like $1 escape '\\')
+        ${ownerClause('l')}
+      order by e.received_at desc nulls last, e.id desc
+      limit $2
+    `, common),
+    Storage.timedPostgresQuery(trace, 'global_search_applications', `
+      select 'application' as type, a.id,
+        trim(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '')) as title,
+        coalesce(a.programme, '') || case when coalesce(a.intake, '') <> '' then ' - ' || a.intake else '' end as subtitle,
+        coalesce(a.status, '') as meta,
+        'applications/' || a.id as route
       from app_applications a left join app_leads l on l.id = a.lead_id
-      where lower(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '') || ' ' || coalesce(a.programme, '') || ' ' || coalesce(a.status, '')) like $1
-      ${ownerClause}
-      order by a.created_at desc nulls last
-      limit 10
-    `, params),
-    State.postgresPool.query(`
-      select t.id, coalesce(t.title, 'Task') as title, coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '') as detail, 'planner' as route
+      where (lower(coalesce(a.first_name, '') || ' ' || coalesce(a.last_name, '')) like $1 escape '\\' or lower(coalesce(a.programme, '')) like $1 escape '\\' or lower(coalesce(a.id, '')) like $1 escape '\\')
+        ${ownerClause('l')}
+      order by a.created_at desc nulls last, a.id desc
+      limit $2
+    `, common),
+    Storage.timedPostgresQuery(trace, 'global_search_tasks', `
+      select 'task' as type, t.id,
+        coalesce(t.title, 'Task') as title,
+        trim(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) as subtitle,
+        coalesce(t.status, '') || case when t.due_at is not null then ' - ' || to_char(t.due_at, 'DD Mon YYYY') else '' end as meta,
+        'planner' as route
       from app_tasks t left join app_leads l on l.id = t.lead_id
-      where lower(coalesce(t.title, '') || ' ' || coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) like $1
-      ${ownerClause}
-      order by t.due_at asc nulls last
-      limit 10
-    `, params)
+      where (lower(coalesce(t.title, '')) like $1 escape '\\' or lower(coalesce(l.first_name, '') || ' ' || coalesce(l.last_name, '')) like $1 escape '\\' or lower(coalesce(l.email, '')) like $1 escape '\\')
+        ${ownerClause('l')}
+      order by case when t.status = 'Open' then 0 else 1 end, t.due_at asc nulls last, t.id
+      limit $2
+    `, common),
+    Storage.timedPostgresQuery(trace, 'global_search_meetings', `
+      select 'meeting' as type, ev.id,
+        coalesce(ev.name, 'Meeting') as title,
+        coalesce(ev.location, ev.campaign, '') as subtitle,
+        case when ev.start_at is not null then to_char(ev.start_at, 'DD Mon YYYY HH24:MI') else '' end as meta,
+        'events' as route
+      from app_events ev
+      where (lower(coalesce(ev.name, '')) like $1 escape '\\' or lower(coalesce(ev.location, '')) like $1 escape '\\' or lower(coalesce(ev.campaign, '')) like $1 escape '\\')
+        and ($3::text = '' or exists (
+          select 1 from jsonb_array_elements(case when jsonb_typeof(ev.attendees) = 'array' then ev.attendees else '[]'::jsonb end) attendee
+          join app_leads l on l.id = attendee->>'lead_id'
+          where l.owner_id = $3
+        ))
+      order by ev.start_at desc nulls last, ev.id desc
+      limit $2
+    `, common),
+    Storage.timedPostgresQuery(trace, 'global_search_calls', `
+      with state as (
+        select coalesce(meta->'zoom'->'calls', '[]'::jsonb) as calls from app_workspace where id = 'main'
+      ), scoped as (
+        select call
+        from state, jsonb_array_elements(case when jsonb_typeof(calls) = 'array' then calls else '[]'::jsonb end) call
+        where (lower(coalesce(call->>'caller_name', '') || ' ' || coalesce(call->>'caller_number', '') || ' ' || coalesce(call->>'callee_name', '') || ' ' || coalesce(call->>'callee_number', '') || ' ' || coalesce(call->>'lead_name', '')) like $1 escape '\\')
+          and ($3::text = '' or exists (select 1 from app_leads l where l.id = call->>'lead_id' and l.owner_id = $3))
+      )
+      select 'call' as type,
+        coalesce(call->>'id', call->>'zoom_call_history_uuid', call->>'zoom_call_id') as id,
+        coalesce(call->>'lead_name', call->>'caller_name', call->>'caller_number', 'Zoom call') as title,
+        coalesce(call->>'direction', '') as subtitle,
+        coalesce(call->>'callee_number', call->>'result', '') as meta,
+        case when coalesce(call->>'lead_id', '') <> '' then 'leads/' || (call->>'lead_id') else 'zoom' end as route
+      from scoped
+      order by case when call->>'started_at' ~ '^\\d{4}-\\d{2}-\\d{2}' then (call->>'started_at')::timestamptz end desc nulls last
+      limit $2
+    `, common)
   ]);
-  return { query: q, leads: leads.rows, emails: emails.rows, applications: applications.rows, tasks: tasks.rows };
+  const payload = {
+    query: q,
+    leads: leads.rows.map(row => searchRow('lead', row)),
+    emails: emails.rows.map(row => searchRow('email', row)),
+    applications: applications.rows.map(row => searchRow('application', row)),
+    tasks: tasks.rows.map(row => searchRow('task', row)),
+    meetings: meetings.rows.map(row => searchRow('meeting', row)),
+    calls: calls.rows.filter(row => row.id).map(row => searchRow('call', row))
+  };
+  payload.groups = [
+    { type: 'leads', label: 'Leads', items: payload.leads },
+    { type: 'applications', label: 'Applications', items: payload.applications },
+    { type: 'tasks', label: 'Tasks', items: payload.tasks },
+    { type: 'emails', label: 'Emails', items: payload.emails },
+    { type: 'meetings', label: 'Meetings', items: payload.meetings },
+    { type: 'calls', label: 'Calls', items: payload.calls }
+  ].filter(group => group.items.length);
+  return payload;
 }
 
 // Workspace-wide totals for the CRM, Leads and Events pages, computed in SQL over every record.
@@ -1118,6 +1553,8 @@ exports.loadDashboardSummaryDb = loadDashboardSummaryDb;
 exports.parseDashboardFilters = parseDashboardFilters;
 exports.leadDashboardWhere = leadDashboardWhere;
 exports.loadDashboardCockpitSummaryDb = loadDashboardCockpitSummaryDb;
+exports.loadDashboardMyDayDb = loadDashboardMyDayDb;
+exports.loadDashboardMyDayLocal = loadDashboardMyDayLocal;
 exports.loadDashboardAdminOverviewDb = loadDashboardAdminOverviewDb;
 exports.loadDashboardPipelineDb = loadDashboardPipelineDb;
 exports.loadDashboardMyWorkDb = loadDashboardMyWorkDb;

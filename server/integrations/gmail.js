@@ -18,6 +18,8 @@ const Jobs = require('../jobs');
 
 let gmailAutoSyncTimer = null;
 let gmailAutoSyncRunning = false;
+const GMAIL_IMPORT_ALL_LIMIT = Math.max(1, Math.min(Number(process.env.GMAIL_IMPORT_ALL_LIMIT || 50000), 100000));
+const GMAIL_IMPORT_PAGE_SIZE = Math.max(1, Math.min(Number(process.env.GMAIL_IMPORT_PAGE_SIZE || 100), 500));
 const GMAIL_ENROLMENT_LABELS = new Set(['apprenticeship intersted', 'apprenticeship interested']);
 const GMAIL_ENROLMENT_LABEL_PREFIXES = ['apprenticeship interests'];
 
@@ -33,12 +35,28 @@ function filterImportRows(rows, ids) {
   return rows.filter(row => wanted.has(row.id));
 }
 
+function uniqueRowsById(rows = []) {
+  const byId = new Map();
+  for (const row of rows) {
+    if (!row?.id) continue;
+    byId.set(row.id, row);
+  }
+  return [...byId.values()];
+}
+
+function gmailImportTotalLimit(maxResults) {
+  const raw = String(maxResults || '').trim().toLowerCase();
+  if (raw === 'all' || raw === 'full') return GMAIL_IMPORT_ALL_LIMIT;
+  const numeric = Number(maxResults);
+  return Math.max(1, Math.min(Number.isFinite(numeric) ? numeric : 25, GMAIL_IMPORT_ALL_LIMIT));
+}
+
 async function saveGmailImportTables(db, options = {}) {
   if (!State.postgresPool) return Storage.saveDb(db);
-  const leadRows = filterImportRows(Leads.importLeadRows(db), options.leadIds);
-  const taskRows = filterImportRows(Tasks.importTaskRows(db), options.taskIds);
+  const leadRows = uniqueRowsById(filterImportRows(Leads.importLeadRows(db), options.leadIds));
+  const taskRows = uniqueRowsById(filterImportRows(Tasks.importTaskRows(db), options.taskIds));
   const emailRows = filterImportRows(Emails.importEmailRows(db), options.emailIds);
-  const auditRows = filterImportRows(Audit.importAuditRows(db), options.auditIds);
+  const auditRows = uniqueRowsById(filterImportRows(Audit.importAuditRows(db), options.auditIds));
   const client = await State.postgresPool.connect();
   try {
     await client.query('begin');
@@ -68,7 +86,7 @@ async function saveGmailImportTables(db, options = {}) {
        insert into app_programmes (id, name, level, data)
        select id, name, level, data from rows
        on conflict (id) do update set name = excluded.name, level = excluded.level, data = excluded.data`,
-      [Applications.jsonValue(Programmes.importProgrammeRows(db))]
+      [Applications.jsonValue(uniqueRowsById(Programmes.importProgrammeRows(db)))]
     );
     await client.query(
       `with rows as (
@@ -164,7 +182,7 @@ async function saveGmailImportTables(db, options = {}) {
       [Applications.jsonValue(auditRows)]
     );
     await client.query('commit');
-    State.dbCache = Storage.cloneDb(Workspace.recalculate(Storage.dbWithSavedMeta(db, metaState, { eventbrite: eventbriteState })));
+    State.dbCache = db.__partial_load ? null : Storage.cloneDb(Workspace.recalculate(Storage.dbWithSavedMeta(db, metaState, { eventbrite: eventbriteState })));
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -177,13 +195,15 @@ function base64Url(value) {
   return Buffer.from(value).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-async function sendGmailApiMail(db, message) {
+async function sendGmailApiMail(db, message, threadId = '') {
   if (!gmailConfigured() || !db.gmail?.connected) throw new Error('Gmail API sending is not connected.');
   const accessToken = await gmailAccessToken(db);
-  await Util.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+  const payload = { raw: base64Url(message) };
+  if (threadId) payload.threadId = threadId;
+  return Util.fetchJson('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ raw: base64Url(message) })
+    body: JSON.stringify(payload)
   });
 }
 
@@ -342,18 +362,68 @@ function decodeBase64Url(value = '') {
   return Buffer.from(normalized, 'base64').toString('utf8');
 }
 
-function findTextPayload(payload) {
+function decodeHtmlEntities(value = '') {
+  return String(value)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function htmlToText(value = '') {
+  return decodeHtmlEntities(String(value)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n'))
+    .trim();
+}
+
+function findPayloadData(payload, mimeType) {
   if (!payload) return '';
-  if (payload.mimeType === 'text/plain' && payload.body?.data) return decodeBase64Url(payload.body.data);
+  if (payload.mimeType === mimeType && payload.body?.data) return payload.body.data;
   for (const part of payload.parts || []) {
-    const text = findTextPayload(part);
-    if (text) return text;
+    const data = findPayloadData(part, mimeType);
+    if (data) return data;
   }
   return '';
 }
 
+function findTextPayload(payload) {
+  const plain = findPayloadData(payload, 'text/plain');
+  if (plain) return decodeBase64Url(plain);
+  const html = findPayloadData(payload, 'text/html');
+  return html ? htmlToText(decodeBase64Url(html)) : '';
+}
+
 function headerValue(message, name) {
   return message.payload?.headers?.find(header => header.name.toLowerCase() === name.toLowerCase())?.value || '';
+}
+
+async function hydrateEmailBody(db, email) {
+  if (String(email?.body || '').trim()) return false;
+  const gmailMessageId = String(email?.gmail_message_id || '').trim();
+  if (!gmailMessageId || !gmailConfigured() || !db.gmail?.connected) return false;
+  const accessToken = await gmailAccessToken(db);
+  const message = await Util.fetchJson(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMessageId}?format=full`, {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+  const body = findTextPayload(message.payload) || message.snippet || '';
+  if (!String(body || '').trim()) return false;
+  email.body = body;
+  email.snippet ||= String(body).replace(/\s+/g, ' ').trim().slice(0, 260);
+  email.gmail_thread_id ||= message.threadId || '';
+  return true;
 }
 
 const GMAIL_SYSTEM_LABELS = {
@@ -685,7 +755,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   db.gmail ||= { connected: false, imported_message_ids: [] };
   const labelMap = await gmailLabelNameMap(auth, db);
   const known = new Set([...(db.gmail.imported_message_ids || []), ...db.emails.map(email => email.gmail_message_id).filter(Boolean)]);
-  const totalLimit = Math.max(1, Math.min(Number(maxResults) || 25, 25));
+  const totalLimit = gmailImportTotalLimit(maxResults);
   const incrementalStart = Config.GMAIL_INCREMENTAL_ONLY ? Storage.ensureIncrementalStart(db.gmail, 'incremental_started_at') : null;
   if (Config.GMAIL_INCREMENTAL_ONLY) {
     db.gmail.sync_2026_page_token = null;
@@ -726,7 +796,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     let scannedSource = 0;
     while (scannedSource < totalLimit) {
     const queryAfter = Config.GMAIL_INCREMENTAL_ONLY ? gmailQueryDate(new Date(incrementalStart.getTime() - 86400000)) : '2025/12/31';
-      const params = { labelIds: labelId, q: `after:${queryAfter}`, maxResults: String(Math.min(25, totalLimit - scannedSource)) };
+      const params = { labelIds: labelId, q: `after:${queryAfter}`, maxResults: String(Math.min(GMAIL_IMPORT_PAGE_SIZE, totalLimit - scannedSource)) };
       if (pageTokens[source] && !latestOnly) params.pageToken = pageTokens[source];
     let list;
     try {
@@ -855,8 +925,10 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     }
   }
 
-  await importSource('inbox', 'INBOX');
-  await importSource('sent', 'SENT');
+  const inboxQuota = await importSource('inbox', 'INBOX');
+  if (inboxQuota?.quota_limited) return inboxQuota;
+  const sentQuota = await importSource('sent', 'SENT');
+  if (sentQuota?.quota_limited) return sentQuota;
   const repliesResolved = reconcileGmailSentReplies(db, changed);
   enrolledFromLabels += applyGmailEnrolmentLabels(db, user, changed);
   Emails.sortEmailsNewest(db);
@@ -872,7 +944,10 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     setGmailSyncPageToken(db, 'sent', pageTokens.sent, false);
   }
   db.gmail.last_sync_at = new Date().toISOString();
-  if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
+  if (options.initialImport && !pageTokens.inbox && !pageTokens.sent && !Config.GMAIL_INCREMENTAL_ONLY) {
+    db.gmail.initial_sync_completed_at ||= db.gmail.last_sync_at;
+  }
+  if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent)) || options.persistState !== false) {
     await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
   }
   return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, labels_refreshed: labelsRefreshed, labels_enrolled: enrolledFromLabels, scanned, restored, ...historyResult, ...trashResult, since: Config.GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
@@ -982,6 +1057,7 @@ exports.gmailAuthUrl = gmailAuthUrl;
 exports.exchangeGmailCode = exchangeGmailCode;
 exports.gmailReconnectError = gmailReconnectError;
 exports.markGmailReconnectRequired = markGmailReconnectRequired;
+exports.hydrateEmailBody = hydrateEmailBody;
 exports.GMAIL_SYSTEM_LABELS = GMAIL_SYSTEM_LABELS;
 exports.uniqueStrings = uniqueStrings;
 exports.gmailEnrolmentLabel = gmailEnrolmentLabel;

@@ -38,6 +38,15 @@ function importEventRows(db) {
   }));
 }
 
+function uniqueRowsById(rows = []) {
+  const byId = new Map();
+  for (const row of rows) {
+    if (!row?.id) continue;
+    byId.set(row.id, row);
+  }
+  return [...byId.values()];
+}
+
 async function saveEventImportTables(db, options = {}) {
   if (!State.postgresPool) return Storage.saveDb(db);
   const client = await State.postgresPool.connect();
@@ -68,29 +77,54 @@ async function saveEventImportTables(db, options = {}) {
        )
        insert into app_programmes (id, name, level, data)
        select id, name, level, data from rows
-       on conflict (id) do update set name = excluded.name, level = excluded.level, data = excluded.data`,
-      [Applications.jsonValue(Programmes.importProgrammeRows(db))]
+       on conflict (id) do update set name = excluded.name, level = excluded.level, data = excluded.data
+       where app_programmes.name is distinct from excluded.name
+          or app_programmes.level is distinct from excluded.level
+          or app_programmes.data is distinct from excluded.data`,
+      [Applications.jsonValue(uniqueRowsById(Programmes.importProgrammeRows(db)))]
     );
-    await client.query(
-      `with rows as (
-         select * from jsonb_to_recordset($1::jsonb) as x(
-           id text, person_id text, first_name text, last_name text, email text, employer text, phone text, city text,
-           programme_id text, programme text, level text, owner_id text, owner text, stage text, priority text,
-           source_first_touch text, source_lead_capture text, contact_permission text, created_at text, next_action_at text, data jsonb
+    if (!options.skipLeads) {
+      await client.query(
+        `with rows as (
+           select * from jsonb_to_recordset($1::jsonb) as x(
+             id text, person_id text, first_name text, last_name text, email text, employer text, phone text, city text,
+             programme_id text, programme text, level text, owner_id text, owner text, stage text, priority text,
+             source_first_touch text, source_lead_capture text, contact_permission text, created_at text, next_action_at text, data jsonb
+           )
          )
-       )
-       insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
-       select id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at::timestamptz, next_action_at::timestamptz, data from rows
-       on conflict (id) do update set
-         person_id = excluded.person_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
-         employer = excluded.employer, phone = excluded.phone, city = excluded.city, programme_id = excluded.programme_id,
-         programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
-         stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
-         source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
-         created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
-      [Applications.jsonValue(Leads.importLeadRows(db))]
-    );
-    await client.query(
+         insert into app_leads (id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at, data)
+         select id, person_id, first_name, last_name, email, employer, phone, city, programme_id, programme, level, owner_id, owner, stage, priority, source_first_touch, source_lead_capture, contact_permission, created_at::timestamptz, next_action_at::timestamptz, data from rows
+         on conflict (id) do update set
+           person_id = excluded.person_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
+           employer = excluded.employer, phone = excluded.phone, city = excluded.city, programme_id = excluded.programme_id,
+           programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
+           stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
+           source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
+           created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data
+         where app_leads.person_id is distinct from excluded.person_id
+            or app_leads.first_name is distinct from excluded.first_name
+            or app_leads.last_name is distinct from excluded.last_name
+            or app_leads.email is distinct from excluded.email
+            or app_leads.employer is distinct from excluded.employer
+            or app_leads.phone is distinct from excluded.phone
+            or app_leads.city is distinct from excluded.city
+            or app_leads.programme_id is distinct from excluded.programme_id
+            or app_leads.programme is distinct from excluded.programme
+            or app_leads.level is distinct from excluded.level
+            or app_leads.owner_id is distinct from excluded.owner_id
+            or app_leads.owner is distinct from excluded.owner
+            or app_leads.stage is distinct from excluded.stage
+            or app_leads.priority is distinct from excluded.priority
+            or app_leads.source_first_touch is distinct from excluded.source_first_touch
+            or app_leads.source_lead_capture is distinct from excluded.source_lead_capture
+            or app_leads.contact_permission is distinct from excluded.contact_permission
+            or app_leads.created_at is distinct from excluded.created_at
+            or app_leads.next_action_at is distinct from excluded.next_action_at
+            or app_leads.data is distinct from excluded.data`,
+        [Applications.jsonValue(uniqueRowsById(Leads.importLeadRows(db)))]
+      );
+    }
+    if (!options.skipTasks) await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
            id text, title text, lead_id text, kind text, status text, due_at text, completed_at text, priority text, owner_id text, data jsonb
@@ -101,10 +135,19 @@ async function saveEventImportTables(db, options = {}) {
        on conflict (id) do update set
          title = excluded.title, lead_id = excluded.lead_id, kind = excluded.kind, status = excluded.status,
          due_at = excluded.due_at, completed_at = excluded.completed_at, priority = excluded.priority,
-         owner_id = excluded.owner_id, data = excluded.data`,
-      [Applications.jsonValue(Tasks.importTaskRows(db))]
+         owner_id = excluded.owner_id, data = excluded.data
+       where app_tasks.title is distinct from excluded.title
+          or app_tasks.lead_id is distinct from excluded.lead_id
+          or app_tasks.kind is distinct from excluded.kind
+          or app_tasks.status is distinct from excluded.status
+          or app_tasks.due_at is distinct from excluded.due_at
+          or app_tasks.completed_at is distinct from excluded.completed_at
+          or app_tasks.priority is distinct from excluded.priority
+          or app_tasks.owner_id is distinct from excluded.owner_id
+          or app_tasks.data is distinct from excluded.data`,
+      [Applications.jsonValue(uniqueRowsById(Tasks.importTaskRows(db)))]
     );
-    await client.query(
+    if (!options.skipAudit) await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
            id text, name text, start_at text, location text, campaign text, capacity int, registrations int, attendance int, attendees jsonb, data jsonb
@@ -115,13 +158,18 @@ async function saveEventImportTables(db, options = {}) {
        on conflict (id) do update set
          name = excluded.name, start_at = excluded.start_at, location = excluded.location, campaign = excluded.campaign,
          capacity = excluded.capacity, registrations = excluded.registrations, attendance = excluded.attendance,
-         attendees = excluded.attendees, data = excluded.data`,
-      [Applications.jsonValue(importEventRows(db))]
+         attendees = excluded.attendees, data = excluded.data
+       where app_events.name is distinct from excluded.name
+          or app_events.start_at is distinct from excluded.start_at
+          or app_events.location is distinct from excluded.location
+          or app_events.campaign is distinct from excluded.campaign
+          or app_events.capacity is distinct from excluded.capacity
+          or app_events.registrations is distinct from excluded.registrations
+          or app_events.attendance is distinct from excluded.attendance
+          or app_events.attendees is distinct from excluded.attendees
+          or app_events.data is distinct from excluded.data`,
+      [Applications.jsonValue(uniqueRowsById(importEventRows(db)))]
     );
-    const deleteEventIds = [...(options.deleteEventIds || [])].filter(Boolean);
-    if (deleteEventIds.length) {
-      await client.query(`delete from app_events where id = any($1::text[])`, [deleteEventIds]);
-    }
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -132,12 +180,18 @@ async function saveEventImportTables(db, options = {}) {
        select id, occurred_at::timestamptz, actor, action, entity, entity_id, data from rows
        on conflict (id) do update set
          occurred_at = excluded.occurred_at, actor = excluded.actor, action = excluded.action,
-         entity = excluded.entity, entity_id = excluded.entity_id, data = excluded.data`,
-      [Applications.jsonValue(Audit.importAuditRows(db))]
+         entity = excluded.entity, entity_id = excluded.entity_id, data = excluded.data
+       where app_audit.occurred_at is distinct from excluded.occurred_at
+          or app_audit.actor is distinct from excluded.actor
+          or app_audit.action is distinct from excluded.action
+          or app_audit.entity is distinct from excluded.entity
+          or app_audit.entity_id is distinct from excluded.entity_id
+          or app_audit.data is distinct from excluded.data`,
+      [Applications.jsonValue(uniqueRowsById(Audit.importAuditRows(db)))]
     );
-    await Zoho.upsertZohoRecordRows(client, Zoho.zohoRecordRows(db));
+    if (!db.__partial_load) await Zoho.upsertZohoRecordRows(client, Zoho.zohoRecordRows(db));
     await client.query('commit');
-    State.dbCache = Storage.cloneDb(Workspace.recalculate(Storage.dbWithSavedMeta(db, metaState, { gmail: gmailState })));
+    State.dbCache = db.__partial_load ? null : Storage.cloneDb(Workspace.recalculate(Storage.dbWithSavedMeta(db, metaState, { gmail: gmailState })));
   } catch (error) {
     await client.query('rollback');
     throw error;
@@ -411,7 +465,7 @@ async function runEventAutoSync() {
     if (Eventbrite.eventbriteConfigured() || Eventbrite.eventbritePrivateTokenConfigured()) {
       try {
         results.eventbrite = await Eventbrite.importEventbriteEvents(db, user, Config.EVENT_AUTO_SYNC_MAX_EVENTS, { save: false });
-        await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, deleteEventIds: results.eventbrite.deleted_event_ids || [] });
+        await saveEventImportTables(db, { preserveGmail: true, preserveZoom: true });
       } catch (error) {
         results.eventbrite = { error: error.message || 'Eventbrite sync failed.' };
       }

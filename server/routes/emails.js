@@ -157,18 +157,24 @@ async function emailsWorkspaceRoutes(ctx) {
     const fromEmail = Auth.mailFromAddress(db);
     const fromName = Auth.mailFromName();
     const message = Emails.rawEmail({ from: Emails.encodeMailAddress(fromName, fromEmail), to: email.email, subject, text: messageText });
+    let sentMeta = {};
     try {
-    await Gmail.sendGmailApiMail(db, message);
-  } catch (apiError) {
-    await Gmail.sendSmtpMail({ fromEmail, fromName, to: email.email, subject, text: messageText }).catch(smtpError => {
+      const sent = await Gmail.sendGmailApiMail(db, message, email.gmail_thread_id || '');
+      sentMeta = {
+        gmail_message_id: sent?.id || '',
+        gmail_thread_id: sent?.threadId || email.gmail_thread_id || '',
+        gmail_labels: sent?.labelIds || ['SENT'],
+        gmail_label_names: ['Sent']
+      };
+    } catch (apiError) {
+      await Gmail.sendSmtpMail({ fromEmail, fromName, to: email.email, subject, text: messageText }).catch(smtpError => {
         throw Http.statusError(400, Emails.emailDeliveryError(apiError, smtpError).message);
       });
     }
-    email.response_at = new Date().toISOString();
-    email.response_note = messageText;
+    const reply = Emails.attachReplyToEmail(db, email, messageText, user, sentMeta);
     Audit.addAudit(db, user, 'Email response sent', 'lead', email.lead_id, subject);
     await Storage.saveDb(db);
-    return Http.sendJson(res, { ok: true });
+    return Http.sendJson(res, { ok: true, email: Emails.publicEmailSummary(email), reply: Emails.publicEmailSummary(reply) });
   }
   return NOT_HANDLED;
 }

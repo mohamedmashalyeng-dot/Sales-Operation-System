@@ -28,10 +28,12 @@ async function accountRoutes(ctx) {
     Auth.assertAuthThrottle(loginLimits);
     const publishedDefault = password === Auth.LEGACY_DEFAULT_ADMIN_PASSWORD;
     let user = publishedDefault ? null : await Auth.findLoginUser(email);
-    if (!publishedDefault && (!user || !Auth.verifyPassword(password, user.password_hash))) {
+    let passwordValid = Boolean(user && Auth.verifyPassword(password, user.password_hash));
+    if (!publishedDefault && !passwordValid) {
       user = await Auth.forceConfiguredDeveloperLogin(email, password);
+      passwordValid = Boolean(user && Auth.verifyPassword(password, user.password_hash));
     }
-    if (!user || !Auth.verifyPassword(password, user.password_hash)) {
+    if (!user || !passwordValid) {
       Auth.recordAuthThrottle(loginLimits);
       if (Auth.isDeveloperEmail(email) && !Auth.developerPasswordConfigured()) {
         throw Http.statusError(500, 'Developer password is not configured on this deployment. Add DEV_PANEL_PASSWORD and redeploy.');

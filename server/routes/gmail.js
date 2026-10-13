@@ -74,18 +74,31 @@ async function gmailWorkspaceRoutes(ctx) {
   if (route === '/api/integrations/gmail/sync' && method === 'POST') {
     Authorization.requireTeam(user);
     if (!Config.GMAIL_IMPORT_ENABLED) throw Http.statusError(403, 'Gmail import is paused. Existing emails remain available.');
+    const gmailMessageCount = (db.emails || []).filter(email => email.gmail_message_id).length;
+    const importedIds = Array.isArray(db.gmail?.imported_message_ids) ? db.gmail.imported_message_ids.length : 0;
+    const initialImportNeeded = !db.gmail?.initial_sync_completed_at && !db.gmail?.last_sync_at && !db.gmail?.history_id && gmailMessageCount === 0 && importedIds === 0;
+    const requestedFull = body.full_sync === true || String(body.full_sync || body.mode || body.max_results || body.maxResults || '').toLowerCase() === 'full' || String(body.max_results || body.maxResults || '').toLowerCase() === 'all';
+    const repairRebuildRequested = body.repair_rebuild === true || String(body.repair_rebuild || body.repairRebuild || '').toLowerCase() === 'true';
+    const historicalImport = initialImportNeeded || (requestedFull && repairRebuildRequested);
     let result;
     try {
-      result = await Gmail.importGmailMessages(db, user, Number(body.max_results || 10), {
-        latest: body.latest === undefined ? true : Boolean(body.latest),
+      result = await Gmail.importGmailMessages(db, user, historicalImport ? (body.max_results === undefined ? 'all' : body.max_results) : Config.GMAIL_AUTO_SYNC_BATCH_SIZE, {
+        latest: historicalImport ? false : true,
         skipTrash: Boolean(body.skip_trash),
-        forceTrash: Boolean(body.force_trash)
+        forceTrash: Boolean(body.force_trash),
+        initialImport: initialImportNeeded,
+        persistState: true
       });
     } catch (error) {
       if (Gmail.gmailReconnectError(error.message)) throw await Gmail.markGmailReconnectRequired(db, error.message);
       throw error;
     }
-    return Http.sendJson(res, result);
+    return Http.sendJson(res, {
+      ...result,
+      mode: historicalImport ? 'initial_import' : 'incremental',
+      full_sync_ignored: requestedFull && !historicalImport,
+      repair_rebuild_required_for_full_sync: requestedFull && !historicalImport
+    });
   }
   return NOT_HANDLED;
 }

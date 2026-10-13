@@ -65,7 +65,7 @@ async function eventbriteWorkspaceRoutes(ctx) {
   if (route === '/api/integrations/eventbrite/sync' && method === 'POST') {
     Authorization.requireTeam(user);
     const result = await Eventbrite.importEventbriteEvents(db, user, Number(body.max_events || 10), { save: false });
-    await Events.saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, deleteEventIds: result.deleted_event_ids || [] });
+    await Events.saveEventImportTables(db, { preserveGmail: true, preserveZoom: true });
     return Http.sendJson(res, result);
   }
   return NOT_HANDLED;

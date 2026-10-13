@@ -373,6 +373,65 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function loadZoomSyncWorkspace() {
+  await Storage.ensureStorage();
+  if (State.postgresPool) {
+    const seed = Workspace.seedDatabase();
+    const leadLimit = Math.max(1000, Math.min(Number(process.env.ZOOM_SYNC_LEAD_LIMIT || 50000), 150000));
+    const [workspace, programmes, intakes, leads, events] = await Promise.all([
+      State.postgresPool.query(`select * from app_workspace where id = $1`, ['main']),
+      State.postgresPool.query(`select data from app_programmes order by id`),
+      State.postgresPool.query(`select data from app_intakes order by id`),
+      State.postgresPool.query(
+        `select data
+         from app_leads
+         where coalesce(data->>'merged_into_id', '') = ''
+         order by created_at desc nulls last, id
+         limit $1`,
+        [leadLimit]
+      ),
+      State.postgresPool.query(`select data from app_events order by start_at nulls last, id`)
+    ]);
+    const row = workspace.rows[0];
+    if (row) {
+      return {
+        demo: row.demo,
+        users: seed.users,
+        programmes: programmes.rows.map(item => item.data),
+        stages: row.stages || seed.stages,
+        sources: row.sources || seed.sources,
+        leads: leads.rows.map(item => item.data),
+        tasks: [],
+        emails: [],
+        applications: [],
+        events: events.rows.map(item => item.data),
+        integrations: seed.integrations,
+        intakes: intakes.rows.map(item => item.data),
+        audit: [],
+        attribution: [],
+        gmail: row.gmail || { connected: false, imported_message_ids: [] },
+        eventbrite: row.eventbrite || { connected: false, imported_event_ids: [], imported_attendee_ids: [] },
+        apollo: row.meta?.apollo || { imported_person_ids: [] },
+        zoho: row.meta?.zoho || { imported_record_ids: [] },
+        zoom: row.meta?.zoom || { imported_meeting_ids: [] },
+        meta: row.meta || { imported_lead_ids: [], imported_form_ids: [] },
+        __partial_load: true
+      };
+    }
+  }
+  const db = await Storage.loadDb({
+    taskLimit: 1,
+    emailLimit: 1,
+    skipApplications: true,
+    skipAudit: true,
+    skipAttribution: true
+  });
+  // Zoom reconciliation only needs leads, events and stored Zoom state. Keeping
+  // emails out avoids unrelated email lead creation during a Zoom-only sync.
+  db.emails = [];
+  return db;
+}
+
 async function fetchZoomJson(url, options = {}, context = 'Zoom') {
   let lastError = null;
   const attempts = Math.max(1, Math.min(Number(options.attempts || 3), 5));
@@ -407,7 +466,7 @@ async function runZoomAutoSync() {
   State.zoomAutoSyncState.running = true;
   console.log('Zoom auto sync starting.');
   try {
-    const db = await Storage.loadDb();
+    const db = await loadZoomSyncWorkspace();
     const user = Jobs.autoSyncUser(db);
     const results = {};
     let shouldSave = false;
@@ -434,7 +493,16 @@ async function runZoomAutoSync() {
       } else {
         results.calls = { skipped: true, reason: 'ZOOM_AUTO_SYNC_CALLS is disabled.' };
       }
-      if (shouldSave) await Events.saveEventImportTables(db, { preserveGmail: true });
+      if (shouldSave) {
+        const meetingsChanged = Number(results.meetings?.scanned || 0) > 0;
+        const callsChanged = Number(results.calls?.scanned || 0) > 0;
+        await Events.saveEventImportTables(db, {
+          preserveGmail: true,
+          skipLeads: !meetingsChanged && !callsChanged,
+          skipTasks: !meetingsChanged && !callsChanged,
+          skipAudit: !meetingsChanged && !callsChanged
+        });
+      }
     }
     State.zoomAutoSyncState.last_result = results;
     const errors = Object.values(results).filter(item => item?.error).map(item => item.error);
@@ -938,6 +1006,19 @@ async function fetchZoomAccountCallHistory(auth, account, maxCalls = 1000, optio
   return { calls, warnings };
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function zoomComparableRecord(record = {}) {
+  const { updated_at, last_attempt_at, last_successful_sync_at, ...rest } = record || {};
+  return rest;
+}
+
 async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), options = {}) {
   db.zoom ||= { imported_meeting_ids: [] };
   db.zoom.calls ||= [];
@@ -947,11 +1028,19 @@ async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), option
     const hydrated = hydrateZoomStoredCall(db, call);
     return [hydrated.id, hydrated];
   }));
-  let scanned = 0, importedCalls = 0, updatedCalls = 0;
+  let scanned = 0, importedCalls = 0, updatedCalls = 0, unchangedCalls = 0;
+  let callAuthFailures = 0;
   const warnings = [];
   for (const account of accounts) {
     if (scanned >= maxCalls) break;
-    const accessToken = await zoomAccessToken(account);
+    let accessToken = '';
+    try {
+      accessToken = await zoomAccessToken(account);
+    } catch (error) {
+      callAuthFailures += 1;
+      warnings.push(error.message || `Zoom token failed for ${account.label}.`);
+      continue;
+    }
     const auth = { Authorization: `Bearer ${accessToken}` };
     const result = await fetchZoomAccountCallHistory(auth, account, maxCalls - scanned, options);
     warnings.push(...result.warnings);
@@ -959,8 +1048,14 @@ async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), option
       const record = normalizeZoomCallRecord(db, account, item);
       scanned += 1;
       if (existing.has(record.id)) {
-        existing.set(record.id, { ...existing.get(record.id), ...record, updated_at: new Date().toISOString() });
-        updatedCalls += 1;
+        const previous = existing.get(record.id);
+        const next = { ...previous, ...record, updated_at: previous.updated_at };
+        if (stableJson(zoomComparableRecord(previous)) === stableJson(zoomComparableRecord(next))) {
+          unchangedCalls += 1;
+        } else {
+          existing.set(record.id, { ...next, updated_at: new Date().toISOString() });
+          updatedCalls += 1;
+        }
       } else {
         existing.set(record.id, { ...record, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
         importedCalls += 1;
@@ -968,14 +1063,22 @@ async function importZoomCalls(db, user, maxCalls = zoomCallMaxRecords(), option
       if (scanned >= maxCalls) break;
     }
   }
+  if (callAuthFailures >= accounts.length && scanned === 0) {
+    throw Http.statusError(401, [...new Set(warnings.filter(Boolean))].join('; ') || 'Zoom authentication failed for every configured account.');
+  }
   db.zoom.calls = [...existing.values()].sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0)).slice(0, Math.max(zoomCallMaxRecords(options), existing.size));
   db.zoom.last_call_sync_at = new Date().toISOString();
-  const reconciliation = Workspace.reconcileImportedData(db, user);
-  Audit.addAudit(db, user, 'Zoom calls synced', 'integration', 'Zoom Phone', `${importedCalls} created, ${updatedCalls} updated, ${scanned} scanned across ${accounts.length} accounts`);
-  if (options.save !== false) await Storage.saveDb(db);
+  db.zoom.last_call_success_at = db.zoom.last_call_sync_at;
+  db.zoom.initial_call_sync_completed_at ||= db.zoom.last_call_sync_at;
+  const reconciliation = scanned > 0
+    ? Workspace.reconcileImportedData(db, user)
+    : { leads_created: 0, leads_updated: 0, emails_linked: 0, attendees_linked: 0, calls_linked: 0, unlinked_attendees: 0, unlinked_calls: 0 };
+  Audit.addAudit(db, user, 'Zoom calls synced', 'integration', 'Zoom Phone', `${importedCalls} created, ${updatedCalls} updated, ${unchangedCalls} unchanged, ${scanned} scanned across ${accounts.length} accounts`);
+  if (options.save !== false) await Storage.saveDb(db, { pruneMissing: false });
   return {
     imported_calls: importedCalls,
     updated_calls: updatedCalls,
+    unchanged_calls: unchangedCalls,
     scanned,
     accounts: accounts.length,
     call_history_months: zoomCallHistoryMonths(options),
@@ -1042,11 +1145,29 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
   let hostCount = 0;
   let importedAttendees = 0;
   let importedPhones = 0;
+  let meetingAuthFailures = 0;
   const historyWarnings = [];
   const meetingTypes = zoomMeetingTypes();
   for (const account of accounts) {
     if (meetings.length >= maxMeetings) break;
-    const accessToken = await zoomAccessToken(account);
+    let accessToken = '';
+    try {
+      accessToken = await zoomAccessToken(account);
+    } catch (error) {
+      meetingAuthFailures += 1;
+      historyWarnings.push(error.message || `Zoom token failed for ${account.label}.`);
+      db.zoom.sync_state[`${account.accountId}:${account.userId || zoomUserId()}`] = {
+        ...(db.zoom.sync_state[`${account.accountId}:${account.userId || zoomUserId()}`] || {}),
+        zoom_account_id: account.accountId,
+        zoom_account_label: account.label,
+        zoom_user_id: account.userId || zoomUserId(),
+        zoom_user_label: account.userId || zoomUserId(),
+        last_attempt_at: new Date().toISOString(),
+        status: 'error',
+        last_error: error.message || 'Zoom token failed.'
+      };
+      continue;
+    }
     const auth = { Authorization: `Bearer ${accessToken}` };
     const hosts = await fetchZoomMeetingHosts(auth, Number(process.env.ZOOM_MAX_USERS || 100), account);
     hostCount += hosts.length;
@@ -1131,7 +1252,11 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
       }
     }
   }
+  if (meetingAuthFailures >= accounts.length && meetings.length === 0) {
+    throw Http.statusError(401, [...new Set(historyWarnings.filter(Boolean))].join('; ') || 'Zoom authentication failed for every configured account.');
+  }
   let importedEvents = 0, updatedEvents = 0;
+  let unchangedEvents = 0;
   for (const meeting of meetings.slice(0, maxMeetings)) {
     const meetingId = String(meeting.id || '').trim();
     const meetingUuid = String(meeting.uuid || '').trim();
@@ -1159,7 +1284,7 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
       location: 'Zoom',
       start_at: startAt,
       created_at: existing?.created_at || new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      updated_at: existing?.updated_at || new Date().toISOString(),
       end_at: meeting.duration ? new Date(new Date(startAt).getTime() + Number(meeting.duration || 0) * 60000).toISOString() : existing?.end_at || null,
       campaign: [meeting.zoom_account_label || 'Zoom', meeting.host_label].filter(Boolean).join(' - '),
       capacity: Math.max(Number(existing?.capacity || 0), Number(meeting.zoom_attendees?.length || 0)),
@@ -1173,8 +1298,14 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
       zoom_link: meeting.join_url || existing?.zoom_link || existing?.meeting_link || ''
     };
     if (existing) {
-      Object.assign(existing, record);
-      updatedEvents += 1;
+      const nextRecord = { ...existing, ...record };
+      if (stableJson(zoomComparableRecord(existing)) === stableJson(zoomComparableRecord(nextRecord))) {
+        unchangedEvents += 1;
+      } else {
+        nextRecord.updated_at = new Date().toISOString();
+        Object.assign(existing, nextRecord);
+        updatedEvents += 1;
+      }
     } else {
       db.events.push(record);
       importedEvents += 1;
@@ -1184,15 +1315,20 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
     }
   }
   db.zoom.last_sync_at = new Date().toISOString();
+  db.zoom.last_success_at = db.zoom.last_sync_at;
+  db.zoom.initial_sync_completed_at ||= db.zoom.last_sync_at;
   db.zoom.user_id = zoomSyncAllUsers() ? `all users across ${accounts.length} accounts` : (process.env.ZOOM_USER_ID || 'me');
   db.zoom.accounts = accounts.length;
   const reportHistorySkipped = Object.values(db.zoom.sync_state || {}).filter(item => item?.report_history_unavailable).length;
-  const reconciliation = Workspace.reconcileImportedData(db, user);
-  Audit.addAudit(db, user, 'Zoom meetings synced', 'integration', 'Zoom', `${importedEvents} created, ${updatedEvents} updated, ${meetings.length} scanned from ${hostCount} users across ${accounts.length} accounts, ${importedAttendees} attendees, ${importedPhones} phones (${meetingTypes.join(', ')}${zoomIncludeHistory() ? ', report_history' : ''})`);
-  if (options.save !== false) await Storage.saveDb(db);
+  const reconciliation = meetings.length > 0
+    ? Workspace.reconcileImportedData(db, user)
+    : { leads_created: 0, leads_updated: 0, emails_linked: 0, attendees_linked: 0, calls_linked: 0, unlinked_attendees: 0, unlinked_calls: 0 };
+  Audit.addAudit(db, user, 'Zoom meetings synced', 'integration', 'Zoom', `${importedEvents} created, ${updatedEvents} updated, ${unchangedEvents} unchanged, ${meetings.length} scanned from ${hostCount} users across ${accounts.length} accounts, ${importedAttendees} attendees, ${importedPhones} phones (${meetingTypes.join(', ')}${zoomIncludeHistory() ? ', report_history' : ''})`);
+  if (options.save !== false) await Storage.saveDb(db, { pruneMissing: false });
   return {
     imported_events: importedEvents,
     updated_events: updatedEvents,
+    unchanged_events: unchangedEvents,
     scanned: meetings.length,
     imported_attendees: importedAttendees,
     imported_phones: importedPhones,
@@ -1217,6 +1353,7 @@ exports.loadZoomNumberPageDb = loadZoomNumberPageDb;
 exports.zoomConfigured = zoomConfigured;
 exports.zoomAccounts = zoomAccounts;
 exports.wait = wait;
+exports.loadZoomSyncWorkspace = loadZoomSyncWorkspace;
 exports.scheduleZoomAutoSync = scheduleZoomAutoSync;
 exports.zoomSyncAllUsers = zoomSyncAllUsers;
 exports.zoomMeetingType = zoomMeetingType;

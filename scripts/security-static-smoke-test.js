@@ -1,6 +1,7 @@
 'use strict';
 
 process.env.NEST_COMPAT_MODE = 'true';
+process.env.KBC_UI = 'legacy';
 
 const assert = require('assert');
 const { bootstrap, publicStaticFile, withoutIntegrationSecrets } = require('../server.js');

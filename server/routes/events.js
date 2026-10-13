@@ -1,6 +1,7 @@
 'use strict';
 
 const State = require('../state');
+const Config = require('../config');
 const Util = require('../util');
 const Http = require('../http');
 const Storage = require('../storage');
@@ -31,6 +32,7 @@ async function eventsRoutes(ctx) {
   lightweightMatch = route.match(/^\/api\/attendees\/([^/]+)\/checkin$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'attendee', lightweightMatch[1]);
     return Http.sendJson(res, await Events.checkInAttendeeFastDb(lightweightMatch[1], user));
   }
   return NOT_HANDLED;
@@ -43,13 +45,17 @@ async function eventsWorkspaceRoutes(ctx) {
   if (route === '/api/events/import' && method === 'POST') {
     Authorization.requireTeam(user);
     if (!Auth.permissions(user.role).sales) throw Http.statusError(403, 'You do not have permission to import events.');
-    const result = await Events.importSpreadsheetEvents(db, user, body);
+    const input = body?.use_configured_sheet && !body.google_url && !body.file_base64
+      ? { ...body, filename: 'configured-events-sheet', google_url: Config.EVENTS_SHEET_URL }
+      : body;
+    const result = await Events.importSpreadsheetEvents(db, user, input);
     await Events.saveEventImportTables(db, { preserveGmail: true, preserveZoom: true });
     return Http.sendJson(res, result, 201);
   }
 
   match = route.match(/^\/api\/attendees\/([^/]+)\/checkin$/);
   if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'attendee', match[1], db);
     const attendee = db.events.flatMap(event => event.attendees || []).find(item => item.id === match[1]);
     if (!attendee) throw Http.statusError(404, 'Attendee not found.');
     attendee.attended_at = attendee.attended_at || new Date().toISOString();

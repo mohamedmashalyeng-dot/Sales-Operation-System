@@ -10,7 +10,7 @@ const NOT_HANDLED = require('./not-handled');
 
 // Zoom routes that read and write the database directly.
 async function zoomRoutes(ctx) {
-  const { route, method, res, trace, req, url } = ctx;
+  const { route, method, res, trace, body, req, url } = ctx;
   if (route === '/api/zoom/events' && method === 'GET') {
     const user = await Auth.currentSessionUser(req, trace);
     Authorization.requireTeam(user);
@@ -46,6 +46,30 @@ async function zoomRoutes(ctx) {
     Authorization.requireTeam(user);
     return Http.sendJson(res, await Zoom.loadZoomNumberPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
   }
+  if (route === '/api/integrations/zoom/sync' && method === 'POST') {
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
+    const db = await Zoom.loadZoomSyncWorkspace();
+    const result = await Zoom.importZoomMeetings(db, user, Number(body.max_meetings || body.max_events || process.env.ZOOM_MAX_MEETINGS || 500), {
+      save: false,
+      report_history_months: body.report_history_months || body.history_months,
+      history_from: body.history_from
+    });
+    await Events.saveEventImportTables(db, { preserveGmail: true, skipLeads: !result.scanned, skipTasks: !result.scanned, skipAudit: !result.scanned });
+    return Http.sendJson(res, result);
+  }
+  if (route === '/api/integrations/zoom/calls/sync' && method === 'POST') {
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
+    const db = await Zoom.loadZoomSyncWorkspace();
+    const result = await Zoom.importZoomCalls(db, user, Number(body.max_calls || process.env.ZOOM_MAX_CALLS || 1000), {
+      save: false,
+      max_calls: body.max_calls,
+      call_history_months: body.call_history_months
+    });
+    await Events.saveEventImportTables(db, { preserveGmail: true, skipLeads: !result.scanned, skipTasks: !result.scanned, skipAudit: !result.scanned });
+    return Http.sendJson(res, result);
+  }
   return NOT_HANDLED;
 }
 
@@ -76,7 +100,7 @@ async function zoomWorkspaceRoutes(ctx) {
       report_history_months: body.report_history_months || body.history_months,
       history_from: body.history_from
     });
-    await Events.saveEventImportTables(db, { preserveGmail: true });
+    await Events.saveEventImportTables(db, { preserveGmail: true, skipLeads: !result.scanned, skipTasks: !result.scanned, skipAudit: !result.scanned });
     return Http.sendJson(res, result);
   }
   if (route === '/api/zoom/calls' && method === 'GET') {
@@ -105,7 +129,7 @@ async function zoomWorkspaceRoutes(ctx) {
       max_calls: body.max_calls,
       call_history_months: body.call_history_months
     });
-    await Events.saveEventImportTables(db, { preserveGmail: true });
+    await Events.saveEventImportTables(db, { preserveGmail: true, skipLeads: !result.scanned, skipTasks: !result.scanned, skipAudit: !result.scanned });
     return Http.sendJson(res, result);
   }
   return NOT_HANDLED;

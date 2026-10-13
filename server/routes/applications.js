@@ -52,6 +52,46 @@ function appFor(db, id) {
 async function applicationsRoutes(ctx) {
   const { route, method, res, trace, body, req, url } = ctx;
   let lightweightMatch = null;
+  if (route === '/api/admissions/pipeline' && method === 'GET') {
+    const user = await Auth.currentSessionUser(req, trace);
+    return Http.sendJson(res, await Applications.loadAdmissionsPipelineDb({
+      stage: url.searchParams.get('stage'),
+      status: url.searchParams.get('status'),
+      programme: url.searchParams.get('programme'),
+      programme_id: url.searchParams.get('programme_id'),
+      intake: url.searchParams.get('intake'),
+      intake_id: url.searchParams.get('intake_id'),
+      owner: Authorization.ownerFilter(user, url.searchParams.get('owner')),
+      owner_id: Authorization.ownerFilter(user, url.searchParams.get('owner_id')),
+      source: url.searchParams.get('source'),
+      created_from: url.searchParams.get('created_from'),
+      created_to: url.searchParams.get('created_to'),
+      updated_from: url.searchParams.get('updated_from'),
+      updated_to: url.searchParams.get('updated_to'),
+      search: url.searchParams.get('search')
+    }, trace), 200, {}, trace);
+  }
+  lightweightMatch = route.match(/^\/api\/admissions\/stage\/([^/]+)$/);
+  if (lightweightMatch && method === 'GET') {
+    const user = await Auth.currentSessionUser(req, trace);
+    return Http.sendJson(res, await Applications.loadAdmissionsStageDb(decodeURIComponent(lightweightMatch[1]), {
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      status: url.searchParams.get('status'),
+      programme: url.searchParams.get('programme'),
+      programme_id: url.searchParams.get('programme_id'),
+      intake: url.searchParams.get('intake'),
+      intake_id: url.searchParams.get('intake_id'),
+      owner: Authorization.ownerFilter(user, url.searchParams.get('owner')),
+      owner_id: Authorization.ownerFilter(user, url.searchParams.get('owner_id')),
+      source: url.searchParams.get('source'),
+      created_from: url.searchParams.get('created_from'),
+      created_to: url.searchParams.get('created_to'),
+      updated_from: url.searchParams.get('updated_from'),
+      updated_to: url.searchParams.get('updated_to'),
+      search: url.searchParams.get('search')
+    }, trace), 200, {}, trace);
+  }
   if (route === '/api/applications' && method === 'GET') {
     const user = await Auth.currentSessionUser(req, trace);
     return Http.sendJson(res, await Applications.loadApplicationListDb({
@@ -125,6 +165,19 @@ async function applicationsRoutes(ctx) {
     const user = await Auth.currentSessionUser(req);
     Authorization.requireTeam(user);
     return Http.sendJson(res, await Applications.enrolApplicationFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/status$/);
+  if (lightweightMatch && method === 'PATCH' && State.postgresPool) {
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'application', lightweightMatch[1]);
+    if (!Auth.permissionsForUser(user).review && !Auth.permissionsForUser(user).sales) throw Http.statusError(403, 'You do not have permission to update application status.');
+    return Http.sendJson(res, await Applications.transitionApplicationStatusFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/applications\/([^/]+)$/);
+  if (lightweightMatch && method === 'GET') {
+    const user = await Auth.currentSessionUser(req, trace);
+    await Authorization.requireRecord(user, 'application', lightweightMatch[1]);
+    return Http.sendJson(res, await Applications.loadApplicationDetailDb(lightweightMatch[1], user, trace), 200, {}, trace);
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)$/);
   if (lightweightMatch && method === 'DELETE' && State.postgresPool) {

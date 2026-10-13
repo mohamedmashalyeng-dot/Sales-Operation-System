@@ -29,12 +29,14 @@ assert(server.includes('locked_until < now()') && server.includes('where id = $1
 assert(!directRoutes.includes('pg_try_advisory_lock'), 'Zoho sync must not use session advisory locks through the Neon pooler');
 assert(server.includes('fetchZohoRecordPage'), 'missing one-page Zoho fetcher');
 assert(server.includes('resumeZohoSyncJobs'), 'missing restart resume scheduler');
+assert(server.includes('scheduleZohoAutoSync(5 * 1000)'), 'Zoho auto sync must start shortly after backend boot');
+assert(server.includes('initialSyncNeeded') && server.includes('records === 0 && marks.length === 0') && server.includes("mode: initialSyncNeeded ? 'full' : 'incremental'"), 'Zoho auto sync must queue full sync only for an empty initial dataset');
 assert(server.includes("route === '/api/integrations/zoho/sync-status'"), 'missing latest sync-status endpoint');
 assert(server.includes('/api\\/integrations\\/zoho\\/sync-status\\/'), 'missing job sync-status endpoint');
 assert(server.includes('ZOHO_SYNC_BATCH_SIZE'), 'missing configurable batch size');
 assert(server.includes('ZOHO_SYNC_POLL_INTERVAL_MS'), 'missing polling interval configuration');
 
-assert(app.includes("api('/api/integrations/zoho/sync',{full_sync:true},'POST'"), 'frontend must start a full background sync without waiting for full import');
+assert(app.includes("api('/api/integrations/zoho/sync',{mode:'incremental'},'POST'"), 'frontend must start an incremental background sync');
 assert(app.includes('/api/integrations/zoho/sync-status/'), 'frontend must poll job progress');
 assert(app.includes('scheduleZohoSyncPoll'), 'frontend missing Zoho polling scheduler');
 assert(app.includes('moduleResults'), 'frontend must render per-module Zoho sync progress');
@@ -46,6 +48,11 @@ assert(server.includes('ZOHO_SYNC_MODULE_CONCURRENCY') && server.includes('syncZ
 assert(server.includes('if (more) pending = request(next);'), 'next Zoho page must be fetched while the current page is saved');
 assert(server.includes("headers['If-Modified-Since']") && server.includes('sync_marks'), 'incremental Zoho sync must request only changed records');
 assert(server.includes('page_token'), 'Zoho pages beyond 2000 records need page_token');
-assert(app.includes("data-act=\"zoho-full-sync\""), 'frontend must offer a full resync');
+assert(server.includes('ZOHO_SYNC_MAX_RECORDS_PER_MODULE'), 'missing Zoho per-module record safety limit');
+assert(server.includes('seenIdRanges') && server.includes('provider result range was already processed'), 'missing durable Zoho result-range loop guard');
+assert(server.includes('coalesce(state,') && server.includes("array['cursors', $3::text]"), 'Zoho cursor progress must persist into a non-null state object');
+assert(server.includes('records_stored') && server.includes('current_sync_processed'), 'Integration Centre must separate stored records from current sync counters');
+assert(!app.includes('{full_sync:true}'), 'frontend must not request Zoho full sync from normal UI actions');
+assert(app.includes('Sync changes'), 'frontend must label normal Zoho sync as incremental changes');
 
 console.log('Zoho async sync audit passed.');

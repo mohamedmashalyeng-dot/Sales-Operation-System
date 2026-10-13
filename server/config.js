@@ -9,6 +9,7 @@ const ROOT = path.join(__dirname, '..');
 loadEnv();
 
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_FILE = path.join(DATA_DIR, 'pathway-db.json');
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.MONGODB_URI || process.env.MONGO_URI || '';
@@ -78,6 +79,7 @@ const ZOHO_SYNC_CONCURRENCY = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_
 const ZOHO_SYNC_POLL_INTERVAL_MS = Math.max(1000, Math.min(Number(process.env.ZOHO_SYNC_POLL_INTERVAL_MS || 2500), 10000));
 const ZOHO_SYNC_WORKER_YIELD_MS = Math.max(50, Math.min(Number(process.env.ZOHO_SYNC_WORKER_YIELD_MS || 150), 10000));
 const ZOHO_SYNC_MAX_PAGES_PER_MODULE = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_MAX_PAGES_PER_MODULE || 1000), 10000));
+const ZOHO_SYNC_MAX_RECORDS_PER_MODULE = Math.max(0, Math.min(Number(process.env.ZOHO_SYNC_MAX_RECORDS_PER_MODULE || 25000), 1000000));
 const ZOHO_SYNC_MODULE_CONCURRENCY = Math.max(1, Math.min(Number(process.env.ZOHO_SYNC_MODULE_CONCURRENCY || 3), 5));
 const ZOHO_FETCH_ATTEMPTS = 5;
 const ZOHO_JOB_LEASE_MS = 3 * 60 * 1000;
@@ -88,7 +90,7 @@ const ZOHO_RECORDS_PREVIEW_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.e
 // server sharing the production database); jobs are still created and read normally.
 const ZOHO_SYNC_WORKER_ENABLED = String(process.env.ZOHO_SYNC_WORKER || 'true').toLowerCase() !== 'false';
 const ZOHO_AUTO_SYNC_ENABLED = BACKGROUND_JOBS_ENABLED && ZOHO_SYNC_WORKER_ENABLED && String(process.env.ZOHO_AUTO_SYNC || 'true').toLowerCase() !== 'false';
-const ZOHO_AUTO_SYNC_INTERVAL_MS = Math.max(5 * 60 * 1000, Math.min(Number(process.env.ZOHO_AUTO_SYNC_INTERVAL_MS || 15 * 60 * 1000), 24 * 60 * 60 * 1000));
+const ZOHO_AUTO_SYNC_INTERVAL_MS = Math.max(60 * 1000, Math.min(Number(process.env.ZOHO_AUTO_SYNC_INTERVAL_MS || 5 * 60 * 1000), 24 * 60 * 60 * 1000));
 // Incremental runs re-read a small overlap before the last mark so edits made while that
 // sync was running are not missed.
 const ZOHO_INCREMENTAL_OVERLAP_MS = 10 * 60 * 1000;
@@ -175,6 +177,7 @@ function loadEnv() {
 
 exports.ROOT = ROOT;
 exports.PORT = PORT;
+exports.HOST = HOST;
 exports.DATA_DIR = DATA_DIR;
 exports.DB_FILE = DB_FILE;
 exports.DATABASE_URL = DATABASE_URL;
@@ -229,6 +232,7 @@ exports.ZOHO_SYNC_BATCH_SIZE = ZOHO_SYNC_BATCH_SIZE;
 exports.ZOHO_SYNC_CONCURRENCY = ZOHO_SYNC_CONCURRENCY;
 exports.ZOHO_SYNC_WORKER_YIELD_MS = ZOHO_SYNC_WORKER_YIELD_MS;
 exports.ZOHO_SYNC_MAX_PAGES_PER_MODULE = ZOHO_SYNC_MAX_PAGES_PER_MODULE;
+exports.ZOHO_SYNC_MAX_RECORDS_PER_MODULE = ZOHO_SYNC_MAX_RECORDS_PER_MODULE;
 exports.ZOHO_SYNC_MODULE_CONCURRENCY = ZOHO_SYNC_MODULE_CONCURRENCY;
 exports.ZOHO_FETCH_ATTEMPTS = ZOHO_FETCH_ATTEMPTS;
 exports.ZOHO_JOB_LEASE_MS = ZOHO_JOB_LEASE_MS;

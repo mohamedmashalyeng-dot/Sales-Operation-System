@@ -20,7 +20,7 @@ function startAutoSync() {
     return;
   }
   Zoho.resumeZohoSyncJobs().catch(error => console.error(`Zoho sync resume failed: ${Zoho.zohoSafeJobError(error)}`));
-  Zoho.scheduleZohoAutoSync(60 * 1000);
+  Zoho.scheduleZohoAutoSync(5 * 1000);
   if (!Config.GMAIL_AUTO_SYNC_ENABLED && !Config.EVENT_AUTO_SYNC_ENABLED && !Config.ZOOM_AUTO_SYNC_ENABLED) {
     State.gmailAutoSyncState = { ...State.gmailAutoSyncState, enabled: false, mode: Config.GMAIL_AUTO_SYNC_MODE, daily_time: Config.GMAIL_AUTO_SYNC_DAILY_TIME, running: false, next_run_at: null };
     State.eventAutoSyncState = { ...State.eventAutoSyncState, enabled: false, running: false, next_run_at: null };

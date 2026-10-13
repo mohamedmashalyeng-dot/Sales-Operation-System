@@ -61,6 +61,19 @@ function eventbriteAccessToken(db) {
   return db.eventbrite.access_token;
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function eventbriteComparableEvent(event = {}) {
+  const { updated_at, ...rest } = event || {};
+  return rest;
+}
+
 async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
   if (!eventbriteConfigured() && !eventbritePrivateTokenConfigured()) throw Http.statusError(400, 'Eventbrite credentials are not configured.');
   db.eventbrite ||= { connected: false, imported_event_ids: [], imported_attendee_ids: [] };
@@ -69,7 +82,6 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
   const auth = { Authorization: `Bearer ${accessToken}` };
   const orgList = await Util.fetchJson('https://www.eventbriteapi.com/v3/users/me/organizations/', { headers: auth });
   const events = [];
-  const currentEventbriteIds = new Set();
   let eventbriteIdScanComplete = true;
   for (const org of orgList.organizations || []) {
     let page = 1;
@@ -82,7 +94,6 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
       });
       const list = await Util.fetchJson(`https://www.eventbriteapi.com/v3/organizations/${org.id}/events/?${params}`, { headers: auth, timeoutMs: 12000 });
       for (const event of list.events || []) {
-        currentEventbriteIds.add(event.id);
         if (events.length < maxEvents) events.push({ ...event, organization_name: org.name });
       }
       const pagination = list.pagination || {};
@@ -122,9 +133,11 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
     for (const result of results) attendeeResults.set(result.event_id, result);
   }
   let importedEvents = 0;
+  let updatedEvents = 0;
+  let unchangedEvents = 0;
   let importedAttendees = 0;
   let attendeeErrors = 0;
-  const deletedEventIds = new Set();
+  const mergedDuplicateEventIds = new Set();
   for (const event of events.slice(0, maxEvents)) {
     const eventRecordForMatch = {
       eventbrite_event_id: event.id,
@@ -136,8 +149,10 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
     const matchingImportedEvent = Events.findSpreadsheetEvent(db, eventRecordForMatch);
     if (existing && matchingImportedEvent && matchingImportedEvent.id !== existing.id) {
       existing.attendees = Events.mergeEventAttendees(existing.attendees || [], matchingImportedEvent.attendees || []);
-      db.events = db.events.filter(item => item.id !== matchingImportedEvent.id);
-      deletedEventIds.add(matchingImportedEvent.id);
+      matchingImportedEvent.merged_into_event_id = existing.id;
+      matchingImportedEvent.remote_status = matchingImportedEvent.remote_status || 'merged_duplicate';
+      matchingImportedEvent.external_deleted_at = matchingImportedEvent.external_deleted_at || null;
+      mergedDuplicateEventIds.add(matchingImportedEvent.id);
     } else if (!existing) {
       existing = matchingImportedEvent;
     }
@@ -174,7 +189,7 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
       location: Events.eventVenue(event),
       start_at: event.start?.utc || event.start?.local || new Date().toISOString(),
       created_at: existing?.created_at || event.created || new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      updated_at: existing?.updated_at || new Date().toISOString(),
       campaign: 'Eventbrite',
       capacity: Math.max(Number(existing?.capacity || 0), Number(event.capacity || event.ticket_availability?.quantity_total || mergedAttendees.length || 0)),
       registrations: Math.max(Number(existing?.registrations || 0), mergedAttendees.length),
@@ -182,18 +197,28 @@ async function importEventbriteEvents(db, user, maxEvents = 10, options = {}) {
       attendees: mergedAttendees,
       sync_warning
     };
-    if (existing) Object.assign(existing, record);
-    else {
+    if (existing) {
+      const nextRecord = { ...existing, ...record };
+      if (stableJson(eventbriteComparableEvent(existing)) === stableJson(eventbriteComparableEvent(nextRecord))) {
+        unchangedEvents += 1;
+      } else {
+        nextRecord.updated_at = new Date().toISOString();
+        Object.assign(existing, nextRecord);
+        updatedEvents += 1;
+      }
+    } else {
       db.events.push(record);
       importedEvents += 1;
     }
     if (!(db.eventbrite.imported_event_ids || []).includes(event.id)) db.eventbrite.imported_event_ids = [...(db.eventbrite.imported_event_ids || []), event.id];
   }
   db.eventbrite.last_sync_at = new Date().toISOString();
+  db.eventbrite.last_success_at = db.eventbrite.last_sync_at;
+  db.eventbrite.initial_sync_completed_at ||= db.eventbrite.last_sync_at;
   const reconciliation = Workspace.reconcileImportedData(db, user);
-  Audit.addAudit(db, user, 'Eventbrite synced', 'integration', 'Eventbrite', `${importedEvents} events, ${importedAttendees} attendees${deletedEventIds.size ? `, ${deletedEventIds.size} removed` : ''}${attendeeErrors ? `, ${attendeeErrors} attendee import warnings` : ''}`);
-  if (options.save !== false) await Storage.saveDb(db);
-  return { imported_events: importedEvents, imported_attendees: importedAttendees, deleted_events: deletedEventIds.size, deleted_event_ids: [...deletedEventIds], deletion_scan_complete: eventbriteIdScanComplete, scanned: events.length, attendee_errors: attendeeErrors, reconciliation, last_sync_at: db.eventbrite.last_sync_at };
+  Audit.addAudit(db, user, 'Eventbrite synced', 'integration', 'Eventbrite', `${importedEvents} events, ${updatedEvents} updated, ${unchangedEvents} unchanged, ${importedAttendees} attendees${mergedDuplicateEventIds.size ? `, ${mergedDuplicateEventIds.size} duplicates marked` : ''}${attendeeErrors ? `, ${attendeeErrors} attendee import warnings` : ''}`);
+  if (options.save !== false) await Storage.saveDb(db, { pruneMissing: false });
+  return { imported_events: importedEvents, updated_events: updatedEvents, unchanged_events: unchangedEvents, imported_attendees: importedAttendees, deleted_events: 0, soft_merged_duplicates: mergedDuplicateEventIds.size, deletion_scan_complete: eventbriteIdScanComplete, scanned: events.length, attendee_errors: attendeeErrors, reconciliation, last_sync_at: db.eventbrite.last_sync_at };
 }
 
 exports.eventbriteRedirectUri = eventbriteRedirectUri;

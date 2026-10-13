@@ -20,11 +20,19 @@ const GmailRoutes = require('./gmail');
 const EventbriteRoutes = require('./eventbrite');
 const MetaRoutes = require('./meta');
 const ApolloRoutes = require('./apollo');
+const AutomationsRoutes = require('./automations');
+const SavedViewsRoutes = require('./saved-views');
+const DataQualityRoutes = require('./data-quality');
+const IntegrationCentreRoutes = require('./integration-centre');
+const AnalyticsRoutes = require('./analytics');
+const NotificationsRoutes = require('./notifications');
+const DocumentsRoutes = require('./documents');
+const AdminAuditRoutes = require('./admin-audit');
 
 // The route groups, in the order they are tried. A request is answered by the first group
 // that has a route for it; every group works on one area of the API.
 const OPEN_ROUTES = [SystemRoutes.systemOpenRoutes, AccountRoutes.accountOpenRoutes];
-const DIRECT_ROUTES = [AccountRoutes.accountRoutes, BootstrapRoutes.bootstrapRoutes, SystemRoutes.systemRoutes, DashboardRoutes.dashboardRoutes, LeadsRoutes.leadsRoutes, TasksRoutes.tasksRoutes, EventsRoutes.eventsRoutes, EmailsRoutes.emailsRoutes, ApplicationsRoutes.applicationsRoutes, ZoomRoutes.zoomRoutes, ZohoRoutes.zohoRoutes];
+const DIRECT_ROUTES = [AccountRoutes.accountRoutes, BootstrapRoutes.bootstrapRoutes, SystemRoutes.systemRoutes, DashboardRoutes.dashboardRoutes, LeadsRoutes.leadsRoutes, TasksRoutes.tasksRoutes, EventsRoutes.eventsRoutes, EmailsRoutes.emailsRoutes, ApplicationsRoutes.applicationsRoutes, ZoomRoutes.zoomRoutes, ZohoRoutes.zohoRoutes, AutomationsRoutes.automationsRoutes, SavedViewsRoutes.savedViewsRoutes, DataQualityRoutes.dataQualityRoutes, IntegrationCentreRoutes.integrationCentreRoutes, AnalyticsRoutes.analyticsRoutes, NotificationsRoutes.notificationsRoutes, DocumentsRoutes.documentsRoutes, AdminAuditRoutes.adminAuditRoutes];
 const PUBLIC_WORKSPACE_ROUTES = [AccountRoutes.accountPublicWorkspaceRoutes];
 const WORKSPACE_ROUTES = [LeadsRoutes.leadsWorkspaceRoutes, DashboardRoutes.dashboardWorkspaceRoutes, GmailRoutes.gmailWorkspaceRoutes, EventbriteRoutes.eventbriteWorkspaceRoutes, EventsRoutes.eventsWorkspaceRoutes, ZoomRoutes.zoomWorkspaceRoutes, MetaRoutes.metaWorkspaceRoutes, ApolloRoutes.apolloWorkspaceRoutes, ZohoRoutes.zohoWorkspaceRoutes, TasksRoutes.tasksWorkspaceRoutes, EmailsRoutes.emailsWorkspaceRoutes, ApplicationsRoutes.applicationsWorkspaceRoutes];
 
@@ -44,7 +52,7 @@ async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = url.pathname;
   const method = req.method;
-  const traceableRoutes = new Set(['/api/health', '/api/bootstrap', '/api/leads', '/api/tasks', '/api/emails', '/api/events', '/api/zoom/events', '/api/applications', '/api/meetings', '/api/activity', '/api/contacts', '/api/monitoring', '/api/dashboard/monitoring', '/api/debug/db-ping', '/api/debug/ping']);
+  const traceableRoutes = new Set(['/api/health', '/api/bootstrap', '/api/workspace/full', '/api/leads', '/api/tasks', '/api/emails', '/api/events', '/api/zoom/events', '/api/applications', '/api/admissions/pipeline', '/api/search', '/api/data-quality/summary', '/api/data-quality/issues', '/api/integrations/overview', '/api/analytics/overview', '/api/notifications', '/api/notifications/unread-count', '/api/documents', '/api/admin-audit/overview', '/api/admin-audit/audit', '/api/meetings', '/api/activity', '/api/contacts', '/api/monitoring', '/api/dashboard/my-day', '/api/dashboard/monitoring', '/api/debug/db-ping', '/api/debug/ping']);
   const requestEntry = Number(req.__requestEntryAt || handlerEntry);
   const trace = method === 'GET' && traceableRoutes.has(route) ? Perf.createPerfTrace(route, requestEntry) : null;
   req.__perfTrace = trace;

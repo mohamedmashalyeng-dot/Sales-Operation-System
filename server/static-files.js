@@ -18,7 +18,9 @@ const mime = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.pdf': 'application/pdf',
-  '.ico': 'image/x-icon'
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2'
 };
 
 // Only browser assets that live in the web root are public.
@@ -30,6 +32,10 @@ const PUBLIC_STATIC_BLOCKED_NAMES = new Set(['server.js']);
 const PUBLIC_STATIC_DEFAULT_FILE = 'index.html';
 const PUBLIC_ASSET_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2']);
 const PUBLIC_ASSET_PREFIX = 'assets/images/';
+const READDY_BUILD_DIR = path.resolve(Config.ROOT, process.env.KBC_READDY_OUT_DIR || path.join('frontend', 'out'));
+const KBC_UI_MODE = String(process.env.KBC_UI || 'readdy').toLowerCase();
+const READDY_UI_ENABLED = KBC_UI_MODE !== 'legacy';
+const READDY_STATIC_EXTENSIONS = new Set(['.html', '.js', '.css', '.json', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico', '.woff', '.woff2']);
 
 function publicStaticFile(pathname) {
   let decoded = '';
@@ -72,6 +78,35 @@ function staticCacheControl(name, ext, versioned) {
   return 'no-cache';
 }
 
+function readdyBuildAvailable() {
+  if (!READDY_UI_ENABLED) return false;
+  const rootPath = path.resolve(Config.ROOT);
+  if (READDY_BUILD_DIR !== rootPath && !READDY_BUILD_DIR.startsWith(`${rootPath}${path.sep}`)) return false;
+  return fs.existsSync(path.join(READDY_BUILD_DIR, 'index.html'));
+}
+
+function readdyStaticFile(pathname) {
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(String(pathname || ''));
+  } catch {
+    return null;
+  }
+  if (!decoded || decoded === '/') return 'index.html';
+  if (!decoded.startsWith('/')) return null;
+  const clean = decoded.slice(1);
+  const segments = clean.split('/');
+  if (segments.some(segment => !segment || segment.startsWith('.') || segment.includes('\\'))) return null;
+  const ext = path.extname(clean).toLowerCase();
+  if (ext) return READDY_STATIC_EXTENSIONS.has(ext) ? clean : null;
+  return 'index.html';
+}
+
+function readdyCacheControl(name, ext) {
+  if (name === 'index.html' || ext === '.html') return 'no-cache';
+  return 'public, max-age=604800';
+}
+
 // An If-None-Match header may list several tags and may mark them weak (W/).
 function etagMatches(header, etag) {
   if (!header) return false;
@@ -83,6 +118,7 @@ function serveStatic(req, res) {
   Http.applySecurityHeaders(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return Http.sendJson(res, { error: 'Not found.' }, 404);
   const url = new URL(req.url, `http://${req.headers.host}`);
+  if (readdyBuildAvailable()) return serveReaddyStatic(req, res, url);
   const name = publicStaticFile(url.pathname);
   if (!name) return Http.sendJson(res, { error: 'Not found.' }, 404);
   const filePath = path.resolve(Config.ROOT, name);
@@ -111,6 +147,44 @@ function serveStatic(req, res) {
   });
 }
 
+function serveReaddyStatic(req, res, url) {
+  const name = readdyStaticFile(url.pathname);
+  if (!name) return Http.sendJson(res, { error: 'Not found.' }, 404);
+  let filePath = path.resolve(READDY_BUILD_DIR, name);
+  if (filePath !== READDY_BUILD_DIR && !filePath.startsWith(`${READDY_BUILD_DIR}${path.sep}`)) return Http.sendJson(res, { error: 'Not found.' }, 404);
+  if (!fs.existsSync(filePath) && !path.extname(name)) filePath = path.join(READDY_BUILD_DIR, 'index.html');
+  fs.stat(filePath, (statError, stats) => {
+    if (statError || !stats.isFile()) {
+      if (path.extname(name)) return Http.sendJson(res, { error: 'Not found.' }, 404);
+      filePath = path.join(READDY_BUILD_DIR, 'index.html');
+      try {
+        stats = fs.statSync(filePath);
+      } catch {
+        return Http.sendJson(res, { error: 'Not found.' }, 404);
+      }
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
+    const headers = {
+      'Content-Type': mime[ext] || 'application/octet-stream',
+      'Cache-Control': readdyCacheControl(path.relative(READDY_BUILD_DIR, filePath), ext),
+      ETag: etag,
+      'Last-Modified': stats.mtime.toUTCString()
+    };
+    if (etagMatches(req.headers['if-none-match'], etag)) {
+      res.writeHead(304, headers);
+      return res.end();
+    }
+    fs.readFile(filePath, (error, content) => {
+      if (error) return Http.sendJson(res, { error: 'Not found.' }, 404);
+      if (ext === '.html') headers['Content-Security-Policy'] = Http.contentSecurityPolicy(content.toString('utf8'));
+      res.writeHead(200, headers);
+      res.end(content);
+    });
+  });
+}
+
 exports.mime = mime;
 exports.publicStaticFile = publicStaticFile;
+exports.readdyStaticFile = readdyStaticFile;
 exports.serveStatic = serveStatic;

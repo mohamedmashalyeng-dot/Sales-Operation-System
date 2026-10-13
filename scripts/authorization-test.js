@@ -160,8 +160,14 @@ async function main() {
     expectStatus('member A cannot add a note to member B\'s lead', await call(memberA, 'POST', `/api/leads/${leadB}/notes`, { note: 'x', body: 'x', text: 'x' }), 403);
     expectStatus('member A cannot add a programme to member B\'s lead', await call(memberA, 'POST', `/api/leads/${leadB}/opportunities`, { programme_id: programmeId }), 403);
     expectStatus('member A cannot log a call on member B\'s lead', await call(memberA, 'POST', '/api/calls', { lead_id: leadB, outcome: 'Connected', note: 'x' }), 403);
+    expectStatus('member A cannot read member B\'s Lead 360 emails', await call(memberA, 'GET', `/api/leads/${leadB}/emails?limit=10`), 403);
+    expectStatus('member A cannot read member B\'s Lead 360 tasks', await call(memberA, 'GET', `/api/leads/${leadB}/tasks?limit=10`), 403);
+    expectStatus('member A cannot read member B\'s Lead 360 files', await call(memberA, 'GET', `/api/leads/${leadB}/files?limit=10`), 403);
+    expectStatus('member A cannot read member B\'s Lead 360 timeline', await call(memberA, 'GET', `/api/leads/${leadB}/timeline?limit=10`), 403);
     expectStatus('a lead id that does not exist gives a member the same 403', await call(memberA, 'PATCH', '/api/leads/no-such-lead', { stage: 'Qualified' }), 403);
     expectStatus('member A reads their own lead', await call(memberA, 'GET', `/api/leads/${leadA}`), 200);
+    expectStatus('member A reads their own Lead 360 emails', await call(memberA, 'GET', `/api/leads/${leadA}/emails?limit=10`), 200);
+    expectStatus('member A reads their own Lead 360 tasks', await call(memberA, 'GET', `/api/leads/${leadA}/tasks?limit=10`), 200);
     expectStatus('member A changes their own lead', await call(memberA, 'PATCH', `/api/leads/${leadA}`, { stage: 'Qualified', priority: 'P1', reason: 'test' }), 200);
     expectStatus('member A cannot hand their lead to member B', await call(memberA, 'PATCH', `/api/leads/${leadA}`, { owner_id: idB }), 403);
     expectStatus('member A cannot delete even their own lead (team only)', await call(memberA, 'DELETE', `/api/leads/${leadA}`, {}), deleteRefused);
@@ -191,6 +197,7 @@ async function main() {
     expectStatus('member A cannot complete member B\'s task', await call(memberA, 'POST', `/api/tasks/${taskIdB}/complete`, {}), 403);
     expectStatus('member A cannot delete member B\'s task', await call(memberA, 'DELETE', `/api/tasks/${taskIdB}`, {}), deleteRefused);
     expectStatus('member A cannot create a task on member B\'s lead', await call(memberA, 'POST', '/api/tasks', { lead_id: leadB, title: 'x', kind: 'Call', due_at: due }), 403);
+    expectStatus('member A cannot list tasks by member B\'s lead id', await call(memberA, 'GET', `/api/tasks?status=all&lead_id=${encodeURIComponent(leadB)}&limit=20`), 403);
     expectStatus('member A cannot give a task to member B', await call(memberA, 'POST', '/api/tasks', { lead_id: leadA, title: 'x', kind: 'Call', due_at: due, owner_id: idB }), 403);
     const tasksA = ((await call(memberA, 'GET', '/api/tasks?status=all&limit=200')).json?.items || []).map(task => task.id);
     check('member A\'s task list holds their task and not member B\'s', tasksA.includes(taskIdA) && !tasksA.includes(taskIdB), tasksA.join(','));
@@ -205,6 +212,11 @@ async function main() {
     check('member A\'s inbox holds their email and not member B\'s', inboxA.includes(emailIdA) && !inboxA.includes(emailIdB), inboxA.join(','));
     const searchedA = ((await call(memberA, 'GET', `/api/emails?limit=100&search=${encodeURIComponent(`authz email b ${stamp}`)}`)).json?.emails || []).map(email => email.id);
     check('searching the inbox does not reach member B\'s email', !searchedA.includes(emailIdB), searchedA.join(','));
+    const globalSearchA = await call(memberA, 'GET', `/api/search?q=${encodeURIComponent(`authz b ${stamp}`)}&limit=5`);
+    expectStatus('member A can use global search', globalSearchA, 200);
+    check('global search does not leak member B records to member A', !globalSearchA.text.includes(String(leadB)) && !globalSearchA.text.includes(String(emailIdB)) && !globalSearchA.text.includes(String(applicationIdB || 'not-created-yet')), globalSearchA.text.slice(0, 220));
+    const globalSearchMonitor = await call(monitor, 'GET', `/api/search?q=${encodeURIComponent(`authz b ${stamp}`)}&limit=5`);
+    notForbidden('the monitor can use global search across the team', globalSearchMonitor);
     expectStatus('member A reads their own email', await call(memberA, 'GET', `/api/emails/${emailIdA}`), 200);
     notForbidden('the monitor reads member B\'s email', await call(monitor, 'GET', `/api/emails/${emailIdB}`));
     if (databaseUrl) {
@@ -221,25 +233,46 @@ async function main() {
     check('member A\'s application list does not hold member B\'s application', !(applicationsA?.items || applicationsA?.applications || []).some(item => String(item.id) === String(applicationIdB)));
     if (evidenceId) {
       expectStatus('member A cannot download member B\'s evidence file', await call(memberA, 'GET', `/api/evidence/${evidenceId}/file`), 403);
+      expectStatus('member A cannot download member B\'s document-centre file', await call(memberA, 'GET', `/api/documents/${evidenceId}/download`), 403);
       expectStatus('member B downloads their own evidence file', await call(memberB, 'GET', `/api/evidence/${evidenceId}/file`), 200);
       expectStatus('member A cannot review member B\'s evidence', await call(memberA, 'POST', `/api/evidence/${evidenceId}/review`, { status: 'Verified', note: 'x' }), 403);
       notForbidden('the monitor downloads member B\'s evidence file', await call(monitor, 'GET', `/api/evidence/${evidenceId}/file`));
     } else check('evidence was uploaded so file access could be tested', false, `requirement ${requirementId || '(none)'}; ${JSON.stringify(applicationB.json?.application || applicationB.json || {}).slice(0, 220)}`);
+    const docsAForB = await call(memberA, 'GET', `/api/documents?lead_id=${encodeURIComponent(leadB)}&limit=20`);
+    expectStatus('member A can open scoped Documents Centre query', docsAForB, 200);
+    check('member A document query does not leak member B files', !(docsAForB.json?.items || docsAForB.json?.documents || []).some(item => String(item.lead_id) === String(leadB)), docsAForB.text.slice(0, 180));
     if (databaseUrl) expectStatus('member A cannot delete an application', await call(memberA, 'DELETE', `/api/applications/${applicationIdB}`, {}), 403);
     notForbidden('the monitor decides member B\'s application', await call(monitor, 'POST', `/api/applications/${applicationIdB}/review`, { status: 'Eligible' }));
 
+    // ---- saved views are personal saved filters, not shared records
+    const savedView = await call(memberA, 'POST', '/api/saved-views', { entity_type: 'leads', name: `Authz view ${stamp}`, filters: { search: 'authz', stage: 'All' }, is_default: true });
+    expectStatus('member A creates a personal saved view', savedView, 201);
+    const savedViewId = savedView.json?.saved_view?.id;
+    check('saved view has an id', Boolean(savedViewId), savedView.text.slice(0, 120));
+    const memberBViews = (await call(memberB, 'GET', '/api/saved-views?entity_type=leads')).json?.saved_views || [];
+    check('member B does not see member A\'s saved view', !memberBViews.some(view => String(view.id) === String(savedViewId)), JSON.stringify(memberBViews).slice(0, 180));
+    expectStatus('member B cannot rename member A\'s saved view', await call(memberB, 'PATCH', `/api/saved-views/${savedViewId}`, { name: 'stolen' }), 403);
+    expectStatus('member B cannot delete member A\'s saved view', await call(memberB, 'DELETE', `/api/saved-views/${savedViewId}`, {}), 403);
+    expectStatus('member A renames their saved view', await call(memberA, 'PATCH', `/api/saved-views/${savedViewId}`, { name: `Renamed ${stamp}` }), 200);
+    expectStatus('member A deletes their saved view', await call(memberA, 'DELETE', `/api/saved-views/${savedViewId}`, {}), 200);
+
     // ---- organisation-wide data and administration: team only
-    for (const route of ['/api/audit', '/api/attribution', '/api/contacts?limit=10', '/api/zoom/calls?limit=10', '/api/zoom/numbers', '/api/meetings?limit=10', '/api/zoom/events?limit=10', '/api/integrations/zoho/records', '/api/integrations/zoho/records/page?module=Leads&limit=5', '/api/dashboard/admin-overview', '/api/monitoring', '/api/monitoring/system']) {
+    for (const route of ['/api/audit', '/api/admin-audit/overview', '/api/admin-audit/audit?limit=5', '/api/attribution', '/api/contacts?limit=10', '/api/zoom/calls?limit=10', '/api/zoom/numbers', '/api/meetings?limit=10', '/api/zoom/events?limit=10', '/api/integrations/overview', '/api/integrations/zoho', '/api/integrations/zoho/records', '/api/integrations/zoho/records/page?module=Leads&limit=5', '/api/dashboard/admin-overview', '/api/dashboard/totals', '/api/monitoring', '/api/monitoring/system', '/api/automations?limit=10', '/api/automations/status', '/api/data-quality/summary', '/api/data-quality/issues?type=duplicate_leads&limit=5']) {
       expectStatus(`member A cannot read ${route.split('?')[0]}`, await call(memberA, 'GET', route), 403);
       notForbidden(`the monitor reads ${route.split('?')[0]}`, await call(monitor, 'GET', route));
     }
-    for (const route of ['/api/integrations/gmail/sync', '/api/integrations/zoho/sync', '/api/integrations/zoom/sync', '/api/integrations/zoom/calls/sync', '/api/integrations/meta/sync', '/api/integrations/apollo/sync', '/api/integrations/eventbrite/sync', '/api/events/import', '/api/leads/reconcile']) {
+    expectStatus('member A can open their Notification Centre', await call(memberA, 'GET', '/api/notifications?limit=5'), 200);
+    expectStatus('member A can read their notification count', await call(memberA, 'GET', '/api/notifications/unread-count'), 200);
+    for (const route of ['/api/integrations/gmail/sync', '/api/integrations/zoho/sync', '/api/integrations/control/zoho/sync', '/api/integrations/zoom/sync', '/api/integrations/zoom/calls/sync', '/api/integrations/meta/sync', '/api/integrations/apollo/sync', '/api/integrations/eventbrite/sync', '/api/events/import', '/api/leads/reconcile']) {
       expectStatus(`member A cannot run ${route}`, await call(memberA, 'POST', route, {}), 403);
     }
     for (const route of ['/api/integrations/gmail/connect', '/api/integrations/zoho/connect', '/api/integrations/eventbrite/connect']) {
       expectStatus(`member A cannot start ${route}`, await call(memberA, 'GET', route), 403);
     }
     notForbidden('the monitor may start a Zoho sync (refused only because Zoho is not configured here)', await call(monitor, 'POST', '/api/integrations/zoho/sync', {}));
+    notForbidden('the monitor may open Integration Centre overview', await call(monitor, 'GET', '/api/integrations/overview'));
+    notForbidden('member A may open scoped Analytics', await call(memberA, 'GET', '/api/analytics/overview?preset=7d'));
+    notForbidden('the monitor may open team Analytics', await call(monitor, 'GET', '/api/analytics/overview?preset=7d'));
 
     // ---- accounts: developer only
     for (const [who, session] of [['member A', memberA], ['the monitor', monitor]]) {

@@ -76,7 +76,7 @@ function zohoReconnectError(message = '') {
 }
 
 function zohoReconnectRequiredMessage() {
-  return 'Zoho authorization is incomplete or expired. Reconnect Zoho CRM, approve access, then run Sync Zoho data again.';
+  return 'Zoho authorization is incomplete or expired. Reconnect Zoho CRM and approve access; a sync will be queued automatically.';
 }
 
 function zohoStoredConnection(db = {}) {
@@ -186,9 +186,10 @@ function zohoRecordRows(db = {}) {
 }
 
 async function upsertZohoRecordRows(client, rows = []) {
-  if (!rows.length) return;
+  const uniqueRows = [...new Map(rows.filter(row => row.key).map(row => [row.key, row])).values()];
+  if (!uniqueRows.length) return { inserted: 0, updated: 0, unchanged: 0, attempted: 0 };
   await ensureZohoRecordsTable(client);
-  await client.query(
+  const result = await client.query(
     `with rows as (
        select * from jsonb_to_recordset($1::jsonb) as x(
          key text, module text, zoho_id text, title text, email text, phone text, company text,
@@ -214,9 +215,24 @@ async function upsertZohoRecordRows(client, rows = []) {
        created_time = excluded.created_time,
        modified_time = excluded.modified_time,
        data = excluded.data,
-       synced_at = now()`,
-    [Applications.jsonValue(rows)]
+       synced_at = now()
+     where app_zoho_records.module is distinct from excluded.module
+        or app_zoho_records.zoho_id is distinct from excluded.zoho_id
+        or app_zoho_records.title is distinct from excluded.title
+        or app_zoho_records.email is distinct from excluded.email
+        or app_zoho_records.phone is distinct from excluded.phone
+        or app_zoho_records.company is distinct from excluded.company
+        or app_zoho_records.owner_name is distinct from excluded.owner_name
+        or app_zoho_records.status is distinct from excluded.status
+        or app_zoho_records.created_time is distinct from excluded.created_time
+        or app_zoho_records.modified_time is distinct from excluded.modified_time
+        or app_zoho_records.data is distinct from excluded.data
+     returning (xmax = 0) as inserted`,
+    [Applications.jsonValue(uniqueRows)]
   );
+  const inserted = result.rows.filter(row => row.inserted).length;
+  const updated = result.rows.length - inserted;
+  return { inserted, updated, unchanged: uniqueRows.length - result.rows.length, attempted: uniqueRows.length };
 }
 
 function zohoRedirectUri(req) {
@@ -829,7 +845,10 @@ function zohoSyncCursor(values = {}, batchSize = Config.ZOHO_SYNC_BATCH_SIZE) {
     limit: Math.max(1, Math.min(Number(values.limit || batchSize), 200)),
     done: Boolean(values.done),
     skipped: Boolean(values.skipped),
-    modifiedSince: values.modifiedSince || null
+    modifiedSince: values.modifiedSince || null,
+    lastPage: values.lastPage || null,
+    seenPageSignatures: Array.isArray(values.seenPageSignatures) ? values.seenPageSignatures.slice(-25) : [],
+    seenIdRanges: Array.isArray(values.seenIdRanges) ? values.seenIdRanges.slice(-100) : []
   };
 }
 
@@ -873,6 +892,35 @@ function zohoSyncState(row = {}) {
 function zohoIncrementalSince(mark) {
   const time = mark ? new Date(mark).getTime() : NaN;
   return Number.isFinite(time) ? new Date(time - Config.ZOHO_INCREMENTAL_OVERLAP_MS).toISOString() : null;
+}
+
+async function zohoStoredRecordCount(client = State.postgresPool) {
+  await ensureZohoRecordsTable(client);
+  const result = await client.query(`select count(*)::int as count from app_zoho_records`);
+  return Number(result.rows[0]?.count || 0);
+}
+
+async function zohoDurableSyncMarks(client, modules = zohoSyncModules(), zoho = {}) {
+  const marks = { ...(zoho.sync_marks || {}) };
+  await ensureZohoRecordsTable(client);
+  const missingModules = modules.filter(moduleName => !marks[moduleName]);
+  if (!missingModules.length) return marks;
+  const result = await client.query(
+    `select module, max(coalesce(modified_time, synced_at)) as mark
+     from app_zoho_records
+     where module = any($1::text[])
+     group by module`,
+    [missingModules]
+  );
+  for (const row of result.rows) {
+    if (row.mark) marks[row.module] = new Date(row.mark).toISOString();
+  }
+  if (zoho.last_sync_at) {
+    for (const moduleName of missingModules) {
+      if (!marks[moduleName]) marks[moduleName] = zoho.last_sync_at;
+    }
+  }
+  return marks;
 }
 
 function zohoSyncJobPayload(row = null) {
@@ -975,6 +1023,7 @@ async function createOrResumeZohoSyncJob(req, user, options = {}) {
       [connectionId]
     );
     const fullSyncRequested = options.full_sync === true || String(options.full_sync || '').toLowerCase() === 'true' || String(options.mode || '').toLowerCase() === 'full' || String(options.max_records || options.maxRecords || '').toLowerCase() === 'all';
+    const repairRebuildRequested = options.repair_rebuild === true || String(options.repair_rebuild || options.repairRebuild || '').toLowerCase() === 'true';
     // A running job's state is written page by page by its module workers, so it is never
     // rewritten here; a full resync requested meanwhile starts after the active job ends.
     if (active.rows[0]) {
@@ -1012,11 +1061,16 @@ async function createOrResumeZohoSyncJob(req, user, options = {}) {
     const modules = zohoSyncModules();
     const batchSize = Math.max(1, Math.min(Number(options.batch_size || options.batchSize || Config.ZOHO_SYNC_BATCH_SIZE), 200));
     const id = zohoSyncJobId();
-    // Modules with a previous completed sync only fetch what changed since then, unless a
-    // full resync was asked for.
-    const marks = fullSyncRequested ? {} : (zoho.sync_marks || {});
+    const storedRecords = await zohoStoredRecordCount(client).catch(() => 0);
+    const durableMarks = await zohoDurableSyncMarks(client, modules, zoho).catch(() => ({ ...(zoho.sync_marks || {}) }));
+    const hasDurableDataset = storedRecords > 0 || Object.keys(durableMarks).length > 0 || Boolean(zoho.last_sync_at);
+    const allowFullSync = !hasDurableDataset || (fullSyncRequested && repairRebuildRequested);
+    // After the first durable import, normal Sync Now and auto sync must reuse persisted
+    // marks or record modified times. A missing sync_marks object is not permission to
+    // download the entire account again.
+    const marks = allowFullSync ? {} : durableMarks;
     const cursors = Object.fromEntries(modules.map(moduleName => [moduleName, zohoSyncCursor({ modifiedSince: zohoIncrementalSince(marks[moduleName]) }, batchSize)]));
-    const mode = modules.some(moduleName => cursors[moduleName].modifiedSince) ? 'incremental' : 'full';
+    const mode = allowFullSync && !modules.some(moduleName => cursors[moduleName].modifiedSince) ? 'full' : 'incremental';
     const state = { version: 2, mode, modules, batchSize, maxRecords: 0, fullSync: mode === 'full', cursors, warnings: [], moduleResults: {}, startedBy: user.id };
     const inserted = await client.query(
       `insert into integration_jobs (
@@ -1330,6 +1384,12 @@ function isTransientNetworkError(error) {
   return /socket disconnected|socket hang up|tls connection|connection terminated|connection timeout|ECONNRESET|ETIMEDOUT|fetch failed/i.test(String(error?.message || ''));
 }
 
+function isZohoRateLimitError(error) {
+  const status = Number(error?.status || 0);
+  if (status === 429) return true;
+  return /too many requests|rate limit|try again after some time|exceeded.*request/i.test(String(error?.message || error || ''));
+}
+
 function isZohoScopeError(error) {
   return /oauth_scope_mismatch|scope|permission|no permission|not authorized|authorization/i.test(error?.message || '');
 }
@@ -1357,12 +1417,20 @@ async function saveZohoRecordPage(ctx, moduleName, records) {
     return { ...summary, zoho_id: summary.id || '', owner_name: summary.owner || '', data: summary };
   });
   const leadModule = zohoModuleCreatesCrmLeads(moduleName);
-  const [, leads] = await Promise.all([
+  const [storage, leads] = await Promise.all([
     upsertZohoRecordRows(State.postgresPool, rows),
     leadModule ? upsertZohoLeadsFromRecords(State.postgresPool, ctx.user, moduleName, records) : Promise.resolve({ added: 0, updated: 0, failed: 0 })
   ]);
   State.dbCache = null;
-  return leads;
+  return {
+    scanned: records.length,
+    added: storage.inserted,
+    updated: storage.updated,
+    unchanged: storage.unchanged,
+    failed: leads.failed || 0,
+    leadsAdded: leads.added || 0,
+    leadsUpdated: leads.updated || 0
+  };
 }
 
 async function persistZohoTokenIfChanged(ctx) {
@@ -1392,7 +1460,7 @@ async function recordZohoModuleProgress(ctx, moduleName, cursor, results, delta,
          modules_completed = modules_completed + $10,
          state = jsonb_set(
            jsonb_set(
-             jsonb_set(state, '{warnings}', coalesce(state->'warnings', '[]'::jsonb) || $13::jsonb, true),
+             jsonb_set(coalesce(state, '{}'::jsonb), '{warnings}', coalesce(state->'warnings', '[]'::jsonb) || $13::jsonb, true),
              array['cursors', $3::text], $11::jsonb, true
            ),
            array['moduleResults', $3::text], $12::jsonb, true
@@ -1422,11 +1490,66 @@ async function recordZohoModuleProgress(ctx, moduleName, cursor, results, delta,
   if (result.rows[0]?.status !== 'running') ctx.stop = true;
 }
 
+function zohoPageRecordIds(moduleName, records = []) {
+  return records.map(record => zohoRecordId(moduleName, record)).filter(Boolean);
+}
+
+function zohoPageSignature(moduleName, cursor, records = []) {
+  const ids = zohoPageRecordIds(moduleName, records);
+  return {
+    signature: [
+      moduleName,
+      cursor.page,
+      cursor.pageToken || '',
+      records.length,
+      ids[0] || '',
+      ids[ids.length - 1] || ''
+    ].join('|'),
+    idRange: [records.length, ids[0] || '', ids[ids.length - 1] || ''].join('|'),
+    firstId: ids[0] || null,
+    lastId: ids[ids.length - 1] || null
+  };
+}
+
+function assertZohoPageAdvanced(moduleName, cursor, pageResult, records, more, next) {
+  const fingerprint = zohoPageSignature(moduleName, cursor, records);
+  const seen = new Set(cursor.seenPageSignatures || []);
+  const seenRanges = new Set(cursor.seenIdRanges || []);
+  const previous = cursor.lastPage || {};
+  const nextRequiresToken = more && next.page * cursor.limit > ZOHO_PAGE_PARAM_RECORD_LIMIT;
+  if (seen.has(fingerprint.signature)) {
+    throw Http.statusError(500, `Zoho pagination loop detected for ${moduleName}: repeated page ${cursor.page}.`);
+  }
+  if (previous.page === cursor.page) {
+    throw Http.statusError(500, `Zoho pagination loop detected for ${moduleName}: page number did not advance from ${cursor.page}.`);
+  }
+  if (cursor.pageToken && previous.pageToken && cursor.pageToken === previous.pageToken) {
+    throw Http.statusError(500, `Zoho pagination loop detected for ${moduleName}: page token repeated.`);
+  }
+  if (records.length && previous.idRange && previous.idRange === fingerprint.idRange) {
+    throw Http.statusError(500, `Zoho pagination loop detected for ${moduleName}: repeated provider result range.`);
+  }
+  if (records.length && seenRanges.has(fingerprint.idRange)) {
+    throw Http.statusError(500, `Zoho pagination loop detected for ${moduleName}: provider result range was already processed.`);
+  }
+  if (nextRequiresToken && !next.pageToken) {
+    throw Http.statusError(500, `Zoho pagination stopped for ${moduleName}: next_page_token missing after page ${cursor.page}.`);
+  }
+  if (cursor.pageToken && next.pageToken && cursor.pageToken === next.pageToken) {
+    throw Http.statusError(500, `Zoho pagination loop detected for ${moduleName}: next_page_token did not advance.`);
+  }
+  return {
+    ...fingerprint,
+    moreRecords: Boolean(pageResult.moreRecords),
+    nextPageToken: next.pageToken || null
+  };
+}
+
 // Pulls one module to the end. The next Zoho page is requested while the current one is
 // being written, so Zoho latency and database latency overlap instead of adding up.
 async function syncZohoModule(ctx, moduleName) {
   const cursor = ctx.state.cursors[moduleName];
-  const results = { scanned: 0, added: 0, updated: 0, failed: 0, ...(ctx.state.moduleResults[moduleName] || {}) };
+  const results = { scanned: 0, added: 0, updated: 0, unchanged: 0, failed: 0, leadsAdded: 0, leadsUpdated: 0, ...(ctx.state.moduleResults[moduleName] || {}) };
   const request = next => {
     const pending = fetchZohoPageWithRetry(ctx, moduleName, next);
     pending.catch(() => null);
@@ -1447,15 +1570,34 @@ async function syncZohoModule(ctx, moduleName) {
     const records = (pageResult.records || []).slice(0, cursor.limit);
     const more = pageResult.moreRecords && records.length > 0;
     const next = { ...cursor, page: cursor.page + 1, pageToken: pageResult.info?.next_page_token || null };
+    const pageGuard = assertZohoPageAdvanced(moduleName, cursor, pageResult, records, more, next);
     if (more && next.page > Config.ZOHO_SYNC_MAX_PAGES_PER_MODULE) throw Http.statusError(500, `Zoho pagination safety limit reached for ${moduleName}.`);
+    const nextScannedTotal = Number(results.scanned || 0) + records.length;
+    if (Config.ZOHO_SYNC_MAX_RECORDS_PER_MODULE && nextScannedTotal > Config.ZOHO_SYNC_MAX_RECORDS_PER_MODULE) {
+      throw Http.statusError(500, `Zoho record safety limit reached for ${moduleName}: ${nextScannedTotal} records scanned. Set ZOHO_SYNC_MAX_RECORDS_PER_MODULE to a reviewed higher value if this account legitimately has more records.`);
+    }
     if (more) pending = request(next);
     const saved = await saveZohoRecordPage(ctx, moduleName, records);
     results.scanned += records.length;
     results.added += saved.added;
     results.updated += saved.updated;
+    results.unchanged += saved.unchanged;
     results.failed += saved.failed;
-    if (more) Object.assign(cursor, { page: next.page, pageToken: next.pageToken });
-    else Object.assign(cursor, { done: true, pageToken: null });
+    results.leadsAdded += saved.leadsAdded;
+    results.leadsUpdated += saved.leadsUpdated;
+    const pageTrail = [...(cursor.seenPageSignatures || []), pageGuard.signature].slice(-25);
+    const rangeTrail = [...(cursor.seenIdRanges || []), pageGuard.idRange].slice(-100);
+    const lastPage = {
+      page: cursor.page,
+      pageToken: cursor.pageToken || null,
+      count: records.length,
+      firstId: pageGuard.firstId,
+      lastId: pageGuard.lastId,
+      idRange: pageGuard.idRange,
+      nextPageToken: pageGuard.nextPageToken
+    };
+    if (more) Object.assign(cursor, { page: next.page, pageToken: next.pageToken, lastPage, seenPageSignatures: pageTrail, seenIdRanges: rangeTrail });
+    else Object.assign(cursor, { done: true, pageToken: null, lastPage, seenPageSignatures: pageTrail, seenIdRanges: rangeTrail });
     await persistZohoTokenIfChanged(ctx);
     await recordZohoModuleProgress(ctx, moduleName, cursor, results, { scanned: records.length, ...saved }, { moduleFinished: !more });
     if (!more) return;
@@ -1478,11 +1620,14 @@ async function completeZohoSyncJob(ctx) {
   for (const moduleName of state.modules) {
     if (state.cursors[moduleName]?.done && !state.cursors[moduleName]?.skipped) marks[moduleName] = mark;
   }
+  const completedAt = new Date().toISOString();
   await saveZohoConnectionState(State.postgresPool, {
     ...latest,
     ...zohoNewerTokenFields(ctx.dbLike.zoho, latest),
     sync_marks: marks,
-    last_sync_at: new Date().toISOString(),
+    last_sync_at: completedAt,
+    last_success_at: completedAt,
+    initial_sync_completed_at: latest.initial_sync_completed_at || completedAt,
     last_error: null,
     connected: true,
     reauthorization_required: false
@@ -1556,8 +1701,8 @@ async function runZohoSyncWorker(jobId = null) {
     const status = Number(error.status || 0);
     const safeMessage = zohoSafeJobError(error);
     try {
-      if ([429, 502, 503, 504].includes(status) || isTransientNetworkError(error)) {
-        retryDelay = status === 429 ? 60 * 1000 : 15 * 1000;
+      if (isZohoRateLimitError(error) || [502, 503, 504].includes(status) || isTransientNetworkError(error)) {
+        retryDelay = isZohoRateLimitError(error) ? 15 * 60 * 1000 : 15 * 1000;
         await State.postgresPool.query(
           `update integration_jobs
            set status = 'queued', retry_after_at = now() + ($2 || ' milliseconds')::interval,
@@ -1598,7 +1743,8 @@ async function resumeZohoSyncJobs() {
   for (const row of active.rows) scheduleZohoSyncWorker(row.id, 1000);
 }
 
-// After the first full import, keep app_zoho_records current with small incremental runs.
+// Keep app_zoho_records current without requiring manual recovery. Full import is only
+// allowed for the first empty dataset; existing durable rows always continue incrementally.
 function scheduleZohoAutoSync(delayMs = Config.ZOHO_AUTO_SYNC_INTERVAL_MS) {
   if (!Config.ZOHO_AUTO_SYNC_ENABLED || !Storage.usesPostgresStorage()) return;
   const timer = setTimeout(async () => {
@@ -1616,9 +1762,17 @@ async function startZohoAutoSync() {
   await Storage.ensureStorage();
   if (!State.postgresPool) return;
   const zoho = await loadZohoConnectionState();
-  // Only incremental runs are automatic; the first full import is started from the UI.
-  if (!Object.keys(zoho.sync_marks || {}).length) return;
-  await createOrResumeZohoSyncJob({ headers: {}, socket: {} }, { id: 'system', name: 'Zoho Auto Sync' }, { mode: 'incremental' });
+  const req = { headers: {}, socket: {} };
+  const connection = zohoConnectionDiagnostics(req, { zoho });
+  if (!connection.connected) return;
+  const marks = Object.keys(zoho.sync_marks || {});
+  const records = await zohoStoredRecordCount(State.postgresPool).catch(() => 0);
+  const initialSyncNeeded = records === 0 && marks.length === 0 && !zoho.last_sync_at;
+  console.log(`Zoho auto sync queueing ${initialSyncNeeded ? 'initial full' : 'incremental'} sync (${records} stored records, ${marks.length} sync marks).`);
+  await createOrResumeZohoSyncJob(req, { id: 'system', name: 'Zoho Auto Sync' }, {
+    mode: initialSyncNeeded ? 'full' : 'incremental',
+    full_sync: initialSyncNeeded
+  });
 }
 
 async function cancelZohoSyncJob(jobId) {

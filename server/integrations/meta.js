@@ -80,6 +80,14 @@ function createOrUpdateMetaLead(db, user, lead, form) {
   return result;
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 async function importMetaLeads(db, user, maxLeads = 50) {
   if (!metaConfigured()) throw Http.statusError(400, 'Meta credentials are not configured.');
   const auth = { Authorization: `Bearer ${process.env.META_ACCESS_TOKEN}` };
@@ -90,6 +98,8 @@ async function importMetaLeads(db, user, maxLeads = 50) {
     forms = formList.data || [];
   }
   let imported = 0;
+  let updated = 0;
+  let unchanged = 0;
   let scanned = 0;
   for (const form of forms) {
     if (scanned >= maxLeads) break;
@@ -97,18 +107,23 @@ async function importMetaLeads(db, user, maxLeads = 50) {
     const list = await Util.fetchJson(metaUrl(`/${form.id}/leads`, { fields: 'id,created_time,field_data,ad_name,form_id,platform', limit }), { headers: auth });
     for (const lead of list.data || []) {
       scanned += 1;
-      if ((db.meta.imported_lead_ids || []).includes(lead.id)) continue;
+      const existing = (db.leads || []).find(item => item.meta_lead_id === lead.id);
+      const before = existing ? stableJson(existing) : '';
       const result = createOrUpdateMetaLead(db, user, lead, form);
-      db.meta.imported_lead_ids = [...(db.meta.imported_lead_ids || []), lead.id];
+      if (!(db.meta.imported_lead_ids || []).includes(lead.id)) db.meta.imported_lead_ids = [...(db.meta.imported_lead_ids || []), lead.id];
       if (result.created) imported += 1;
+      else if (result.lead && before !== stableJson(result.lead)) updated += 1;
+      else unchanged += 1;
     }
     if (!(db.meta.imported_form_ids || []).includes(form.id)) db.meta.imported_form_ids = [...(db.meta.imported_form_ids || []), form.id];
   }
   db.meta.last_sync_at = new Date().toISOString();
+  db.meta.last_success_at = db.meta.last_sync_at;
+  db.meta.initial_sync_completed_at ||= db.meta.last_sync_at;
   const reconciliation = Workspace.reconcileImportedData(db, user);
-  Audit.addAudit(db, user, 'Meta leads synced', 'integration', 'Meta', `${imported} new leads from ${forms.length} forms`);
-  await Storage.saveDb(db);
-  return { imported, scanned, forms: forms.length, reconciliation, last_sync_at: db.meta.last_sync_at };
+  Audit.addAudit(db, user, 'Meta leads synced', 'integration', 'Meta', `${imported} created, ${updated} updated, ${unchanged} unchanged from ${forms.length} forms`);
+  await Storage.saveDb(db, { pruneMissing: false });
+  return { imported, updated, unchanged, scanned, forms: forms.length, deleted: 0, reconciliation, last_sync_at: db.meta.last_sync_at };
 }
 
 exports.metaConfigured = metaConfigured;

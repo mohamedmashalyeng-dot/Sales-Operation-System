@@ -68,6 +68,11 @@ const OWNED_RECORD_SQL = {
                 where a.id = $1 and l.owner_id = $2 limit 1`,
   email: `select 1 from app_emails e join app_leads l on l.id = e.lead_id
           where e.id = $1 and l.owner_id = $2 limit 1`,
+  attendee: `select 1
+             from app_events e
+             cross join lateral jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) a(attendee)
+             join app_leads l on l.id = a.attendee->>'lead_id'
+             where a.attendee->>'id' = $1 and l.owner_id = $2 limit 1`,
   evidence: `select 1 from app_applications a join app_leads l on l.id = a.lead_id
              where jsonb_path_exists(a.requirements, '$[*].latest ? (@.id == $evidence_id)', jsonb_build_object('evidence_id', $1::text))
                and l.owner_id = $2 limit 1`
@@ -90,6 +95,10 @@ function ownsInWorkspace(db, entity, id, userId) {
   if (entity === 'email') {
     const email = (db.emails || []).find(item => String(item.id) === id);
     return Boolean(email) && owner(email.lead_id) === mine;
+  }
+  if (entity === 'attendee') {
+    const attendee = (db.events || []).flatMap(event => event.attendees || []).find(item => String(item.id) === id);
+    return Boolean(attendee?.lead_id) && owner(attendee.lead_id) === mine;
   }
   if (entity === 'evidence') {
     const application = (db.applications || []).find(item => (item.requirements || []).some(requirement => requirement.latest?.id === id));

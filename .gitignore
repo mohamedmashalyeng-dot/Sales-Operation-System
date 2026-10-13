@@ -7,9 +7,17 @@ npm-debug.log*
 *.log
 *.tsbuildinfo
 *.zip
+.readdy-export/
+.chrome-readdy-reference/
+readdy-reference.png
+readdy-local.png
+frontend/node_modules/
+frontend/out/
 .DS_Store
 Thumbs.db
 de3dbf25782048858d9636483f485b37*.gif
 reports/
+!docs/reports/
+!docs/reports/*.md
 archives/
 releases/

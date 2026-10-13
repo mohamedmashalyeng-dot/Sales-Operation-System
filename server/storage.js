@@ -426,6 +426,39 @@ async function createPostgresAppTables(trace = null) {
       updated_at timestamptz not null default now()
     )
   `);
+  await tracedPostgresPoolQuery(trace, 'schema_notifications_table', `
+    create table if not exists app_notifications (
+      id text primary key,
+      user_id text not null,
+      type text not null,
+      title text not null,
+      message text,
+      priority text not null default 'normal',
+      entity_type text,
+      entity_id text,
+      route text,
+      read_at timestamptz,
+      created_at timestamptz not null default now(),
+      metadata jsonb not null default '{}'::jsonb
+    )
+  `);
+  await tracedPostgresPoolQuery(trace, 'schema_notifications_user_read_created_index', `create index if not exists app_notifications_user_read_created_idx on app_notifications(user_id, read_at, created_at desc, id desc)`);
+  await tracedPostgresPoolQuery(trace, 'schema_notifications_user_created_index', `create index if not exists app_notifications_user_created_idx on app_notifications(user_id, created_at desc, id desc)`);
+  await tracedPostgresPoolQuery(trace, 'schema_saved_views_table', `
+    create table if not exists app_saved_views (
+      id text primary key,
+      user_id text not null,
+      entity_type text not null,
+      name text not null,
+      filters jsonb not null default '{}'::jsonb,
+      sort text,
+      is_default boolean not null default false,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      data jsonb not null default '{}'::jsonb
+    )
+  `);
+  await tracedPostgresPoolQuery(trace, 'schema_saved_views_user_entity_index', `create index if not exists app_saved_views_user_entity_idx on app_saved_views(user_id, entity_type, updated_at desc)`);
   await tracedPostgresPoolQuery(trace, 'schema_monitoring_snapshot_table', Monitoring.monitoringSnapshotSchemaSql());
   await tracedPostgresPoolQuery(trace, 'schema_monitoring_snapshot_expires_index', Monitoring.monitoringSnapshotExpiresIndexSql());
   await Zoho.ensureZohoRecordsTable(State.postgresPool, trace);
@@ -511,19 +544,26 @@ async function createIntegrationJobsTable(client, trace = null) {
   await q('schema_integration_jobs_active_zoho_index', `create unique index if not exists integration_jobs_active_zoho_idx on integration_jobs(provider, type, connection_id) where provider = 'zoho' and status in ('queued', 'running')`);
 }
 
-async function loadDb() {
-  if (State.dbCache && Date.now() - dbCacheLoadedAt < Config.DB_CACHE_TTL_MS) return Workspace.recalculate(cloneDb(State.dbCache));
-  State.dbCache = null;
-  dbCacheLoadedAt = Date.now();
+async function loadDb(options = {}) {
+  const partialLoad = Boolean(
+    options.leadLimit || options.taskLimit || options.emailLimit || options.eventLimit ||
+    options.auditLimit || options.skipApplications || options.skipAudit || options.skipAttribution
+  );
+  if (!partialLoad && State.dbCache && Date.now() - dbCacheLoadedAt < Config.DB_CACHE_TTL_MS) return Workspace.recalculate(cloneDb(State.dbCache));
+  if (!partialLoad) {
+    State.dbCache = null;
+    dbCacheLoadedAt = Date.now();
+  }
   await ensureStorage();
   if (State.postgresPool) {
-    const normalized = await loadPostgresTables();
+    const normalized = await loadPostgresTables(options);
     if (normalized) {
-      rememberPostgresLoadedIds(normalized);
+      if (partialLoad) normalized.__partial_load = true;
+      else rememberPostgresLoadedIds(normalized);
       await Auth.removeLegacyPostgresDeveloperUsers();
       const data = Workspace.recalculate(await Auth.hydratePostgresUsers(normalized));
       if (Auth.ensureConfiguredDeveloperUser(data)) await Auth.persistDeveloperBootstrap(data);
-      State.dbCache = cloneDb(data);
+      if (!partialLoad) State.dbCache = cloneDb(data);
       return data;
     }
     const table = sqlIdentifier(Config.POSTGRES_STATE_TABLE, 'app_state');
@@ -565,13 +605,13 @@ async function loadDb() {
   return data;
 }
 
-async function saveDb(db) {
+async function saveDb(db, options = {}) {
   if (db && (db.__partial || db.__partial_load)) throw Http.statusError(500, 'Refusing to save a partially loaded workspace. Load the full workspace first.');
   await ensureStorage();
   const data = Workspace.recalculate(db);
   if (State.postgresPool) {
     await Auth.upsertPostgresUsers(data.users);
-    await savePostgresTables(data);
+    await savePostgresTables(data, options);
     State.dbCache = cloneDb(data);
     Monitoring.monitoringState.last_save_at = new Date().toISOString();
     return;
@@ -763,7 +803,12 @@ async function deleteMissingIds(client, table, ids) {
   }
 }
 
-async function savePostgresTables(db) {
+async function pruneMissingPostgresIds(client, table, ids, options = {}) {
+  if (options.pruneMissing === false) return;
+  return deleteMissingIds(client, table, ids);
+}
+
+async function savePostgresTables(db, options = {}) {
   if (db && (db.__partial || db.__partial_load)) throw Http.statusError(500, 'Refusing full-table sync for a partially loaded workspace.');
   const programmeRows = Programmes.importProgrammeRows(db);
   const intakeRows = (db.intakes || []).map(item => ({ id: item.id, programme_id: item.programme_id || null, name: item.name, data: item }));
@@ -817,20 +862,26 @@ async function savePostgresTables(db) {
        )
        insert into app_programmes (id, name, level, data)
        select id, name, level, data from rows
-       on conflict (id) do update set name = excluded.name, level = excluded.level, data = excluded.data`,
+       on conflict (id) do update set name = excluded.name, level = excluded.level, data = excluded.data
+       where app_programmes.name is distinct from excluded.name
+          or app_programmes.level is distinct from excluded.level
+          or app_programmes.data is distinct from excluded.data`,
       [Applications.jsonValue(programmeRows)]
     );
-    await deleteMissingIds(client, 'app_programmes', programmeRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_programmes', programmeRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(id text, programme_id text, name text, data jsonb)
        )
        insert into app_intakes (id, programme_id, name, data)
        select id, programme_id, name, data from rows
-       on conflict (id) do update set programme_id = excluded.programme_id, name = excluded.name, data = excluded.data`,
+       on conflict (id) do update set programme_id = excluded.programme_id, name = excluded.name, data = excluded.data
+       where app_intakes.programme_id is distinct from excluded.programme_id
+          or app_intakes.name is distinct from excluded.name
+          or app_intakes.data is distinct from excluded.data`,
       [Applications.jsonValue(intakeRows)]
     );
-    await deleteMissingIds(client, 'app_intakes', intakeRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_intakes', intakeRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -847,10 +898,30 @@ async function savePostgresTables(db) {
          programme = excluded.programme, level = excluded.level, owner_id = excluded.owner_id, owner = excluded.owner,
          stage = excluded.stage, priority = excluded.priority, source_first_touch = excluded.source_first_touch,
          source_lead_capture = excluded.source_lead_capture, contact_permission = excluded.contact_permission,
-         created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
+         created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data
+       where app_leads.person_id is distinct from excluded.person_id
+          or app_leads.first_name is distinct from excluded.first_name
+          or app_leads.last_name is distinct from excluded.last_name
+          or app_leads.email is distinct from excluded.email
+          or app_leads.employer is distinct from excluded.employer
+          or app_leads.phone is distinct from excluded.phone
+          or app_leads.city is distinct from excluded.city
+          or app_leads.programme_id is distinct from excluded.programme_id
+          or app_leads.programme is distinct from excluded.programme
+          or app_leads.level is distinct from excluded.level
+          or app_leads.owner_id is distinct from excluded.owner_id
+          or app_leads.owner is distinct from excluded.owner
+          or app_leads.stage is distinct from excluded.stage
+          or app_leads.priority is distinct from excluded.priority
+          or app_leads.source_first_touch is distinct from excluded.source_first_touch
+          or app_leads.source_lead_capture is distinct from excluded.source_lead_capture
+          or app_leads.contact_permission is distinct from excluded.contact_permission
+          or app_leads.created_at is distinct from excluded.created_at
+          or app_leads.next_action_at is distinct from excluded.next_action_at
+          or app_leads.data is distinct from excluded.data`,
       [Applications.jsonValue(leadRows)]
     );
-    await deleteMissingIds(client, 'app_leads', leadRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_leads', leadRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -862,10 +933,19 @@ async function savePostgresTables(db) {
        on conflict (id) do update set
          title = excluded.title, lead_id = excluded.lead_id, kind = excluded.kind, status = excluded.status,
          due_at = excluded.due_at, completed_at = excluded.completed_at, priority = excluded.priority,
-         owner_id = excluded.owner_id, data = excluded.data`,
+         owner_id = excluded.owner_id, data = excluded.data
+       where app_tasks.title is distinct from excluded.title
+          or app_tasks.lead_id is distinct from excluded.lead_id
+          or app_tasks.kind is distinct from excluded.kind
+          or app_tasks.status is distinct from excluded.status
+          or app_tasks.due_at is distinct from excluded.due_at
+          or app_tasks.completed_at is distinct from excluded.completed_at
+          or app_tasks.priority is distinct from excluded.priority
+          or app_tasks.owner_id is distinct from excluded.owner_id
+          or app_tasks.data is distinct from excluded.data`,
       [Applications.jsonValue(taskRows)]
     );
-    await deleteMissingIds(client, 'app_tasks', taskRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_tasks', taskRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -910,10 +990,23 @@ async function savePostgresTables(db) {
          lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name, email = excluded.email,
          subject = excluded.subject, body = excluded.body, owner = excluded.owner, response_at = excluded.response_at,
          response_note = excluded.response_note, due_at = excluded.due_at, received_at = excluded.received_at,
-         gmail_message_id = excluded.gmail_message_id, data = excluded.data`,
+         gmail_message_id = excluded.gmail_message_id, data = excluded.data
+       where app_emails.lead_id is distinct from excluded.lead_id
+          or app_emails.first_name is distinct from excluded.first_name
+          or app_emails.last_name is distinct from excluded.last_name
+          or app_emails.email is distinct from excluded.email
+          or app_emails.subject is distinct from excluded.subject
+          or app_emails.body is distinct from excluded.body
+          or app_emails.owner is distinct from excluded.owner
+          or app_emails.response_at is distinct from excluded.response_at
+          or app_emails.response_note is distinct from excluded.response_note
+          or app_emails.due_at is distinct from excluded.due_at
+          or app_emails.received_at is distinct from excluded.received_at
+          or app_emails.gmail_message_id is distinct from excluded.gmail_message_id
+          or app_emails.data is distinct from excluded.data`,
       [Applications.jsonValue(emailRows)]
     );
-    await deleteMissingIds(client, 'app_emails', emailRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_emails', emailRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -927,10 +1020,23 @@ async function savePostgresTables(db) {
          lead_id = excluded.lead_id, first_name = excluded.first_name, last_name = excluded.last_name,
          programme = excluded.programme, intake = excluded.intake, status = excluded.status, manager = excluded.manager,
          member = excluded.member, created_at = excluded.created_at, contract = excluded.contract,
-         requirements = excluded.requirements, learner = excluded.learner, data = excluded.data`,
+         requirements = excluded.requirements, learner = excluded.learner, data = excluded.data
+       where app_applications.lead_id is distinct from excluded.lead_id
+          or app_applications.first_name is distinct from excluded.first_name
+          or app_applications.last_name is distinct from excluded.last_name
+          or app_applications.programme is distinct from excluded.programme
+          or app_applications.intake is distinct from excluded.intake
+          or app_applications.status is distinct from excluded.status
+          or app_applications.manager is distinct from excluded.manager
+          or app_applications.member is distinct from excluded.member
+          or app_applications.created_at is distinct from excluded.created_at
+          or app_applications.contract is distinct from excluded.contract
+          or app_applications.requirements is distinct from excluded.requirements
+          or app_applications.learner is distinct from excluded.learner
+          or app_applications.data is distinct from excluded.data`,
       [Applications.jsonValue(applicationRows)]
     );
-    await deleteMissingIds(client, 'app_applications', applicationRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_applications', applicationRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -942,10 +1048,19 @@ async function savePostgresTables(db) {
        on conflict (id) do update set
          name = excluded.name, start_at = excluded.start_at, location = excluded.location, campaign = excluded.campaign,
          capacity = excluded.capacity, registrations = excluded.registrations, attendance = excluded.attendance,
-         attendees = excluded.attendees, data = excluded.data`,
+         attendees = excluded.attendees, data = excluded.data
+       where app_events.name is distinct from excluded.name
+          or app_events.start_at is distinct from excluded.start_at
+          or app_events.location is distinct from excluded.location
+          or app_events.campaign is distinct from excluded.campaign
+          or app_events.capacity is distinct from excluded.capacity
+          or app_events.registrations is distinct from excluded.registrations
+          or app_events.attendance is distinct from excluded.attendance
+          or app_events.attendees is distinct from excluded.attendees
+          or app_events.data is distinct from excluded.data`,
       [Applications.jsonValue(eventRows)]
     );
-    await deleteMissingIds(client, 'app_events', eventRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_events', eventRows.map(item => item.id), options);
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -956,10 +1071,16 @@ async function savePostgresTables(db) {
        select id, occurred_at::timestamptz, actor, action, entity, entity_id, data from rows
        on conflict (id) do update set
          occurred_at = excluded.occurred_at, actor = excluded.actor, action = excluded.action,
-         entity = excluded.entity, entity_id = excluded.entity_id, data = excluded.data`,
+         entity = excluded.entity, entity_id = excluded.entity_id, data = excluded.data
+       where app_audit.occurred_at is distinct from excluded.occurred_at
+          or app_audit.actor is distinct from excluded.actor
+          or app_audit.action is distinct from excluded.action
+          or app_audit.entity is distinct from excluded.entity
+          or app_audit.entity_id is distinct from excluded.entity_id
+          or app_audit.data is distinct from excluded.data`,
       [Applications.jsonValue(auditRows)]
     );
-    await deleteMissingIds(client, 'app_audit', auditRows.map(item => item.id));
+    await pruneMissingPostgresIds(client, 'app_audit', auditRows.map(item => item.id), options);
     if (attributionRows.length) {
       await client.query(
         `with rows as (

@@ -65,6 +65,14 @@ function createOrUpdateApolloLead(db, user, person) {
   });
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 async function importApolloPeople(db, user, maxPeople = 25) {
   if (!apolloConfigured()) throw Http.statusError(400, 'Apollo API key is not configured. Add APOLLO_API_KEY to .env.');
   db.apollo ||= { imported_person_ids: [] };
@@ -79,21 +87,25 @@ async function importApolloPeople(db, user, maxPeople = 25) {
     body: '{}'
   });
   const people = list.people || list.contacts || list.results || [];
-  let imported = 0, updated = 0, scanned = 0;
+  let imported = 0, updated = 0, unchanged = 0, scanned = 0;
   for (const person of people.slice(0, maxPeople)) {
     scanned += 1;
     const id = String(person.id || person.person_id || '').trim();
-    if (id && (db.apollo.imported_person_ids || []).includes(id)) continue;
+    const existing = id ? (db.leads || []).find(item => item.apollo_person_id === id) : null;
+    const before = existing ? stableJson(existing) : '';
     const result = createOrUpdateApolloLead(db, user, person);
-    if (id) db.apollo.imported_person_ids = [...(db.apollo.imported_person_ids || []), id];
+    if (id && !(db.apollo.imported_person_ids || []).includes(id)) db.apollo.imported_person_ids = [...(db.apollo.imported_person_ids || []), id];
     if (result.created) imported += 1;
-    else if (result.lead) updated += 1;
+    else if (result.lead && before !== stableJson(result.lead)) updated += 1;
+    else unchanged += 1;
   }
   db.apollo.last_sync_at = new Date().toISOString();
+  db.apollo.last_success_at = db.apollo.last_sync_at;
+  db.apollo.initial_sync_completed_at ||= db.apollo.last_sync_at;
   const reconciliation = Workspace.reconcileImportedData(db, user);
-  Audit.addAudit(db, user, 'Apollo prospects synced', 'integration', 'Apollo', `${imported} created, ${updated} updated, ${scanned} scanned`);
-  await Storage.saveDb(db);
-  return { imported, updated, scanned, reconciliation, last_sync_at: db.apollo.last_sync_at };
+  Audit.addAudit(db, user, 'Apollo prospects synced', 'integration', 'Apollo', `${imported} created, ${updated} updated, ${unchanged} unchanged, ${scanned} scanned`);
+  await Storage.saveDb(db, { pruneMissing: false });
+  return { imported, updated, unchanged, scanned, deleted: 0, reconciliation, last_sync_at: db.apollo.last_sync_at };
 }
 
 exports.apolloConfigured = apolloConfigured;

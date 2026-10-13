@@ -19,6 +19,7 @@ async function tasksRoutes(ctx) {
     const user = await Auth.currentSessionUser(req, trace);
     const params = Object.fromEntries(['limit', 'status', 'offset', 'cursor', 'today_start', 'tomorrow_start', 'bucket', 'search', 'owner_id', 'lead_id', 'due_before', 'due_after', 'include_counts']
       .map(name => [name, url.searchParams.get(name)]));
+    if (params.lead_id) await Authorization.requireRecord(user, 'lead', params.lead_id);
     params.owner_id = Authorization.ownerFilter(user, params.owner_id);
     return Http.sendJson(res, await Tasks.loadTaskPage(params, trace), 200, {}, trace);
   }

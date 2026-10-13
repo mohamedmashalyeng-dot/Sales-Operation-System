@@ -36,10 +36,7 @@ function seedDatabase() {
       { name: 'Gmail', status: 'Not connected', detail: 'Connect Gmail after the backend mailbox adapter is configured.' },
       { name: 'Eventbrite', status: 'Not connected', detail: 'Event data is stored locally until provider sync is enabled.' }
     ],
-    intakes: [
-      { id: 'I-1', programme_id: 'p1', name: 'January 2027' },
-      { id: 'I-2', programme_id: 'p2', name: 'February 2027' }
-    ],
+    intakes: [],
     audit: [],
     attribution: []
   });

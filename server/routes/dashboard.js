@@ -21,13 +21,21 @@ async function dashboardRoutes(ctx) {
     const user = await Auth.currentSessionUser(req);
     return Http.sendJson(res, await Dashboard.loadDashboardCockpitSummaryDb(Dashboard.parseDashboardFilters(url, user), user));
   }
+  if (route === '/api/dashboard/my-day' && method === 'GET') {
+    const user = await Auth.currentSessionUser(req, trace);
+    return Http.sendJson(res, await Dashboard.loadDashboardMyDayDb({
+      today_start: url.searchParams.get('today_start'),
+      tomorrow_start: url.searchParams.get('tomorrow_start')
+    }, user, trace), 200, {}, trace);
+  }
   if (route === '/api/dashboard/admin-overview' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);
     Authorization.requireTeam(user);
     return Http.sendJson(res, await Dashboard.loadDashboardAdminOverviewDb(Dashboard.parseDashboardFilters(url, user), user));
   }
   if (route === '/api/dashboard/totals' && method === 'GET') {
-    await Auth.currentSessionUser(req);
+    const user = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(user);
     return Http.sendJson(res, await Dashboard.loadDashboardTotalsDb({ today_start: url.searchParams.get('today_start'), tomorrow_start: url.searchParams.get('tomorrow_start') }));
   }
   if ((route === '/api/dashboard/monitoring' || route === '/api/monitoring') && method === 'GET') {
@@ -84,9 +92,12 @@ async function dashboardRoutes(ctx) {
     const user = await Auth.currentSessionUser(req);
     return Http.sendJson(res, await Dashboard.loadDashboardActivityDb(Dashboard.parseDashboardFilters(url, user), url.searchParams.get('limit')));
   }
-  if (route === '/api/dashboard/search' && method === 'GET') {
+  if ((route === '/api/dashboard/search' || route === '/api/search') && method === 'GET') {
     const user = await Auth.currentSessionUser(req);
-    return Http.sendJson(res, await Dashboard.loadDashboardSearchDb(url.searchParams.get('q'), user));
+    return Http.sendJson(res, await Dashboard.loadDashboardSearchDb(url.searchParams.get('q'), user, {
+      limit: url.searchParams.get('limit'),
+      explain: url.searchParams.get('explain')
+    }, trace), 200, {}, trace);
   }
   if (route === '/api/audit' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);

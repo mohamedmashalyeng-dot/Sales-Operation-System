@@ -149,7 +149,16 @@ async function zohoWorkspaceRoutes(ctx) {
     console.info(`[zoho] callback persisted connected=${db.zoho.connected} refresh_token=${Boolean(db.zoho.refresh_token)} accounts=${db.zoho.accounts_url} api_domain=${db.zoho.api_domain} location=${db.zoho.location || 'unknown'}`);
     Audit.addAudit(db, user, 'Zoho CRM connected', 'integration', 'Zoho CRM', db.zoho.api_domain || '');
     await Events.saveEventImportTables(db, { preserveGmail: true, preserveZoom: true, preserveApollo: true });
-    res.writeHead(302, { Location: durableConnection ? '/#/settings?zoho=connected' : '/#/zoho?zoho=reauthorization-required' });
+    let syncQueued = false;
+    if (durableConnection) {
+      try {
+        const job = await Zoho.createOrResumeZohoSyncJob(req, user, { mode: 'incremental' });
+        syncQueued = Boolean(job);
+      } catch (syncError) {
+        console.warn(`[zoho] callback connected but auto sync was not queued: ${Zoho.zohoSafeJobError(syncError)}`);
+      }
+    }
+    res.writeHead(302, { Location: durableConnection ? `/#/settings?zoho=connected${syncQueued ? '&sync=queued' : ''}` : '/#/zoho?zoho=reauthorization-required' });
     return res.end();
   }
   return NOT_HANDLED;

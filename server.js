@@ -42,8 +42,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (process.env.NEST_COMPAT_MODE !== 'true') {
-  server.listen(Config.PORT, '0.0.0.0', () => {
-    console.log(`Kent Business College backend running on port ${Config.PORT}`);
+  server.listen(Config.PORT, Config.HOST, () => {
+    console.log(`Kent Business College backend running on ${Config.HOST}:${Config.PORT}`);
     Jobs.startAutoSync();
     Monitoring.startMonitoringSnapshotScheduler();
     setTimeout(() => Applications.runEnrolledLeadApplicationBackfill(), 5000);

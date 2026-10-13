@@ -5,7 +5,70 @@ const Perf = require('../perf');
 const Auth = require('../auth');
 const Monitoring = require('../monitoring');
 const Bootstrap = require('../bootstrap');
+const Storage = require('../storage');
 const NOT_HANDLED = require('./not-handled');
+
+function emailSummary(email = {}) {
+  const summary = { ...email };
+  const snippet = String(summary.snippet || summary.body || summary.text || '').slice(0, 260);
+  summary.snippet = snippet;
+  summary.preview = summary.preview || snippet;
+  summary.body = snippet;
+  delete summary.html;
+  delete summary.html_body;
+  delete summary.body_html;
+  delete summary.attachments;
+  delete summary.raw;
+  delete summary.raw_payload;
+  return summary;
+}
+
+function eventSummary(event = {}) {
+  const summary = { ...event };
+  delete summary.raw;
+  delete summary.raw_payload;
+  delete summary.transcript;
+  delete summary.recording;
+  delete summary.recordings;
+  return summary;
+}
+
+function callSummary(call = {}) {
+  const summary = { ...call };
+  delete summary.raw;
+  delete summary.raw_payload;
+  delete summary.participants;
+  delete summary.recording;
+  delete summary.recordings;
+  return summary;
+}
+
+function workspaceSnapshot(db = {}) {
+  return {
+    generated_at: new Date().toISOString(),
+    users: db.users || [],
+    integrations: db.integrations || [],
+    leads: db.leads || [],
+    tasks: db.tasks || [],
+    applications: db.applications || [],
+    emails: (db.emails || []).map(emailSummary),
+    events: (db.events || []).map(eventSummary),
+    meetings: (db.events || []).filter((event) =>
+      Boolean(
+        event.zoom_meeting_id ||
+          event.zoom_meeting_uuid ||
+          event.zoom_link ||
+          event.meeting_link ||
+          String(event.location || '').toLowerCase() === 'zoom' ||
+          String(event.campaign || '').toLowerCase().startsWith('zoom')
+      )
+    ).map(eventSummary),
+    calls: (db.zoom?.calls || []).map(callSummary),
+    audit: db.audit || [],
+    attribution: db.attribution || [],
+    notifications: db.notifications || []
+  };
+}
 
 // Bootstrap routes that read and write the database directly.
 async function bootstrapRoutes(ctx) {
@@ -33,6 +96,11 @@ async function bootstrapRoutes(ctx) {
     }
     // Visible in the browser's Network > Timing panel.
     return Http.sendJson(res, payload, 200, {}, trace);
+  }
+  if (route === '/api/workspace/full' && method === 'GET') {
+    await Auth.currentSessionUser(req, trace);
+    const db = await Storage.loadDb();
+    return Http.sendJson(res, workspaceSnapshot(db), 200, {}, trace);
   }
   if (route === '/api/developer/config' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);

@@ -54,9 +54,10 @@ check(/api\('\/api\/events\?limit=50'/.test(source), 'Events page uses /api/even
 check(/Math\.min\(rawLimit,\s*100\)/.test(serverSource), 'Events API has a hard cap of 100 rows');
 check(/api\('\/api\/meetings\?limit=100'/.test(source), 'Zoom/Meetings page uses /api/meetings?limit=100');
 check(/Math\.min\(rawLimit,\s*200\)/.test(sliceBetween(serverSource, 'async function loadZoomEventPageDb', 'async function loadZoomCallPageDb')), 'Meetings API has a hard cap');
-check(/api\('\/api\/applications\?limit=50'/.test(source), 'Applications page uses bounded /api/applications');
+check(/api\('\/api\/admissions\/pipeline'/.test(source), 'Applications page uses admissions aggregate pipeline');
+check(/\/api\/admissions\/stage\/\$\{encodeURIComponent\(stage\)\}\?limit=25&offset=\$\{offset\}/.test(source), 'Applications use dedicated bounded admissions stage API');
 check(/api\('\/api\/tasks\?status=all&limit=200&include_counts=true'/.test(source), 'Tasks page uses dedicated bounded /api/tasks');
-check(/function inboxQuery/.test(source) && /limit:'50'/.test(source), 'Inbox uses /api/emails with limit 50');
+check(/function inboxQuery/.test(source) && /limit:'all'/.test(source), 'Inbox uses /api/emails with limit=all');
 
 const monitoringFn = sliceBetween(source, 'async function monitoring()', 'function leadSourceOptions()');
 check(/\/api\/dashboard\/admin-overview/.test(source), 'Admin dashboard frontend uses the admin overview endpoint');
@@ -119,7 +120,7 @@ const byId = id => {
 const listeners = { document: {}, window: {} };
 const on = target => (type, fn) => { (listeners[target][type] ||= []).push(fn); };
 const storage = new Map();
-const location = { hash: '#/leads', hostname: 'localhost', pathname: '/', href: 'http://localhost/#/leads', search: '' };
+const location = { hash: '#/today', hostname: 'localhost', pathname: '/', href: 'http://localhost/#/today', search: '' };
 let clock = 0;
 const requests = [];
 
@@ -202,13 +203,39 @@ function adminOverviewPayload() {
   };
 }
 
+function myDayPayload() {
+  return {
+    generated_at: '2026-10-12T09:00:00.000Z',
+    scope: { owner_id: 'U-1', mode: 'mine' },
+    summary: {
+      follow_up_leads: 1,
+      unanswered_emails: 1,
+      applications_needing_action: 1,
+      overdue_tasks: 1,
+      tasks_due_today: 1,
+      meetings_today: 1,
+      at_risk_leads: 1
+    },
+    priority_actions: [
+      { type: 'overdue_task', entity_id: 'T-1', lead_id: 'L-1', title: 'Call Sam', subtitle: 'Task overdue by 1 day', priority: 'high', due_at: '2026-10-11T09:00:00.000Z', route: 'planner', related: 'Sam L-1' },
+      { type: 'unanswered_email', entity_id: 'E-1', lead_id: 'L-1', title: 'Reply to Sam L-1', subtitle: 'Unanswered for 24 hours', priority: 'medium', due_at: '2026-10-13T09:00:00.000Z', route: 'inbox', related: 'Course question' }
+    ],
+    empty: false
+  };
+}
+
 function respond(url, method, body) {
   const u = new URL(String(url), 'http://localhost');
   const p = u.pathname;
   if (p === '/api/bootstrap') return bootstrapPayload();
   if (p === '/api/leads' && method === 'GET') return { items: [lead('L-1'), lead('L-2')], nextCursor: 'next-leads', hasMore: true, total: 42000, stage_counts: { Qualified: 42000 }, limit: Number(u.searchParams.get('limit') || 100) };
-  if (p === '/api/emails' && method === 'GET') return { emails: [email], total: null, has_more: true, next_cursor: 'next-emails', limit: Number(u.searchParams.get('limit') || 50) };
+  if (p === '/api/emails' && method === 'GET') {
+    const requestedLimit = u.searchParams.get('limit') || 50;
+    return { emails: [email], total: null, has_more: true, next_cursor: 'next-emails', limit: requestedLimit === 'all' ? 'all' : Number(requestedLimit) };
+  }
   if (p === '/api/tasks' && method === 'GET') return { items: [task], leads: [lead('L-1')], counts: { overdue: 0, today: 1, upcoming: 0, open: 1, done: 0 }, has_more: false, limit: Number(u.searchParams.get('limit') || 200) };
+  if (p === '/api/admissions/pipeline' && method === 'GET') return { stages: [{ stage: 'In review', count: 1, oldest_created_at: application.created_at }, { stage: 'Documents Missing', count: 0 }, { stage: 'Documents Pending', count: 0 }, { stage: 'Eligible', count: 0 }, { stage: 'Not Eligible', count: 0 }, { stage: 'Enrolled', count: 0 }], statuses: [{ status: 'In review', count: 1 }], total: 1, performance: { aggregate_only: true } };
+  if (/^\/api\/admissions\/stage\/[^/]+$/.test(p) && method === 'GET') return { stage: decodeURIComponent(p.split('/').pop()), applications: [{ ...application, lead: lead('L-1'), admissions_stage: 'In review', outstanding_requirements: [], outstanding_count: 0, next_action: { label: 'Record eligibility decision' } }], limit: Number(u.searchParams.get('limit') || 25), offset: Number(u.searchParams.get('offset') || 0), has_more: false, next_offset: 1 };
   if (p === '/api/applications' && method === 'GET') return { applications: [application], total: 1, loaded: 1, limit: Number(u.searchParams.get('limit') || 50), has_more: false };
   if (p === '/api/events' && method === 'GET') return { items: [event], total: null, has_more: true, next_cursor: 'next-events', limit: Number(u.searchParams.get('limit') || 50) };
   if (/^\/api\/events\/[^/]+$/.test(p) && method === 'GET') return { event: { ...event, attendees: [{ id: 'AT-1', first_name: 'Sam', last_name: 'Guest', email: 'sam@example.com', status: 'pending' }] } };
@@ -216,8 +243,19 @@ function respond(url, method, body) {
   if (p === '/api/zoom/calls' && method === 'GET') return { calls: [], total: 0, loaded: 0, has_more: false, next_offset: 0, limit: Number(u.searchParams.get('limit') || 250) };
   if (p === '/api/dashboard/monitoring' && method === 'GET') return monitoringPayload();
   if (p === '/api/dashboard/admin-overview' && method === 'GET') return adminOverviewPayload();
+  if (p === '/api/dashboard/my-day' && method === 'GET') return myDayPayload();
+  if (p === '/api/automations' && method === 'GET') return { rules: [{ id: 'AR-1', name: 'Meta follow-up', status: 'draft', enabled: false, trigger_type: 'lead_created', successful_runs: 0, failed_runs: 0 }], limit: 100 };
+  if (p === '/api/automations/status' && method === 'GET') return { enabled_rules: 0, pending_jobs: 0, running_jobs: 0, retry_jobs: 0, failed_jobs: 0 };
   if (p.startsWith('/api/dashboard/')) return {};
-  if (/^\/api\/leads\/[^/]+$/.test(p) && method === 'GET') return { lead: lead(p.split('/').pop()), timeline: [] };
+  if (/^\/api\/leads\/[^/]+$/.test(p) && method === 'GET') return { lead: lead(p.split('/').pop()), summary: { open_tasks: 1, unanswered_emails: 1, applications: 1, meetings: 1 }, next_action: task, recent_activity: [], timeline: [] };
+  if (/^\/api\/leads\/[^/]+\/timeline$/.test(p) && method === 'GET') return { items: [], has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/emails$/.test(p) && method === 'GET') return { items: [email], emails: [email], has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/tasks$/.test(p) && method === 'GET') return { items: [task], tasks: [task], has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/application$/.test(p) && method === 'GET') return { items: [application], applications: [application], application, has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/meetings$/.test(p) && method === 'GET') return { items: [meeting], events: [meeting], has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/calls$/.test(p) && method === 'GET') return { items: [], calls: [], has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/files$/.test(p) && method === 'GET') return { items: [], files: [], has_more: false, next_cursor: '', limit: 30 };
+  if (/^\/api\/leads\/[^/]+\/notes$/.test(p) && method === 'GET') return { items: [], notes: [], has_more: false, next_cursor: '', limit: 30 };
   if (/^\/api\/leads\/[^/]+$/.test(p) && method === 'PATCH') return { ok: true, lead: { ...lead(p.split('/').pop()), stage: body?.stage || 'Qualified' } };
   if (/^\/api\/emails\/[^/]+$/.test(p) && method === 'GET') return { email: { ...email, body: 'Large body is lazy.' }, thread: [] };
   return {};
@@ -295,17 +333,43 @@ async function navigate(hash) {
 
   const startup = requests.slice();
   check(bootstrapRequests(startup) === 1, `startup requests /api/bootstrap once (${urls(startup)})`);
-  const startupLeads = startup.filter(r => requestPath(r.url) === '/api/leads');
-  check(startupLeads.length === 1 && boundedLimit(startupLeads[0].url, 100), `Leads startup uses one bounded /api/leads request (${urls(startup)})`);
-  check(!startup.some(r => ['/api/emails', '/api/events', '/api/tasks', '/api/applications', '/api/meetings'].includes(requestPath(r.url))), `Leads startup loads no unrelated page datasets (${urls(startup)})`);
-  check(/People, with potential/.test(byId('app').innerHTML), 'Leads route renders from lazy /api/leads data');
+  const startupDashboard = startup.filter(r => requestPath(r.url).startsWith('/api/dashboard/'));
+  check(startupDashboard.length === 0, `Today startup renders from bootstrap data without dashboard widgets (${urls(startup)})`);
+  check(!startup.some(r => ['/api/leads', '/api/emails', '/api/events', '/api/tasks', '/api/applications', '/api/meetings', '/api/zoom/calls', '/api/integrations/zoho/records', '/api/integrations/zoho/status'].includes(requestPath(r.url))), `Dashboard startup loads no route-specific list datasets (${urls(startup)})`);
+  check(/My Work Today|Inbox Response Tracking|Needs your attention|Team overview/.test(byId('app').innerHTML), 'Today route renders the targeted dashboard without route-specific page data');
 
   let m = mark();
-  await navigate('#/inbox');
+  await navigate('#/my-day');
   let page = since(m);
+  check(bootstrapRequests(page) === 0, 'My Day navigation does not request bootstrap');
+  const myDayReqs = page.filter(r => requestPath(r.url) === '/api/dashboard/my-day');
+  check(myDayReqs.length === 1, `My Day uses one command-center endpoint (${urls(page)})`);
+  check(!page.some(r => ['/api/leads', '/api/emails', '/api/events', '/api/tasks', '/api/applications', '/api/meetings', '/api/zoom/calls'].includes(requestPath(r.url))), `My Day loads no route-specific list datasets (${urls(page)})`);
+  check(/My Day|Priority Actions|What should I do next/.test(byId('app').innerHTML), 'My Day route renders from the compact command-center payload');
+
+  m = mark();
+  await navigate('#/leads');
+  page = since(m);
+  check(bootstrapRequests(page) === 0, 'Leads navigation does not request bootstrap');
+  const startupLeads = page.filter(r => requestPath(r.url) === '/api/leads');
+  check(startupLeads.length === 1 && boundedLimit(startupLeads[0].url, 100), `Leads page uses one bounded /api/leads request (${urls(page)})`);
+  check(!page.some(r => ['/api/emails', '/api/events', '/api/tasks', '/api/applications', '/api/meetings'].includes(requestPath(r.url))), `Leads page loads no unrelated page datasets (${urls(page)})`);
+  check(/People, with potential/.test(byId('app').innerHTML), 'Leads route renders from lazy /api/leads data');
+
+  m = mark();
+  await navigate('#/leads/L-1');
+  page = since(m);
+  const leadDetailReqs = page.filter(r => requestPath(r.url) === '/api/leads/L-1');
+  check(leadDetailReqs.length === 1, `Lead 360 core uses one lead detail request (${urls(page)})`);
+  check(!page.some(r => /^\/api\/leads\/L-1\/(emails|tasks|application|meetings|calls|files|notes)$/.test(requestPath(r.url))), `Lead 360 does not pre-load closed tabs (${urls(page)})`);
+  check(/Lead 360|Golden Record/.test(byId('app').innerHTML), 'Lead 360 route renders from compact core payload');
+
+  m = mark();
+  await navigate('#/inbox');
+  page = since(m);
   check(bootstrapRequests(page) === 0, 'Inbox navigation does not request bootstrap');
   const inboxReqs = page.filter(r => requestPath(r.url) === '/api/emails');
-  check(inboxReqs.length === 1 && boundedLimit(inboxReqs[0].url, 50), `Inbox uses one bounded /api/emails request (${urls(page)})`);
+  check(inboxReqs.length === 1 && queryValue(inboxReqs[0].url, 'limit') === 'all', `Inbox uses one all-email /api/emails request (${urls(page)})`);
   check(!page.some(r => requestPath(r.url) === '/api/events'), 'Inbox does not fetch Events');
 
   m = mark();
@@ -319,8 +383,10 @@ async function navigate(hash) {
   m = mark();
   await navigate('#/applications');
   page = since(m);
-  const appReqs = page.filter(r => requestPath(r.url) === '/api/applications');
-  check(appReqs.length === 1 && boundedLimit(appReqs[0].url, 50), `Applications use dedicated bounded API (${urls(page)})`);
+  const pipelineReqs = page.filter(r => requestPath(r.url) === '/api/admissions/pipeline');
+  const stageReqs = page.filter(r => requestPath(r.url).startsWith('/api/admissions/stage/'));
+  check(pipelineReqs.length === 1 && stageReqs.length === 1 && boundedLimit(stageReqs[0].url, 25), `Applications use admissions aggregate and bounded stage APIs (${urls(page)})`);
+  check(!page.some(r => requestPath(r.url) === '/api/applications'), `Applications page does not load full application dataset (${urls(page)})`);
 
   m = mark();
   await navigate('#/planner');
@@ -344,9 +410,9 @@ async function navigate(hash) {
   check(/Admin dashboard|Funnel|Lead Sources/.test(byId('app').innerHTML), 'Monitoring route renders the admin dashboard');
 
   m = mark();
-  await navigate('#/leads/L-1');
+  await navigate('#/leads/L-2');
   page = since(m);
-  check(page.some(r => requestPath(r.url) === '/api/leads/L-1'), 'Lead detail is lazy-loaded by id');
+  check(page.some(r => requestPath(r.url) === '/api/leads/L-2'), 'Lead detail is lazy-loaded by id');
 
   m = mark();
   await navigate('#/events');

@@ -12,6 +12,10 @@ const Events = require('./events');
 const Applications = require('./applications');
 const Gmail = require('./integrations/gmail');
 
+const EMAIL_PAGE_DEFAULT_LIMIT = 50;
+const EMAIL_PAGE_MAX_LIMIT = 100;
+const EMAIL_PAGE_ALL_LIMIT = 50000;
+
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
@@ -258,14 +262,71 @@ function promoteEmailSendersToLeads(db, user) {
   return { created, linked };
 }
 
+function decodeHtmlEntities(value = '') {
+  return String(value)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+}
+
+function htmlToText(value = '') {
+  return decodeHtmlEntities(String(value)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n'))
+    .trim();
+}
+
+function emailBodyText(email) {
+  return String(email.body || email.text || email.snippet || htmlToText(email.body_html || email.html_body || email.html || '') || '');
+}
+
 function emailSnippetValue(email) {
-  return String(email.snippet || email.body || '').replace(/\s+/g, ' ').trim().slice(0, 260);
+  return emailBodyText(email).replace(/\s+/g, ' ').trim().slice(0, 260);
+}
+
+function emailDisplayName(email) {
+  const explicit = String(email.senderName || email.sender_name || email.from_name || email.name || '').trim();
+  if (explicit && !explicit.includes('@')) return explicit;
+  const firstLast = [email.first_name, email.last_name].map(value => String(value || '').trim()).filter(Boolean).join(' ');
+  if (firstLast) return firstLast;
+  const address = normalizeEmail(email.email || email.from || email.senderEmail || email.sender_email);
+  const local = address.split('@')[0] || '';
+  const localName = local
+    .replace(/[._-]+/g, ' ')
+    .replace(/\d+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+  return localName || address || 'Unknown sender';
 }
 
 function publicEmailSummary(email) {
+  const displayName = emailDisplayName(email);
+  const fromName = email.direction === 'outbound'
+    ? String(email.from_name || email.owner || process.env.MAIL_FROM_NAME || 'Kent Business College').trim()
+    : displayName;
   return {
     id: email.id,
     from: email.from || email.email || '',
+    from_name: fromName,
+    senderName: displayName,
+    sender_name: displayName,
+    display_name: displayName,
     first_name: email.first_name || '',
     last_name: email.last_name || '',
     email: email.email || email.from || '',
@@ -293,7 +354,7 @@ function publicEmailSummary(email) {
 function publicEmailDetail(email) {
   const detail = {
     ...publicEmailSummary(email),
-    body: String(email.body || email.snippet || ''),
+    body: emailBodyText(email),
     response_note: email.response_note || ''
   };
   delete detail.html;
@@ -312,6 +373,10 @@ function emailSummaryDataSql() {
       'last_name', coalesce(last_name, ''),
       'email', coalesce(email, ''),
       'from', coalesce(email, ''),
+      'from_name', coalesce(nullif(data->>'from_name', ''), nullif(data->>'sender_name', ''), nullif(trim(concat_ws(' ', first_name, last_name)), ''), ''),
+      'senderName', coalesce(nullif(data->>'senderName', ''), nullif(data->>'sender_name', ''), nullif(data->>'from_name', ''), nullif(trim(concat_ws(' ', first_name, last_name)), ''), ''),
+      'sender_name', coalesce(nullif(data->>'sender_name', ''), nullif(data->>'senderName', ''), nullif(data->>'from_name', ''), nullif(trim(concat_ws(' ', first_name, last_name)), ''), ''),
+      'display_name', coalesce(nullif(data->>'display_name', ''), nullif(data->>'senderName', ''), nullif(data->>'sender_name', ''), nullif(data->>'from_name', ''), nullif(trim(concat_ws(' ', first_name, last_name)), ''), ''),
       'subject', coalesce(subject, '(No subject)'),
       'owner', coalesce(owner, ''),
       'date', received_at,
@@ -329,7 +394,7 @@ function emailSummaryDataSql() {
       'trashed_at', coalesce(data->>'trashed_at', ''),
       'trash_reason', coalesce(data->>'trash_reason', ''),
       'is_read', coalesce(data->'is_read', 'true'::jsonb),
-      'snippet', left(coalesce(data->>'snippet', ''), 260)
+      'snippet', left(coalesce(nullif(data->>'snippet', ''), nullif(body, ''), ''), 260)
     )
   `;
 }
@@ -438,9 +503,21 @@ function normalizeEmailPageOptions(options = {}) {
   };
 }
 
+function emailPageRequestedAll(options = {}) {
+  return String(options.limit || '').trim().toLowerCase() === 'all';
+}
+
+function emailPageLimit(options = {}) {
+  if (emailPageRequestedAll(options)) return EMAIL_PAGE_ALL_LIMIT;
+  const rawLimit = Number(options.limit || EMAIL_PAGE_DEFAULT_LIMIT);
+  const numericLimit = Number.isFinite(rawLimit) ? rawLimit : EMAIL_PAGE_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(numericLimit, EMAIL_PAGE_MAX_LIMIT));
+}
+
 function safeEmailRequestParams(options = {}, filters = normalizeEmailPageOptions(options)) {
   return {
-    limit: Math.max(1, Math.min(Number(options.limit || 50), 100)),
+    limit: emailPageLimit(options),
+    limit_all: emailPageRequestedAll(options),
     cursor_present: Boolean(options.cursor),
     status: filters.status || '',
     label: filters.label || '',
@@ -564,11 +641,12 @@ async function loadFilteredEmailPageSql(db, filters, limit, cursor, options = {}
 async function loadOwnedEmailPage(ownerId, filters, limit, cursor, trace) {
   const db = State.postgresPool ? {} : await Storage.loadDb();
   const ownedLeadIds = State.postgresPool ? null : new Set((db.leads || []).filter(lead => String(lead.owner_id || '') === ownerId).map(lead => String(lead.id)));
+  const ownedFetchLimit = Math.max(limit + 1, 1000);
   const rows = State.postgresPool
     ? (await Storage.timedPostgresQueryWithStatementTimeout(trace, 'owned_emails',
       `select ${emailSummaryDataSql()} as data from app_emails
        where lead_id in (select id from app_leads where owner_id = $1)
-       order by received_at desc nulls last, id limit 1000`, [ownerId], Config.EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows.map(row => row.data)
+       order by received_at desc nulls last, id limit $2`, [ownerId, ownedFetchLimit], Config.EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows.map(row => row.data)
     : (db.emails || []).filter(email => ownedLeadIds.has(String(email.lead_id || '')));
   const filtered = rows
     .filter(email => emailMatchesFilters(db, email, filters))
@@ -587,7 +665,7 @@ async function loadOwnedEmailPage(ownerId, filters, limit, cursor, trace) {
 }
 
 async function loadEmailPage(options = {}, trace = null) {
-  const limit = Math.max(1, Math.min(Number(options.limit || 50), 100));
+  const limit = emailPageLimit(options);
   const cursor = decodeEmailCursor(options.cursor);
   const filters = normalizeEmailPageOptions(options);
   const hasFilters = Boolean(filters.status || filters.label || filters.search || filters.day || filters.dateField === 'due' || filters.sort !== 'newest');
@@ -609,7 +687,7 @@ async function loadEmailPage(options = {}, trace = null) {
       filters: safeEmailRequestParams(options, filters)
     });
     Perf.perfAdd(trace, 'gmail_state_query', 0, { query_name: 'gmail_state', note: 'not_called' });
-    const fallbackLimit = Math.min(Math.max(limit * 10, 200), 1000);
+    const fallbackLimit = emailPageRequestedAll(options) ? limit + 1 : Math.min(Math.max(limit * 10, 200), 1000);
     const rows = State.postgresPool
       ? (await Storage.timedPostgresQueryWithStatementTimeout(trace, 'fallback', `select ${emailSummaryDataSql()} as data from app_emails order by received_at desc nulls last, id limit $1`, [fallbackLimit], Config.EMAIL_LIST_STATEMENT_TIMEOUT_MS)).rows.map(item => item.data)
       : (db.emails || []).slice();
@@ -723,6 +801,37 @@ async function loadEmailDetailThread(baseEmail) {
   return emailDetailThread(baseEmail, candidates.rows.map(item => item.data));
 }
 
+async function hydrateEmailDetailBodiesPostgres(thread) {
+  if (!State.postgresPool || !thread.some(email => !String(email.body || '').trim() && email.gmail_message_id)) return;
+  const workspace = await State.postgresPool.query(`select coalesce(gmail, '{}'::jsonb) as gmail from app_workspace where id = $1`, ['main']);
+  const db = { gmail: workspace.rows[0]?.gmail || {}, emails: thread };
+  for (const email of thread) {
+    let changed = false;
+    try {
+      changed = await Gmail.hydrateEmailBody(db, email);
+    } catch {
+      changed = false;
+    }
+    if (!changed) continue;
+    await State.postgresPool.query(
+      `update app_emails set body = $2, data = $3::jsonb where id = $1`,
+      [email.id, email.body, Applications.jsonValue(email)]
+    );
+  }
+}
+
+async function hydrateEmailDetailBodiesWorkspace(db, thread) {
+  let changed = false;
+  for (const email of thread) {
+    try {
+      changed = (await Gmail.hydrateEmailBody(db, email)) || changed;
+    } catch {
+      /* Keep the reader usable when Gmail is disconnected or temporarily unavailable. */
+    }
+  }
+  if (changed) await Storage.saveDb(db);
+}
+
 async function loadEmailDetail(id) {
   await Storage.ensureStorage();
   if (State.postgresPool) {
@@ -730,12 +839,15 @@ async function loadEmailDetail(id) {
     if (!result.rows[0]) throw Http.statusError(404, 'Email not found.');
     const email = result.rows[0].data;
     const thread = await loadEmailDetailThread(email);
-    return { email: publicEmailDetail(email), thread: thread.map(publicEmailDetail) };
+    await hydrateEmailDetailBodiesPostgres(thread);
+    const detailEmail = thread.find(item => item.id === email.id) || email;
+    return { email: publicEmailDetail(detailEmail), thread: thread.map(publicEmailDetail) };
   }
   const db = await Storage.loadDb();
   const email = (db.emails || []).find(item => item.id === id);
   if (!email) throw Http.statusError(404, 'Email not found.');
   const thread = emailDetailThread(email, db.emails || []);
+  await hydrateEmailDetailBodiesWorkspace(db, thread);
   return { email: publicEmailDetail(email), thread: thread.map(publicEmailDetail) };
 }
 
@@ -779,6 +891,47 @@ async function recordEmailFastDb(body, user) {
   } finally {
     client.release();
   }
+}
+
+function buildReplyEmail(email, messageText, user, sentMeta = {}) {
+  const sentAt = new Date().toISOString();
+  const subject = /^re:/i.test(email.subject || '') ? email.subject : `Re: ${email.subject || '(No subject)'}`;
+  const reply = {
+    id: sentMeta.id || `E-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+    first_name: email.first_name || '',
+    last_name: email.last_name || '',
+    email: email.email || email.from || '',
+    lead_id: email.lead_id || '',
+    subject,
+    body: messageText,
+    owner: user?.name || email.owner || '',
+    direction: 'outbound',
+    response_at: null,
+    response_note: '',
+    due_at: null,
+    received_at: sentAt,
+    gmail_message_id: sentMeta.gmail_message_id || '',
+    gmail_thread_id: sentMeta.gmail_thread_id || email.gmail_thread_id || '',
+    gmail_labels: sentMeta.gmail_labels || ['SENT'],
+    gmail_label_names: sentMeta.gmail_label_names || ['Sent'],
+    dashboard_folder: 'sent',
+    from_name: user?.name || process.env.MAIL_FROM_NAME || 'Kent Business College',
+    senderName: emailDisplayName(email),
+    to_email: email.email || email.from || ''
+  };
+  return reply;
+}
+
+function attachReplyToEmail(db, email, messageText, user, sentMeta = {}) {
+  const reply = buildReplyEmail(email, messageText, user, sentMeta);
+  email.response_at = reply.received_at;
+  email.response_note = messageText;
+  if (reply.gmail_thread_id && !email.gmail_thread_id) email.gmail_thread_id = reply.gmail_thread_id;
+  db.emails ||= [];
+  if (!db.emails.some(item => item.id === reply.id || (reply.gmail_message_id && item.gmail_message_id === reply.gmail_message_id))) {
+    db.emails.unshift(reply);
+  }
+  return reply;
 }
 
 async function resolveEmailFastDb(id, body, user) {
@@ -919,6 +1072,8 @@ exports.emailIsUnread = emailIsUnread;
 exports.leadIdForEmail = leadIdForEmail;
 exports.ensureLeadForEmailSender = ensureLeadForEmailSender;
 exports.promoteEmailSendersToLeads = promoteEmailSendersToLeads;
+exports.emailDisplayName = emailDisplayName;
+exports.publicEmailSummary = publicEmailSummary;
 exports.emailSummaryDataSql = emailSummaryDataSql;
 exports.emailFiltersSqlCapable = emailFiltersSqlCapable;
 exports.emailFilterSql = emailFilterSql;
@@ -928,6 +1083,7 @@ exports.buildFilteredEmailPageQuery = buildFilteredEmailPageQuery;
 exports.loadEmailPage = loadEmailPage;
 exports.loadEmailDetail = loadEmailDetail;
 exports.recordEmailFastDb = recordEmailFastDb;
+exports.attachReplyToEmail = attachReplyToEmail;
 exports.resolveEmailFastDb = resolveEmailFastDb;
 exports.updateEmailReadStateFastDb = updateEmailReadStateFastDb;
 exports.deleteEmailFastDb = deleteEmailFastDb;

@@ -1,0 +1,265 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-heading: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-label: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+
+  /* background — off white / canvas */
+  --background-50: 1 0 0;
+  --background-100: 0.982 0.003 265;
+  --background-200: 0.962 0.005 265;
+  --background-300: 0.932 0.007 265;
+  --background-400: 0.89 0.009 265;
+  --background-500: 0.82 0.011 265;
+  --background-600: 0.72 0.012 265;
+  --background-700: 0.61 0.012 265;
+  --background-800: 0.48 0.012 265;
+  --background-900: 0.36 0.011 265;
+  --background-950: 0.24 0.009 265;
+
+  /* foreground — deep purple text scale */
+  --foreground-50: 0.968 0.012 293;
+  --foreground-100: 0.934 0.024 293;
+  --foreground-200: 0.872 0.04 293;
+  --foreground-300: 0.782 0.06 293;
+  --foreground-400: 0.66 0.075 293;
+  --foreground-500: 0.55 0.085 293;
+  --foreground-600: 0.47 0.088 293;
+  --foreground-700: 0.4 0.09 293;
+  --foreground-800: 0.34 0.092 293;
+  --foreground-900: 0.3 0.093 293;
+  --foreground-950: 0.262 0.094 293;
+
+  /* primary — Kent Purple #7735F5 */
+  --primary-50: 0.972 0.016 290;
+  --primary-100: 0.94 0.035 290;
+  --primary-200: 0.89 0.066 290;
+  --primary-300: 0.82 0.11 290;
+  --primary-400: 0.7 0.18 290;
+  --primary-500: 0.54 0.26 290;
+  --primary-600: 0.48 0.24 290;
+  --primary-700: 0.42 0.21 290;
+  --primary-800: 0.36 0.18 290;
+  --primary-900: 0.31 0.15 290;
+  --primary-950: 0.24 0.11 290;
+
+  /* secondary — soft lavender support */
+  --secondary-50: 0.976 0.012 290;
+  --secondary-100: 0.955 0.022 290;
+  --secondary-200: 0.922 0.036 290;
+  --secondary-300: 0.872 0.05 290;
+  --secondary-400: 0.78 0.06 290;
+  --secondary-500: 0.62 0.055 290;
+  --secondary-600: 0.53 0.05 290;
+  --secondary-700: 0.45 0.046 290;
+  --secondary-800: 0.38 0.04 290;
+  --secondary-900: 0.32 0.036 290;
+  --secondary-950: 0.24 0.03 290;
+
+  /* accent — crest gold */
+  --accent-50: 0.975 0.02 88;
+  --accent-100: 0.95 0.042 88;
+  --accent-200: 0.902 0.07 88;
+  --accent-300: 0.842 0.1 88;
+  --accent-400: 0.78 0.115 86;
+  --accent-500: 0.72 0.12 85;
+  --accent-600: 0.63 0.11 84;
+  --accent-700: 0.53 0.095 83;
+  --accent-800: 0.44 0.08 82;
+  --accent-900: 0.37 0.07 81;
+  --accent-950: 0.27 0.05 80;
+}
+
+.dark {
+  --background-50: 0.2 0.012 275;
+  --background-100: 0.24 0.014 275;
+  --background-200: 0.28 0.016 275;
+  --background-300: 0.33 0.018 275;
+  --background-400: 0.4 0.02 275;
+  --background-500: 0.5 0.02 275;
+  --background-600: 0.6 0.018 275;
+  --background-700: 0.7 0.016 275;
+  --background-800: 0.82 0.012 275;
+  --background-900: 0.9 0.008 275;
+  --background-950: 0.97 0.004 275;
+
+  --foreground-50: 0.24 0.02 293;
+  --foreground-100: 0.32 0.03 293;
+  --foreground-200: 0.42 0.04 293;
+  --foreground-300: 0.55 0.05 293;
+  --foreground-400: 0.66 0.055 293;
+  --foreground-500: 0.76 0.05 293;
+  --foreground-600: 0.84 0.04 293;
+  --foreground-700: 0.9 0.03 293;
+  --foreground-800: 0.94 0.02 293;
+  --foreground-900: 0.96 0.014 293;
+  --foreground-950: 0.985 0.008 293;
+}
+
+@layer base {
+  * {
+    border-color: oklch(var(--background-200));
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: oklch(var(--background-100));
+    color: oklch(var(--foreground-900));
+    overflow-x: hidden;
+  }
+
+  #root {
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+  }
+
+  ::selection {
+    background-color: oklch(var(--primary-200));
+    color: oklch(var(--foreground-950));
+  }
+}
+
+@layer components {
+  .kbc-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: oklch(var(--background-300)) transparent;
+  }
+
+  .kbc-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .kbc-scroll::-webkit-scrollbar-thumb {
+    background-color: oklch(var(--background-300));
+    border-radius: 9999px;
+  }
+
+  .kbc-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .kbc-no-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .kbc-no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .aux-field-locker {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Density preferences — applied via data-density on <html> */
+  [data-density="compact"] table td {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+  [data-density="compact"] table th {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+  [data-density="compact"] .divide-y > li {
+    padding-top: 0.4rem;
+    padding-bottom: 0.4rem;
+  }
+  [data-density="spacious"] table td {
+    padding-top: 1.15rem;
+    padding-bottom: 1.15rem;
+  }
+  [data-density="spacious"] table th {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+  }
+  [data-density="spacious"] .divide-y > li {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: kbc-fade-in 0.25s ease-out both;
+  }
+
+  .animate-slide-up {
+    animation: kbc-slide-up 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-slide-in-right {
+    animation: kbc-slide-in-right 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-scale-in {
+    animation: kbc-scale-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes kbc-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes kbc-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes kbc-slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes kbc-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
