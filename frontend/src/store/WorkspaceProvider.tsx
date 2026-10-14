@@ -16,6 +16,7 @@ import {
   loadBackendIntegrationOverview,
   loadBackendWorkspace,
   type BackendIntegrationOverview,
+  type BackendWorkspaceSection,
 } from "@/store/backendSync";
 import { bumpDatasetGeneration } from "@/store/datasetIdentity";
 import { sourceByName, categoryForInteractionType } from "@/config/attribution";
@@ -89,6 +90,7 @@ import type {
 } from "@/store/types";
 
 const STORAGE_KEY = "kbc-workspace-v1";
+const LOGIN_REQUEST_TIMEOUT_MS = 60000;
 
 /**
  * Tracks the acting workspace user so activity and audit helpers can attribute
@@ -565,6 +567,30 @@ function hasActiveIntegrationSync(overview: BackendIntegrationOverview | null): 
   );
 }
 
+const ALL_BACKEND_SECTIONS: BackendWorkspaceSection[] = [
+  "leads",
+  "tasks",
+  "applications",
+  "events",
+  "meetings",
+  "calls",
+];
+
+function startupSectionsForPath(pathname: string): BackendWorkspaceSection[] {
+  const path = pathname.replace(/\/+$/, "") || "/";
+  if (path === "/inbox") return [];
+  if (path.startsWith("/inbox/")) return ["leads"];
+  if (path === "/" || path === "/today") return ["leads", "tasks", "applications", "events", "meetings"];
+  if (path.startsWith("/leads")) return ["leads", "tasks", "applications", "events"];
+  if (path.startsWith("/planner")) return ["tasks", "leads"];
+  if (path.startsWith("/applications")) return ["applications", "leads", "tasks"];
+  if (path.startsWith("/events")) return ["events", "leads"];
+  if (path.startsWith("/zoom")) return ["meetings", "calls", "tasks", "events", "leads"];
+  if (path.startsWith("/zoho")) return ["leads", "tasks"];
+  if (path.startsWith("/audit") || path.startsWith("/settings")) return [];
+  return ALL_BACKEND_SECTIONS;
+}
+
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const [boot] = useState(() =>
@@ -579,6 +605,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const activeIntegrationSyncRef = useRef(false);
   const integrationOverviewTimerRef = useRef<number | null>(null);
   const integrationOverviewMountedRef = useRef(true);
+  const initialBackendPathRef = useRef(location.pathname);
   const [migrationNotice, setMigrationNotice] = useState<MigrationRecord | null>(() =>
     readPendingNotice(),
   );
@@ -657,10 +684,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const signInBackend = useCallback(
     async (email: string, password: string): Promise<BackendSignInResult> => {
       setBackendLoading(true);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), LOGIN_REQUEST_TIMEOUT_MS);
       try {
         const response = await fetch("/api/login", {
           method: "POST",
           credentials: "include",
+          signal: controller.signal,
           headers: {
             Accept: "application/json",
             "Content-Type": "application/json",
@@ -677,25 +707,45 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           }
           return { ok: false, error: message };
         }
-        const loaded = await refreshBackendWorkspace();
-        if (!loaded) return { ok: false, error: "Signed in, but the backend workspace did not load." };
+        clearBackendIntegrationOverviewCache();
+        setBackendAuthRequired(false);
+        setBackendLoadedAt(new Date().toISOString());
+        void loadBackendWorkspace({ fast: true, sections: startupSectionsForPath(location.pathname) })
+          .then((result) => {
+            applyBackendWorkspace(result);
+          })
+          .catch((error) => {
+            if (isBackendAuthRequiredError(error)) {
+              setBackendAuthRequired(true);
+              setBackendLoadedAt(null);
+              return;
+            }
+            console.warn("[backend-sync] Signed in, but background workspace load failed.", error);
+          });
         return { ok: true };
       } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return {
+            ok: false,
+            error: "Sign in is taking too long to respond. The server may still be waking up; try again in a moment.",
+          };
+        }
         return {
           ok: false,
           error: error instanceof Error ? error.message : "Unable to sign in.",
         };
       } finally {
+        window.clearTimeout(timeout);
         setBackendLoading(false);
       }
     },
-    [refreshBackendWorkspace],
+    [applyBackendWorkspace],
   );
 
   useEffect(() => {
     let cancelled = false;
     setBackendLoading(true);
-    loadBackendWorkspace()
+    loadBackendWorkspace({ fast: true, sections: startupSectionsForPath(initialBackendPathRef.current) })
       .then((result) => {
         if (cancelled) return;
         applyBackendWorkspace(result);

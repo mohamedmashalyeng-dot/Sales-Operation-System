@@ -4,7 +4,7 @@ import { Card, CardBody, CardHeader } from "@/components/base/Card";
 import Select from "@/components/base/Select";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import { PROGRAMMES } from "@/config/crm";
+import { leadProgrammeOptions, ownerOptions } from "@/utils/filterOptions";
 import RateCard from "@/pages/sources/components/RateCard";
 import SessionComparison from "@/pages/sources/components/SessionComparison";
 import {
@@ -63,6 +63,8 @@ export default function ConversionReport() {
   const [filters, setFilters] = useState<ConversionFilters>({ ...DEFAULT_CONVERSION_FILTERS });
 
   const set = (patch: Partial<ConversionFilters>) => setFilters((f) => ({ ...f, ...patch }));
+  const programmes = useMemo(() => leadProgrammeOptions(state), [state]);
+  const owners = useMemo(() => ownerOptions(state), [state]);
 
   const metrics: ConversionMetrics = useMemo(
     () => computeConversionMetrics(state, filters, canSeeOwner),
@@ -215,19 +217,13 @@ export default function ConversionReport() {
             label="Programme"
             value={filters.programme}
             onChange={(v) => set({ programme: v })}
-            options={[
-              { value: "all", label: "All programmes" },
-              ...PROGRAMMES.map((p) => ({ value: p, label: p })),
-            ]}
+            options={programmes}
           />
           <Select
             label="Sales owner"
             value={filters.owner}
             onChange={(v) => set({ owner: v })}
-            options={[
-              { value: "all", label: "All owners" },
-              ...state.users.map((u) => ({ value: u.id, label: u.name })),
-            ]}
+            options={owners}
           />
           <Select
             label="Campaign"

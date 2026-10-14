@@ -162,6 +162,8 @@ async function ensurePostgresUserSchema(trace = null) {
   if (State.postgresUserSchemaReady) return;
   const usersTable = Storage.sqlIdentifier(Config.POSTGRES_USERS_TABLE, 'app_users');
   const sessionsTable = Storage.sqlIdentifier(Config.POSTGRES_SESSIONS_TABLE, 'app_sessions');
+  const loginEventsTable = Storage.sqlIdentifier(Config.POSTGRES_LOGIN_EVENTS_TABLE, 'app_login_events');
+  const passwordResetsTable = Storage.sqlIdentifier(Config.POSTGRES_PASSWORD_RESETS_TABLE, 'app_password_resets');
   await Storage.tracedPostgresPoolQuery(trace, 'schema_users_table', `
     create table if not exists ${usersTable} (
       id text primary key,
@@ -197,6 +199,28 @@ async function ensurePostgresUserSchema(trace = null) {
   await Storage.tracedPostgresPoolQuery(trace, 'schema_sessions_user_id_index', `create index if not exists ${Storage.sqlIdentifier(`${Config.POSTGRES_SESSIONS_TABLE}_user_id_idx`, 'app_sessions_user_id_idx')} on ${sessionsTable} (user_id)`);
   await Storage.tracedPostgresPoolQuery(trace, 'schema_sessions_expires_at_index', `create index if not exists ${Storage.sqlIdentifier(`${Config.POSTGRES_SESSIONS_TABLE}_expires_at_idx`, 'app_sessions_expires_at_idx')} on ${sessionsTable} (expires_at)`);
   await Storage.tracedPostgresPoolQuery(trace, 'schema_sessions_token_hash_index', `create unique index if not exists ${Storage.sqlIdentifier(`${Config.POSTGRES_SESSIONS_TABLE}_token_hash_idx`, 'app_sessions_token_hash_idx')} on ${sessionsTable} (token_hash) where token_hash is not null`);
+  await Storage.tracedPostgresPoolQuery(trace, 'schema_login_events_table', `
+    create table if not exists ${loginEventsTable} (
+      id bigserial primary key,
+      user_id text references ${usersTable}(id) on delete set null,
+      name text,
+      email text not null,
+      ip_address text,
+      user_agent text,
+      logged_in_at timestamptz not null default now()
+    )
+  `);
+  await Storage.tracedPostgresPoolQuery(trace, 'schema_password_resets_table', `
+    create table if not exists ${passwordResetsTable} (
+      id bigserial primary key,
+      user_id text references ${usersTable}(id) on delete cascade,
+      email text not null,
+      token_hash text not null unique,
+      expires_at timestamptz not null,
+      used_at timestamptz,
+      created_at timestamptz not null default now()
+    )
+  `);
   State.postgresUserSchemaReady = true;
 }
 

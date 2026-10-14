@@ -1,7 +1,7 @@
 import Select from "@/components/base/Select";
 import SearchInput from "@/components/base/SearchInput";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import { PROGRAMMES } from "@/config/crm";
+import { leadProgrammeOptions, ownerOptions } from "@/utils/filterOptions";
 
 export interface SourceFilterState {
   range: string;
@@ -25,6 +25,8 @@ interface SourceFiltersProps {
 export default function SourceFilters({ filters, onChange }: SourceFiltersProps) {
   const { state } = useWorkspace();
   const set = (patch: Partial<SourceFilterState>) => onChange({ ...filters, ...patch });
+  const programmes = leadProgrammeOptions(state);
+  const owners = ownerOptions(state);
 
   return (
     <div className="rounded-lg border border-background-200 bg-background-50 p-3">
@@ -42,18 +44,12 @@ export default function SourceFilters({ filters, onChange }: SourceFiltersProps)
         <Select
           value={filters.programme}
           onChange={(v) => set({ programme: v })}
-          options={[
-            { value: "all", label: "All programmes" },
-            ...PROGRAMMES.map((p) => ({ value: p, label: p })),
-          ]}
+          options={programmes}
         />
         <Select
           value={filters.owner}
           onChange={(v) => set({ owner: v })}
-          options={[
-            { value: "all", label: "All owners" },
-            ...state.users.map((u) => ({ value: u.id, label: u.name })),
-          ]}
+          options={owners}
         />
         <SearchInput
           value={filters.search}

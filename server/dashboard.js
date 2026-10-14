@@ -988,6 +988,14 @@ function myDayRouteFor(type, id, leadId = '') {
   return leadId || id ? `leads/${leadId || id}` : 'leads';
 }
 
+function myDayLeadIsStaleAtRisk(lead = {}, referenceDate = new Date()) {
+  if (['P0', 'P1'].includes(String(lead.priority || ''))) return false;
+  const createdAt = new Date(lead.created_at || '');
+  if (Number.isNaN(createdAt.getTime())) return false;
+  const thresholdDays = DASHBOARD_STAGE_THRESHOLDS[lead.stage] || 7;
+  return createdAt < new Date(referenceDate.getTime() - thresholdDays * 86400000);
+}
+
 function daysLabel(ms, unit = 'overdue by') {
   const hours = Math.max(0, Math.floor(ms / 3600000));
   if (hours < 24) return `${unit} ${hours || 1} hour${hours === 1 ? '' : 's'}`;
@@ -1027,7 +1035,7 @@ function loadDashboardMyDayLocal(db, user, options = {}) {
     return (event.attendees || []).some(attendee => activeLeadIds.has(String(attendee.lead_id || ''))) || String(event.owner_id || event.zoom_host_id || '') === ownerId;
   }).sort((a, b) => new Date(a.start_at || 0) - new Date(b.start_at || 0)).slice(0, 20);
   const atRiskLeads = activeLeads
-    .filter(lead => ['P0', 'P1'].includes(String(lead.priority || '')) || new Date(lead.created_at || 0) < new Date(Date.now() - (DASHBOARD_STAGE_THRESHOLDS[lead.stage] || 7) * 86400000))
+    .filter(lead => ['P0', 'P1'].includes(String(lead.priority || '')) || myDayLeadIsStaleAtRisk(lead, todayStart))
     .sort((a, b) => Number(['P0', 'P1'].includes(String(b.priority || ''))) - Number(['P0', 'P1'].includes(String(a.priority || ''))) || new Date(a.next_action_at || a.created_at || 0) - new Date(b.next_action_at || b.created_at || 0))
     .slice(0, 50);
   const now = Date.now();

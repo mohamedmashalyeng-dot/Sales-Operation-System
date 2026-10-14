@@ -658,6 +658,18 @@ function automaticEnrolledLearner(lead, now = new Date().toISOString()) {
   };
 }
 
+function leadIntakeName(lead, intake = null) {
+  return intake?.name ||
+    lead?.intake ||
+    lead?.intake_name ||
+    lead?.preferredIntake ||
+    lead?.preferred_intake ||
+    lead?.currentIntake ||
+    lead?.current_intake ||
+    lead?.intake_id ||
+    'Unassigned intake';
+}
+
 function automaticApplicationFromLead(appId, lead, user, now = new Date().toISOString()) {
   const learner = automaticEnrolledLearner(lead, now);
   return {
@@ -666,7 +678,7 @@ function automaticApplicationFromLead(appId, lead, user, now = new Date().toISOS
     first_name: lead.first_name,
     last_name: lead.last_name,
     programme: lead.programme,
-    intake: lead.intake || 'Next intake',
+    intake: leadIntakeName(lead),
     status: 'Enrolled',
     manager: user?.name || lead.owner || 'System',
     member: lead.first_name,
@@ -729,7 +741,7 @@ async function createApplicationFastDb(body, user) {
       first_name: lead.first_name,
       last_name: lead.last_name,
       programme: lead.programme,
-      intake: intake?.name || 'Next intake',
+      intake: leadIntakeName(lead, intake),
       status: alreadyEnrolled ? 'Enrolled' : 'In review',
       manager: user.name,
       member: lead.first_name,
@@ -1150,6 +1162,7 @@ exports.seedDocumentTemplatesFromDisk = seedDocumentTemplatesFromDisk;
 exports.applicationRequirements = applicationRequirements;
 exports.applicationLearnerFromBody = applicationLearnerFromBody;
 exports.isEnrolledStage = isEnrolledStage;
+exports.leadIntakeName = leadIntakeName;
 exports.automaticApplicationFromLead = automaticApplicationFromLead;
 exports.ensureApplicationForLeadFastDb = ensureApplicationForLeadFastDb;
 exports.createApplicationFastDb = createApplicationFastDb;

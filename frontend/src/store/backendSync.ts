@@ -56,6 +56,20 @@ export interface BackendIntegrationOverview {
   integrations: BackendIntegrationSummary[];
 }
 
+export type BackendWorkspaceSection =
+  | "leads"
+  | "tasks"
+  | "applications"
+  | "events"
+  | "meetings"
+  | "calls";
+
+interface BackendWorkspaceLoadOptions {
+  throwOnFailure?: boolean;
+  fast?: boolean;
+  sections?: BackendWorkspaceSection[];
+}
+
 interface BackendPage<T = AnyRecord> {
   items?: T[];
   leads?: T[];
@@ -77,20 +91,45 @@ export class BackendAuthRequiredError extends Error {
   }
 }
 
+export class BackendRequestTimeoutError extends Error {
+  constructor(path: string) {
+    super(`Backend is taking too long to respond (${path}). Check the database connection, then try again.`);
+    this.name = "BackendRequestTimeoutError";
+  }
+}
+
 export function isBackendAuthRequiredError(error: unknown): boolean {
   return error instanceof BackendAuthRequiredError;
 }
 
-async function api<T>(path: string, options: { signal?: AbortSignal } = {}): Promise<T> {
-  const response = await fetch(path, {
-    method: "GET",
-    credentials: "include",
-    headers: { Accept: "application/json" },
-    signal: options.signal,
-  });
-  if (response.status === 401) throw new BackendAuthRequiredError();
-  if (!response.ok) throw new Error(`Backend request failed: ${path}`);
-  return response.json() as Promise<T>;
+const BACKEND_REQUEST_TIMEOUT_MS = 15000;
+
+function backendAbortError(path: string): BackendRequestTimeoutError {
+  return new BackendRequestTimeoutError(path);
+}
+
+async function api<T>(path: string, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? BACKEND_REQUEST_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort();
+  options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  try {
+    const response = await fetch(path, {
+      method: "GET",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (response.status === 401) throw new BackendAuthRequiredError();
+    if (!response.ok) throw new Error(`Backend request failed: ${path}`);
+    return response.json() as Promise<T>;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw backendAbortError(path);
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 async function fetchBackendPage<T = AnyRecord>(path: string): Promise<BackendPage<T>> {
@@ -98,6 +137,8 @@ async function fetchBackendPage<T = AnyRecord>(path: string): Promise<BackendPag
 }
 
 const INTEGRATION_OVERVIEW_TIMEOUT_MS = 8000;
+const EVENT_DETAIL_PREFETCH_LIMIT = 8;
+const EVENT_DETAIL_PREFETCH_TIMEOUT_MS = 4000;
 let integrationOverviewRequest: Promise<BackendIntegrationOverview> | null = null;
 let integrationOverviewCache: BackendIntegrationOverview | null = null;
 
@@ -108,15 +149,12 @@ export function clearBackendIntegrationOverviewCache(): void {
 export function loadBackendIntegrationOverview(options: { force?: boolean } = {}): Promise<BackendIntegrationOverview> {
   if (!options.force && integrationOverviewCache) return Promise.resolve(integrationOverviewCache);
   if (integrationOverviewRequest) return integrationOverviewRequest;
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), INTEGRATION_OVERVIEW_TIMEOUT_MS);
   integrationOverviewRequest = api<BackendIntegrationOverview>("/api/integrations/overview", {
-    signal: controller.signal,
+    timeoutMs: INTEGRATION_OVERVIEW_TIMEOUT_MS,
   }).then((overview) => {
     integrationOverviewCache = overview;
     return overview;
   }).finally(() => {
-    window.clearTimeout(timeout);
     integrationOverviewRequest = null;
   });
   return integrationOverviewRequest;
@@ -245,6 +283,30 @@ function backendRoleId(user: AnyRecord, permissions: AnyRecord): WorkspaceState[
   return "manager";
 }
 
+function mapLeadIntake(lead: AnyRecord): string {
+  return txt(
+    lead.intake,
+    lead.intake_name,
+    lead.intakeName,
+    lead.intake_label,
+    lead.intakeLabel,
+    lead.preferred_intake,
+    lead.preferredIntake,
+    lead.current_intake,
+    lead.currentIntake,
+    lead.data?.intake,
+    lead.data?.intake_name,
+    lead.data?.intakeName,
+    lead.data?.preferred_intake,
+    lead.data?.preferredIntake,
+    lead.intake_id,
+    lead.intakeId,
+    lead.data?.intake_id,
+    lead.data?.intakeId,
+    "Unassigned intake",
+  );
+}
+
 function mapLead(lead: AnyRecord, users: User[]): Lead {
   const id = txt(lead.id, lead.lead_id, crypto.randomUUID());
   const first = txt(lead.first_name);
@@ -260,7 +322,7 @@ function mapLead(lead: AnyRecord, users: User[]): Lead {
     email: txt(lead.email),
     phone: txt(lead.phone),
     programme: txt(lead.programme, lead.programme_name, "Programme not identified"),
-    intake: txt(lead.intake, lead.intake_name, "Next intake"),
+    intake: mapLeadIntake(lead),
     source,
     ownerId,
     stage: toLeadStage(lead.stage),
@@ -339,7 +401,7 @@ function mapApplication(app: AnyRecord, users: User[]): Application {
     email: txt(app.email),
     phone: txt(app.phone),
     programme: txt(app.programme, "Programme not identified"),
-    intake: txt(app.intake, "Next intake"),
+    intake: txt(app.intake, app.intake_name, app.intake_id, "Unassigned intake"),
     status: toApplicationStatus(app.status),
     ownerId,
     submittedAt: createdAt,
@@ -491,14 +553,19 @@ function mapEvent(event: AnyRecord): CollegeEvent {
   };
 }
 
-async function mapEventsWithDetails(events: AnyRecord[]): Promise<CollegeEvent[]> {
+async function mapEventsWithDetails(events: AnyRecord[], options: { prefetchDetails?: boolean } = {}): Promise<CollegeEvent[]> {
+  const prefetchLimit = options.prefetchDetails ? EVENT_DETAIL_PREFETCH_LIMIT : 0;
+  const prefetchedEvents = events.slice(0, prefetchLimit);
+  const remainingEvents = events.slice(prefetchLimit);
   const detailed: AnyRecord[] = [];
-  for (let index = 0; index < events.length; index += 8) {
-    const batch = events.slice(index, index + 8);
+  for (let index = 0; index < prefetchedEvents.length; index += 8) {
+    const batch = prefetchedEvents.slice(index, index + 8);
     const results = await Promise.all(
       batch.map(async (event) => {
         try {
-          const detail = await api<{ event?: AnyRecord }>(`/api/events/${encodeURIComponent(txt(event.id))}`);
+          const detail = await api<{ event?: AnyRecord }>(`/api/events/${encodeURIComponent(txt(event.id))}`, {
+            timeoutMs: EVENT_DETAIL_PREFETCH_TIMEOUT_MS,
+          });
           return detail.event || event;
         } catch {
           return event;
@@ -507,7 +574,7 @@ async function mapEventsWithDetails(events: AnyRecord[]): Promise<CollegeEvent[]
     );
     detailed.push(...results);
   }
-  return detailed.map(mapEvent);
+  return [...detailed, ...remainingEvents].map(mapEvent);
 }
 
 function mapMeeting(meeting: AnyRecord, users: User[]): Meeting {
@@ -623,39 +690,43 @@ function pageItems<T = AnyRecord>(page: BackendPage<T>): T[] {
   return [];
 }
 
-async function loadBackendLeads(users: User[]): Promise<Lead[]> {
-  const page = await api<BackendPage>("/api/leads?limit=200&include_total=true");
+async function loadBackendLeads(users: User[], options: { fast?: boolean } = {}): Promise<Lead[]> {
+  const page = await api<BackendPage>(`/api/leads?limit=${options.fast ? 50 : 200}&include_total=true`);
   return pageItems(page).map((lead) => mapLead(lead, users));
 }
 
-async function loadBackendTasks(users: User[]): Promise<Task[]> {
-  const page = await api<BackendPage>("/api/tasks?status=all&limit=200&include_counts=true");
+async function loadBackendTasks(users: User[], options: { fast?: boolean } = {}): Promise<Task[]> {
+  const page = await api<BackendPage>(`/api/tasks?status=all&limit=${options.fast ? 50 : 200}&include_counts=true`);
   return pageItems(page).map((task) => mapTask(task, users));
 }
 
-async function loadBackendApplications(users: User[]): Promise<Application[]> {
-  const page = await api<BackendPage>("/api/applications?limit=200");
+async function loadBackendApplications(users: User[], options: { fast?: boolean } = {}): Promise<Application[]> {
+  const page = await api<BackendPage>(`/api/applications?limit=${options.fast ? 50 : 200}`);
   return pageItems(page).map((application) => mapApplication(application, users));
 }
 
-async function loadBackendEvents(): Promise<CollegeEvent[]> {
+async function loadBackendEvents(options: { fast?: boolean } = {}): Promise<CollegeEvent[]> {
   const events: AnyRecord[] = [];
   let cursor = "";
-  for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-    const page = await fetchBackendPage(`/api/events?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+  const maxPages = options.fast ? 1 : 20;
+  const limit = options.fast ? 50 : 100;
+  for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
+    const page = await fetchBackendPage(`/api/events?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
     const rows = pageItems(page);
     events.push(...rows);
     cursor = txt(page.next_cursor, page.nextCursor);
     if (!(page.has_more || page.hasMore) || !cursor) break;
   }
-  return mapEventsWithDetails(events);
+  return mapEventsWithDetails(events, { prefetchDetails: !options.fast });
 }
 
-async function loadBackendMeetings(users: User[]): Promise<Meeting[]> {
+async function loadBackendMeetings(users: User[], options: { fast?: boolean } = {}): Promise<Meeting[]> {
   const meetings: AnyRecord[] = [];
   let cursor = "";
-  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
-    const page = await api<BackendPage>(`/api/meetings?limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+  const maxPages = options.fast ? 1 : 10;
+  const limit = options.fast ? 50 : 200;
+  for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
+    const page = await api<BackendPage>(`/api/meetings?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
     meetings.push(...pageItems(page));
     cursor = txt(page.next_cursor, page.nextCursor);
     if (!(page.has_more || page.hasMore) || !cursor) break;
@@ -663,11 +734,13 @@ async function loadBackendMeetings(users: User[]): Promise<Meeting[]> {
   return meetings.map((meeting) => mapMeeting(meeting, users));
 }
 
-async function loadBackendCalls(users: User[]): Promise<Call[]> {
+async function loadBackendCalls(users: User[], options: { fast?: boolean } = {}): Promise<Call[]> {
   const calls: AnyRecord[] = [];
   let offset = 0;
-  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
-    const page = await api<BackendPage>(`/api/zoom/calls?limit=100&offset=${offset}`);
+  const maxPages = options.fast ? 1 : 10;
+  const limit = options.fast ? 50 : 100;
+  for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
+    const page = await api<BackendPage>(`/api/zoom/calls?limit=${limit}&offset=${offset}`);
     const rows = pageItems(page);
     calls.push(...rows);
     offset = Number(page.next_offset || offset + rows.length);
@@ -676,7 +749,24 @@ async function loadBackendCalls(users: User[]): Promise<Call[]> {
   return calls.map((call) => mapCall(call, users));
 }
 
-export async function loadBackendWorkspace(): Promise<BackendWorkspaceResult | null> {
+async function loadWorkspaceSection<T>(
+  label: string,
+  loader: () => Promise<T[]>,
+): Promise<T[]> {
+  try {
+    return await loader();
+  } catch (error) {
+    if (isBackendAuthRequiredError(error)) throw error;
+    console.warn(`[backend-sync] ${label} load failed; continuing with an empty section.`, error);
+    return [];
+  }
+}
+
+function shouldLoadSection(options: BackendWorkspaceLoadOptions, section: BackendWorkspaceSection): boolean {
+  return !options.sections || options.sections.includes(section);
+}
+
+export async function loadBackendWorkspace(options: BackendWorkspaceLoadOptions = {}): Promise<BackendWorkspaceResult | null> {
   try {
     const bootstrap = await api<AnyRecord>("/api/bootstrap");
     const seed = createSeedState();
@@ -685,12 +775,24 @@ export async function loadBackendWorkspace(): Promise<BackendWorkspaceResult | n
     ).map(mapUser);
     const workspaceUsers = users.length ? users : seed.users;
     const [leads, tasks, applications, events, meetings, calls] = await Promise.all([
-      loadBackendLeads(workspaceUsers),
-      loadBackendTasks(workspaceUsers),
-      loadBackendApplications(workspaceUsers),
-      loadBackendEvents(),
-      loadBackendMeetings(workspaceUsers),
-      loadBackendCalls(workspaceUsers),
+      shouldLoadSection(options, "leads")
+        ? loadWorkspaceSection("Leads", () => loadBackendLeads(workspaceUsers, { fast: options.fast }))
+        : Promise.resolve([]),
+      shouldLoadSection(options, "tasks")
+        ? loadWorkspaceSection("Tasks", () => loadBackendTasks(workspaceUsers, { fast: options.fast }))
+        : Promise.resolve([]),
+      shouldLoadSection(options, "applications")
+        ? loadWorkspaceSection("Applications", () => loadBackendApplications(workspaceUsers, { fast: options.fast }))
+        : Promise.resolve([]),
+      shouldLoadSection(options, "events")
+        ? loadWorkspaceSection("Events", () => loadBackendEvents({ fast: options.fast }))
+        : Promise.resolve([]),
+      shouldLoadSection(options, "meetings")
+        ? loadWorkspaceSection("Meetings", () => loadBackendMeetings(workspaceUsers, { fast: options.fast }))
+        : Promise.resolve([]),
+      shouldLoadSection(options, "calls")
+        ? loadWorkspaceSection("Calls", () => loadBackendCalls(workspaceUsers, { fast: options.fast }))
+        : Promise.resolve([]),
     ]);
 
     const state: WorkspaceState = {
@@ -720,6 +822,7 @@ export async function loadBackendWorkspace(): Promise<BackendWorkspaceResult | n
     return { state, loadedAt: new Date().toISOString(), integrationOverview: null };
   } catch (error) {
     if (isBackendAuthRequiredError(error)) throw error;
+    if (options.throwOnFailure) throw error;
     console.warn("[backend-sync] Backend workspace load failed; using empty local workspace.", error);
     return null;
   }

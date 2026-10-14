@@ -1,7 +1,6 @@
 import Button from "@/components/base/Button";
 import SearchInput from "@/components/base/SearchInput";
 import Select, { type SelectOption } from "@/components/base/Select";
-import { INTAKES, LEAD_SOURCES } from "@/config/crm";
 
 export interface TodayFilterState {
   range: string;
@@ -28,28 +27,22 @@ export const RANGE_OPTIONS: SelectOption[] = [
   { value: "quarter", label: "This quarter" },
 ];
 
-export const INTAKE_OPTIONS: SelectOption[] = [
-  { value: "all", label: "All intakes" },
-  ...INTAKES.map((i) => ({ value: i, label: i })),
-];
-
-export const SOURCE_OPTIONS: SelectOption[] = [
-  { value: "all", label: "All sources" },
-  ...LEAD_SOURCES.map((s) => ({ value: s, label: s })),
-];
-
 interface TodayFiltersProps {
   filters: TodayFilterState;
   onChange: (next: TodayFilterState) => void;
   programmeOptions: SelectOption[];
+  intakeOptions: SelectOption[];
   ownerOptions: SelectOption[];
+  sourceOptions: SelectOption[];
 }
 
 export default function TodayFilters({
   filters,
   onChange,
   programmeOptions,
+  intakeOptions,
   ownerOptions,
+  sourceOptions,
 }: TodayFiltersProps) {
   const activeCount = [
     filters.programme !== "all",
@@ -90,7 +83,7 @@ export default function TodayFilters({
             className="w-full sm:w-[11rem]"
             value={filters.intake}
             onChange={(v) => update({ intake: v })}
-            options={INTAKE_OPTIONS}
+            options={intakeOptions}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -110,7 +103,7 @@ export default function TodayFilters({
             className="w-full sm:w-[12rem]"
             value={filters.source}
             onChange={(v) => update({ source: v })}
-            options={SOURCE_OPTIONS}
+            options={sourceOptions}
           />
         </div>
         <div className="flex-1 basis-full lg:basis-auto lg:min-w-[14rem]">

@@ -9,7 +9,6 @@ import SearchInput from "@/components/base/SearchInput";
 import Select from "@/components/base/Select";
 import Tabs, { type TabItem } from "@/components/base/Tabs";
 import { useToast } from "@/components/base/Toast";
-import { PRIORITIES, TASK_SOURCES } from "@/config/crm";
 import { usePermissions } from "@/hooks/usePermissions";
 import TaskCalendar from "@/pages/planner/components/TaskCalendar";
 import TaskFormModal from "@/pages/planner/components/TaskFormModal";
@@ -17,6 +16,7 @@ import TaskList from "@/pages/planner/components/TaskList";
 import { useWorkspace, type TaskInput } from "@/store/WorkspaceProvider";
 import type { Task } from "@/store/types";
 import { relativeTime } from "@/utils/format";
+import { ownerOptions, taskPriorityOptions, taskSourceOptions } from "@/utils/filterOptions";
 
 const PER_PAGE = 50;
 
@@ -64,6 +64,9 @@ export default function PlannerPage() {
     () => state.tasks.filter((t) => canSeeOwner(t.ownerId)),
     [state.tasks, canSeeOwner],
   );
+  const owners = useMemo(() => ownerOptions(state), [state]);
+  const priorities = useMemo(() => taskPriorityOptions({ ...state, tasks: visibleTasks }), [state, visibleTasks]);
+  const sources = useMemo(() => taskSourceOptions({ ...state, tasks: visibleTasks }), [state, visibleTasks]);
 
   useEffect(() => {
     const next = searchParams.get("view");
@@ -153,7 +156,7 @@ export default function PlannerPage() {
           setUpcomingPage(1);
           setCompletedPage(1);
         }}
-        options={[{ value: "all", label: "All owners" }, ...state.users.map((u) => ({ value: u.id, label: u.name }))]}
+        options={owners}
       />
       <Select
         label="Priority"
@@ -168,7 +171,7 @@ export default function PlannerPage() {
           setUpcomingPage(1);
           setCompletedPage(1);
         }}
-        options={[{ value: "all", label: "All priorities" }, ...PRIORITIES.map((p) => ({ value: p, label: p }))]}
+        options={priorities}
       />
       <Select
         label="Source"
@@ -183,7 +186,7 @@ export default function PlannerPage() {
           setUpcomingPage(1);
           setCompletedPage(1);
         }}
-        options={[{ value: "all", label: "All sources" }, ...TASK_SOURCES.map((s) => ({ value: s, label: s }))]}
+        options={sources}
       />
       <div className="flex-1 basis-full lg:basis-auto lg:min-w-[14rem]">
         <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-foreground-500">

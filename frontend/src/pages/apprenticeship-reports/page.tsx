@@ -10,6 +10,7 @@ import { OPEN_COMMERCIAL_STAGES } from "@/config/commercial";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { Lead, Touchpoint } from "@/store/types";
 import { computeApprenticeshipMetrics, groupCount, groupWithSecondary } from "@/utils/apprenticeship";
+import { leadProgrammeOptions, ownerOptions } from "@/utils/filterOptions";
 
 interface ReportSection {
   title: string;
@@ -28,6 +29,8 @@ export default function ApprenticeshipReportsPage() {
   const [programme, setProgramme] = useState("all");
   const [owner, setOwner] = useState("all");
   const [range, setRange] = useState("all");
+  const programmes = useMemo(() => leadProgrammeOptions(state), [state]);
+  const owners = useMemo(() => ownerOptions(state), [state]);
 
   const metrics = useMemo(() => computeApprenticeshipMetrics(state, canSeeOwner), [state, canSeeOwner]);
 
@@ -192,12 +195,12 @@ export default function ApprenticeshipReportsPage() {
           <Select
             value={programme}
             onChange={setProgramme}
-            options={[{ value: "all", label: "All programmes" }, ...Array.from(new Set(state.leads.map((l) => l.programme))).map((p) => ({ value: p, label: p }))]}
+            options={programmes}
           />
           <Select
             value={owner}
             onChange={setOwner}
-            options={[{ value: "all", label: "All owners" }, ...state.users.map((u) => ({ value: u.id, label: u.name }))]}
+            options={owners}
           />
         </div>
       </Card>

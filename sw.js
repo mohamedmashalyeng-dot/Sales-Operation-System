@@ -1,5 +1,5 @@
-const CACHE='kbc-shell-v20261006-cache-first';
-const SHELL=['/offline.html','/styles.css?v=20261006-cache-first','/app.js?v=20261006-cache-first','/developer.css?v=20260927-remove-phases-attribution','/assets/images/Kent%20Business%20College%20logo.svg','/assets/images/kent-logo-full-dark.png'];
+const CACHE='kbc-shell-v20261014-login-status';
+const SHELL=['/offline.html','/styles.css?v=20261014-login-status','/app.js?v=20261014-login-status','/developer.css?v=20260927-remove-phases-attribution','/assets/images/Kent%20Business%20College%20logo.svg','/assets/images/kent-logo-full-dark.png'];
 // Shell files are requested with ?v=<build>, so one URL always means one build: once a file is
 // in the cache it is answered from there and the network is not asked again. A changed file
 // therefore needs a new build id. Pages always come from the network, which is how a new build

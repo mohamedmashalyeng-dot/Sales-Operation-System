@@ -214,13 +214,12 @@ async function postgresQuery(sql, params = [], attempts = 2) {
 
 async function connectPostgresStorage(trace = null) {
   await getPostgresPool();
+  await Auth.ensurePostgresUserSchema(trace);
   if (String(process.env.SKIP_SCHEMA_SETUP || '').toLowerCase() === 'true') {
     await Leads.refreshLeadSoftDelete(trace, { force: true });
     postgresSchemaReady = true;
-    State.postgresUserSchemaReady = true;
     return State.postgresPool;
   }
-  await Auth.ensurePostgresUserSchema(trace);
   if (postgresSchemaReady) {
     postgresSchemaReady = true;
     return State.postgresPool;

@@ -1,18 +1,29 @@
+import { useState } from "react";
 import AttentionQueue from "@/pages/today/components/AttentionQueue";
 import InboxResponseTracking from "@/pages/today/components/InboxResponseTracking";
 import MyWorkToday from "@/pages/today/components/MyWorkToday";
 import RecentActivity from "@/pages/today/components/RecentActivity";
 import TeamOverview from "@/pages/today/components/TeamOverview";
-import { DEFAULT_FILTERS } from "@/pages/today/components/TodayFilters";
+import TodayFilters, { DEFAULT_FILTERS, type TodayFilterState } from "@/pages/today/components/TodayFilters";
 import { useTodayData } from "@/pages/today/useTodayData";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 
 export default function Today() {
   const { completeTask } = useWorkspace();
-  const data = useTodayData(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState<TodayFilterState>({ ...DEFAULT_FILTERS });
+  const data = useTodayData(filters);
 
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-5 px-3 py-4 md:px-5">
+      <TodayFilters
+        filters={filters}
+        onChange={setFilters}
+        programmeOptions={data.programmeOptions}
+        intakeOptions={data.intakeOptions}
+        ownerOptions={data.ownerOptions}
+        sourceOptions={data.sourceOptions}
+      />
+
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <MyWorkToday
           tasks={data.tasks}

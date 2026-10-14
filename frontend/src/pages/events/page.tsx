@@ -17,6 +17,7 @@ import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { CollegeEvent, EventRegistration, RegOutcome } from "@/store/types";
 import { formatDateTime } from "@/utils/format";
 import { fromInputDateTime } from "@/utils/crm";
+import { eventSourceOptions } from "@/utils/filterOptions";
 
 type EventsView = "dashboard" | "events" | "people" | "callbacks" | "reports" | "marketing";
 
@@ -58,6 +59,7 @@ export default function EventsPage() {
   const [callbackAt, setCallbackAt] = useState("");
 
   const canManage = can("events.manage");
+  const sourceOptions = useMemo(() => eventSourceOptions(state), [state]);
 
   const allowed = useMemo(() => {
     const now = Date.now();
@@ -237,6 +239,7 @@ export default function EventsPage() {
               setSource(value);
               setEventsPage(1);
             }}
+            sourceOptions={sourceOptions}
             search={search}
             onSearch={(value) => {
               setSearch(value);

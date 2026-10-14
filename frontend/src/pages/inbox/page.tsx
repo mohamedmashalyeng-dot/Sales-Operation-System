@@ -26,8 +26,10 @@ import {
   threadStatusCounts,
 } from "@/utils/inbox";
 import { relativeTime } from "@/utils/format";
+import { ownerOptions } from "@/utils/filterOptions";
 
 const PER_PAGE = 50;
+const INBOX_REQUEST_TIMEOUT_MS = 10000;
 
 type BackendEmailPage = {
   emails?: Record<string, any>[];
@@ -83,6 +85,15 @@ export default function InboxPage() {
   const backendInboxMode = Boolean(backendLoadedAt);
   const loadedBackendThreads = useMemo(() => Object.values(backendPages).flat(), [backendPages]);
   const sourceThreads = backendInboxMode ? loadedBackendThreads : state.threads;
+  const owners = useMemo(
+    () => [
+      { value: "all", label: "All owners" },
+      { value: "mine", label: "Assigned to me" },
+      { value: "unassigned", label: "Unassigned" },
+      ...ownerOptions(state).slice(1),
+    ],
+    [state],
+  );
 
   const loadEmailPage = useCallback(
     async (pageNumber: number, force = false) => {
@@ -97,13 +108,18 @@ export default function InboxPage() {
       if (emailRequestRef.current?.key === key) return;
       emailRequestRef.current?.controller.abort();
       const controller = new AbortController();
+      let timedOut = false;
+      const timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, INBOX_REQUEST_TIMEOUT_MS);
       emailRequestRef.current = { key, controller };
       setBackendEmailLoading(true);
       setBackendEmailError(null);
       try {
         const params = new URLSearchParams({
           limit: String(PER_PAGE),
-          include_total: pageNumber === 1 ? "true" : "false",
+          include_total: "false",
         });
         if (cursor) params.set("cursor", cursor);
         const response = await fetch(`/api/emails?${params.toString()}`, {
@@ -128,10 +144,13 @@ export default function InboxPage() {
       } catch (error) {
         if (!controller.signal.aborted) {
           setBackendEmailError(error instanceof Error ? error.message : "Could not load emails.");
+        } else if (timedOut && emailRequestRef.current?.key === key) {
+          setBackendEmailError("Inbox is taking too long to respond. Try again in a moment.");
         }
       } finally {
+        window.clearTimeout(timeout);
         if (emailRequestRef.current?.key === key) emailRequestRef.current = null;
-        if (!controller.signal.aborted) setBackendEmailLoading(false);
+        setBackendEmailLoading(false);
       }
     },
     [backendLoadedAt, state.users],
@@ -184,7 +203,8 @@ export default function InboxPage() {
   }, [sourceThreads, status, owner, label, search, sort, currentUserId, canSeeOwner]);
 
   const usingServerPaging = backendInboxMode && !search.trim() && status === "all" && owner === "all" && label === "all";
-  const serverEmailCount = backendTotal ?? (backendHasMore ? page * PER_PAGE + 1 : filtered.length);
+  const fallbackServerEmailCount = backendHasMore ? page * PER_PAGE + 1 : (page - 1) * PER_PAGE + (backendPages[page]?.length ?? 0);
+  const serverEmailCount = backendTotal ?? fallbackServerEmailCount;
   const pageCount = Math.max(1, Math.ceil((usingServerPaging ? serverEmailCount : filtered.length) / PER_PAGE));
   const currentPage = Math.min(page, pageCount);
   const currentBackendPage = backendPages[currentPage] ?? [];
@@ -300,12 +320,7 @@ export default function InboxPage() {
                 setOwner(v);
                 setPage(1);
               }}
-              options={[
-                { value: "all", label: "All owners" },
-                { value: "mine", label: "Assigned to me" },
-                { value: "unassigned", label: "Unassigned" },
-                ...state.users.map((u) => ({ value: u.id, label: u.name })),
-              ]}
+              options={owners}
             />
           </div>
           <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -408,7 +423,7 @@ export default function InboxPage() {
                 thread={thread}
                 selected={selected.includes(thread.id)}
                 onToggle={() => toggleSelect(thread.id)}
-                onOpen={() => navigate(`/inbox/${thread.id}`)}
+                onOpen={() => navigate(`/inbox/${encodeURIComponent(thread.id)}`)}
                 ownerName={userName(thread.ownerId)}
                 onStar={() => toggleThreadFlag(thread.id, "starred")}
               />

@@ -1,9 +1,15 @@
 import Button from "@/components/base/Button";
 import SearchInput from "@/components/base/SearchInput";
 import Select from "@/components/base/Select";
-import { LEAD_SOURCES, LEAD_STAGES, PRIORITIES, PROGRAMMES } from "@/config/crm";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 import { cn } from "@/utils/format";
+import {
+  leadPriorityOptions,
+  leadProgrammeOptions,
+  leadSourceOptions,
+  leadStageOptions,
+  ownerOptions,
+} from "@/utils/filterOptions";
 
 export interface LeadFilterState {
   search: string;
@@ -56,11 +62,15 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
     Boolean(filters.acquisitionTo),
   ].filter(Boolean).length;
 
-  const ownerOptions = [
+  const owners = [
     { value: "all", label: "All owners" },
     { value: "unassigned", label: "Unassigned" },
-    ...state.users.map((u) => ({ value: u.id, label: u.name })),
+    ...ownerOptions(state).slice(1),
   ];
+  const stages = leadStageOptions(state);
+  const programmes = leadProgrammeOptions(state);
+  const sources = leadSourceOptions(state);
+  const priorities = leadPriorityOptions(state);
 
   return (
     <div className="rounded-lg border border-background-200 bg-background-50 p-3 md:p-4">
@@ -106,10 +116,7 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
             className="w-full sm:w-[10rem]"
             value={filters.stage}
             onChange={(v) => update({ stage: v })}
-            options={[
-              { value: "all", label: "All stages" },
-              ...LEAD_STAGES.map((s) => ({ value: s, label: s })),
-            ]}
+            options={stages}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -119,10 +126,7 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
             className="w-full sm:w-[13rem]"
             value={filters.programme}
             onChange={(v) => update({ programme: v })}
-            options={[
-              { value: "all", label: "All programmes" },
-              ...PROGRAMMES.map((p) => ({ value: p, label: p })),
-            ]}
+            options={programmes}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -132,7 +136,7 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
             className="w-full sm:w-[11rem]"
             value={filters.owner}
             onChange={(v) => update({ owner: v })}
-            options={ownerOptions}
+            options={owners}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -142,10 +146,7 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
             className="w-full sm:w-[11rem]"
             value={filters.source}
             onChange={(v) => update({ source: v })}
-            options={[
-              { value: "all", label: "All sources" },
-              ...LEAD_SOURCES.map((s) => ({ value: s, label: s })),
-            ]}
+            options={sources}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -155,10 +156,7 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
             className="w-full sm:w-[10rem]"
             value={filters.priority}
             onChange={(v) => update({ priority: v })}
-            options={[
-              { value: "all", label: "All priorities" },
-              ...PRIORITIES.map((p) => ({ value: p, label: p })),
-            ]}
+            options={priorities}
           />
         </div>
         <div className="flex-1 basis-full lg:basis-auto lg:min-w-[14rem]">

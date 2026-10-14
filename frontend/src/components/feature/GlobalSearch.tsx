@@ -74,7 +74,7 @@ function useSearchIndex(): SearchEntry[] {
           id: `thread-${thread.id}`,
           title: thread.subject,
           subtitle: `${thread.senderName} · ${thread.senderEmail}`,
-          path: `/inbox/${thread.id}`,
+          path: `/inbox/${encodeURIComponent(thread.id)}`,
           icon: "ri-inbox-archive-line",
           category: "Email",
         });

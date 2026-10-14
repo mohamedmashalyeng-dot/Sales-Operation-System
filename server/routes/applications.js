@@ -204,7 +204,7 @@ async function applicationsWorkspaceRoutes(ctx) {
     lead.stage = alreadyEnrolled ? 'Enrolled' : 'Application Submitted';
     const documentsNeedSignature = Boolean(body.documents_need_signature);
     const evidenceVerified = alreadyEnrolled && !documentsNeedSignature;
-    const app = { id: appId, lead_id: lead.id, first_name: lead.first_name, last_name: lead.last_name, programme: lead.programme, intake: intake?.name || 'Next intake', status: alreadyEnrolled ? 'Enrolled' : 'In review', manager: user.name, member: lead.first_name, created_at: new Date().toISOString(), contract: evidenceVerified ? { status: 'Verified', note: 'Existing enrolled learner documents uploaded.' } : { status: 'Draft', note: documentsNeedSignature ? 'Documents uploaded for learner signature.' : undefined }, requirements: Applications.applicationRequirements(appId, body.evidence_files, { verified: evidenceVerified, reviewer: user.name }), learner };
+    const app = { id: appId, lead_id: lead.id, first_name: lead.first_name, last_name: lead.last_name, programme: lead.programme, intake: Applications.leadIntakeName(lead, intake), status: alreadyEnrolled ? 'Enrolled' : 'In review', manager: user.name, member: lead.first_name, created_at: new Date().toISOString(), contract: evidenceVerified ? { status: 'Verified', note: 'Existing enrolled learner documents uploaded.' } : { status: 'Draft', note: documentsNeedSignature ? 'Documents uploaded for learner signature.' : undefined }, requirements: Applications.applicationRequirements(appId, body.evidence_files, { verified: evidenceVerified, reviewer: user.name }), learner };
     db.applications.push(app);
     let attribution = null;
     if (alreadyEnrolled) {

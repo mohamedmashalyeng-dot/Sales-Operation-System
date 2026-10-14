@@ -248,8 +248,8 @@ let clientIndexes={emailTextByLead:new Map(),emailTextByAddress:new Map(),leadSe
 let eventMetricCache=new WeakMap();
 const LEAD_TABLE_LIMIT=250,INBOX_RENDER_LIMIT=300,PLANNER_LIST_LIMIT=120,PLANNER_DONE_LIMIT=30;
 const GMAIL_IMPORT_ENABLED=true;
-const labels={'my-day':'My Day',today:'Dashboard',notifications:'Notifications',documents:'Documents',monitoring:'Admin dashboard',analytics:'Analytics','data-quality':'Data Quality','integration-centre':'Integrations','admin-audit':'Admin & Audit',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoho:'Zoho CRM sync',automations:'Automations',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
-const navs=[['my-day','spark','My Day'],['today','home','Dashboard'],['notifications','bell','Notifications'],['documents','file','Documents'],['monitoring','chart','Admin'],['analytics','chart','Analytics'],['data-quality','shield','Data Quality'],['integration-centre','link','Integrations'],['admin-audit','shield','Admin & Audit'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['zoho','link','Zoho CRM'],['automations','settings','Automations']];
+const labels={'my-day':'My Day',today:'Dashboard',notifications:'Notifications',documents:'Documents',monitoring:'Admin dashboard',analytics:'Analytics','data-quality':'Data Quality','integration-centre':'Integrations','admin-audit':'Admin & Audit',leads:'Leads & pipeline',planner:'Your planner',inbox:'Email queue',applications:'Applications',events:'Events',zoom:'Zoom meetings',zoho:'Zoho CRM sync',automations:'Automations',settings:'Workspace settings',developer:'Developer panel',audit:'Audit trail',more:'Your workspace'};
+const navs=[['my-day','spark','My Day'],['today','home','Dashboard'],['notifications','bell','Notifications'],['documents','file','Documents'],['monitoring','chart','Admin'],['analytics','chart','Analytics'],['data-quality','shield','Data Quality'],['integration-centre','link','Integrations'],['admin-audit','shield','Admin & Audit'],['leads','users','Leads'],['planner','calendar','Planner'],['inbox','mail','Inbox'],['applications','file','Applications'],['events','calendar','Events'],['zoom','video','Zoom'],['zoho','link','Zoho CRM'],['automations','settings','Automations']];
 const localUserKey='pathway_local_user';
 const localDataKey='pathway_local_data';
 const seenPages=['leads','planner','inbox','applications','events','zoom'];
@@ -475,9 +475,12 @@ function localApplicationRequirements(appId,files=[],verified=false){
   return {id:`R-${appId}-${index+1}`,key,title,latest:file?.content_base64?{id:`ER-${appId}-${index+1}-${Date.now()}`,filename:file.filename||title,version:1,status:verified?'Verified':'Pending',reviewer:verified?data?.user?.name:null,content_base64:file.content_base64}:null};
  });
 }
+function localLeadIntakeName(lead,intake=null){
+ return intake?.name||lead?.intake||lead?.intake_name||lead?.preferredIntake||lead?.preferred_intake||lead?.currentIntake||lead?.current_intake||lead?.intake_id||'Unassigned intake';
+}
 function localAutomaticApplicationFromLead(d,lead,now=new Date().toISOString()){
  const appId=nextId('A',[d.applications]);
- return {id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:lead.intake||'Next intake',status:'Enrolled',manager:d.user?.name||lead.owner||'System',member:lead.first_name,created_at:now,contract:{status:'Verified',note:'Lead was already enrolled; application was created automatically.'},requirements:localApplicationRequirements(appId,[],true),learner:{external_reference:lead.learner_reference||lead.external_reference||`AUTO-${lead.id}`,enrolled_at:lead.enrolled_at||now,note:'Application created automatically because the lead is enrolled.'}};
+ return {id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:localLeadIntakeName(lead),status:'Enrolled',manager:d.user?.name||lead.owner||'System',member:lead.first_name,created_at:now,contract:{status:'Verified',note:'Lead was already enrolled; application was created automatically.'},requirements:localApplicationRequirements(appId,[],true),learner:{external_reference:lead.learner_reference||lead.external_reference||`AUTO-${lead.id}`,enrolled_at:lead.enrolled_at||now,note:'Application created automatically because the lead is enrolled.'}};
 }
 function ensureLocalApplicationForLead(d,lead,now=new Date().toISOString()){
  if(!lead?.id)return null;
@@ -606,7 +609,7 @@ async function localApi(path,body={},method='POST'){
   if(target==='Enrolled'&&!body.external_reference)throw new Error('Enrolment reference is required.');
   app.status=target;if(target==='Enrolled')app.learner={external_reference:body.external_reference,enrolled_at:now,note:body.note};lead.stage=target==='Eligible'?'Ready for Enrolment':target==='Not Eligible'?'Not Eligible':target==='Enrolled'?'Enrolled':'Eligibility';addAudit(d,'Application status changed','application',app.id,target);saveLocalData(d);return {ok:true,application:clientAdmissionSummary(app,d),lead,allowed_transitions:clientAllowedTransitions(app)};
  }
- if(clean==='/api/applications'){const lead=leadFor(d,body.lead_id),intake=d.intakes.find(i=>i.id===body.intake_id),already=Boolean(body.already_enrolled),documentsNeedSignature=Boolean(body.documents_need_signature),evidenceVerified=already&&!documentsNeedSignature,appId=nextId('A',[d.applications]),learner=already?{external_reference:body.learner_reference||'Already enrolled',enrolled_at:now,note:body.enrolment_note||'Added as an existing enrolled learner.'}:null;lead.stage=already?'Enrolled':'Application Submitted';const app={id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:intake?.name||'Next intake',status:already?'Enrolled':'In review',manager:d.user.name,member:lead.first_name,created_at:now,contract:evidenceVerified?{status:'Verified',note:'Existing enrolled learner documents uploaded.'}:{status:'Draft',note:documentsNeedSignature?'Documents uploaded for learner signature.':undefined},requirements:localApplicationRequirements(appId,body.evidence_files,evidenceVerified),learner};d.applications.push(app);let attribution=null;if(already){attribution={...lead,programme:app.programme,snapshot:{first_touch:lead.source_first_touch,lead_capture:lead.source_lead_capture,conversion_source:lead.source_lead_capture}};d.attribution.unshift(attribution);}addAudit(d,already?'Existing learner enrolled':'Application started','lead',lead.id);saveLocalData(d);return {ok:true,application:app,lead,attribution};}
+ if(clean==='/api/applications'){const lead=leadFor(d,body.lead_id),intake=d.intakes.find(i=>i.id===body.intake_id),already=Boolean(body.already_enrolled),documentsNeedSignature=Boolean(body.documents_need_signature),evidenceVerified=already&&!documentsNeedSignature,appId=nextId('A',[d.applications]),learner=already?{external_reference:body.learner_reference||'Already enrolled',enrolled_at:now,note:body.enrolment_note||'Added as an existing enrolled learner.'}:null;lead.stage=already?'Enrolled':'Application Submitted';const app={id:appId,lead_id:lead.id,first_name:lead.first_name,last_name:lead.last_name,programme:lead.programme,intake:localLeadIntakeName(lead,intake),status:already?'Enrolled':'In review',manager:d.user.name,member:lead.first_name,created_at:now,contract:evidenceVerified?{status:'Verified',note:'Existing enrolled learner documents uploaded.'}:{status:'Draft',note:documentsNeedSignature?'Documents uploaded for learner signature.':undefined},requirements:localApplicationRequirements(appId,body.evidence_files,evidenceVerified),learner};d.applications.push(app);let attribution=null;if(already){attribution={...lead,programme:app.programme,snapshot:{first_touch:lead.source_first_touch,lead_capture:lead.source_lead_capture,conversion_source:lead.source_lead_capture}};d.attribution.unshift(attribution);}addAudit(d,already?'Existing learner enrolled':'Application started','lead',lead.id);saveLocalData(d);return {ok:true,application:app,lead,attribution};}
  match=clean.match(/^\/api\/applications\/([^/]+)\/evidence$/);
  if(match){const app=applicationFor(d,match[1]),req=app.requirements.find(r=>r.id===body.requirement_id);if(!req)throw new Error('Requirement not found.');const version=(req.latest?.version||0)+1;req.latest={id:nextId('ER',[d.applications.flatMap(a=>a.requirements.map(r=>r.latest).filter(Boolean))]),filename:body.filename,version,status:'Pending',reviewer:null,content_base64:body.content_base64};if(!app.learner)app.status='In review';saveLocalData(d);return {ok:true,application:app};}
  match=clean.match(/^\/api\/evidence\/([^/]+)\/review$/);
@@ -650,7 +653,20 @@ async function api(path,body,method='POST',options={}){
    throw responseError;
   }
   diagMark('fetch-parsed',{requestId,path,duration_ms:Math.round((performance.now()-started)*10)/10});
-  if(!res.ok){if(res.status===401&&path!=='/api/login'){data=null;login();}const error=new Error(value.error||'Unable to complete the request.');error.status=res.status;throw error;}return value;
+  if(!res.ok){
+   if(res.status===401&&path!=='/api/login'){data=null;login();}
+   const fallback=path==='/api/login'
+    ? res.status===400?'Email and password are required.'
+     : res.status===401?'Email or password is incorrect.'
+      : res.status===429?'Too many sign-in attempts. Wait a moment and try again.'
+       : res.status>=500?'The server could not complete sign-in. Check the backend logs and environment configuration.'
+        : `Sign in failed with HTTP ${res.status}.`
+    : `Request failed with HTTP ${res.status}.`;
+   const message=value.error||value.message||fallback;
+   const error=new Error(message);
+   error.status=res.status;
+   throw error;
+  }return value;
  }catch(error){diagMark('fetch-error',{requestId,path,message:error.message,duration_ms:Math.round((performance.now()-started)*10)/10});if(error.name==='AbortError')throw error;if(canUseLocal(path)&&!error.status)return localApi(path,body,requestMethod);throw error;}
  finally{if(!silent)hideGlobalLoader();}
 }
@@ -1438,7 +1454,7 @@ function today(){
  const s=dashboardNumbers(),waitingEmails=s.unanswered||0,open=data.tasks.filter(t=>t.status==='Open'),focus=data.leads.filter(l=>!['Enrolled','Lost','Deferred','Not Eligible'].includes(l.stage)).sort((a,b)=>a.priority.localeCompare(b.priority)||b.score-a.score).slice(0,4);
  const greeting=new Date().getHours()<12?'Good morning':'Good afternoon';
  return heading(`${greeting}, ${data.user.name.split(' ')[0]}`,`${date(new Date(),{weekday:'long',day:'numeric',month:'long'})} · Let’s move the right opportunities forward.`,data.permissions.sales?`<button class="button primary" data-act="add-lead">${icon('plus')}New lead</button>`:'')+
- `<section class="hero"><div class="hero-copy"><div class="eyebrow">Every journey starts with a next step</div><h2>A clear path to the<br>next intake.</h2><p>${s.overdue?`${s.overdue} follow-ups need your attention. A timely conversation can make all the difference.`:'Your next opportunity is waiting. Keep every learner’s journey moving forward.'}</p><button class="button lime" data-go="planner">Open my planner ${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="hero-note">In your active pipeline<b>${s.active}</b>people taking their next step</div></section>
+ `<section class="hero"><div class="hero-copy"><div class="eyebrow">Every journey starts with a next step</div><h2>A clear path to<br>enrolment.</h2><p>${s.overdue?`${s.overdue} follow-ups need your attention. A timely conversation can make all the difference.`:'Your next opportunity is waiting. Keep every learner’s journey moving forward.'}</p><button class="button lime" data-go="planner">Open my planner ${icon('arrow')}</button></div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="hero-note">In your active pipeline<b>${s.active}</b>people taking their next step</div></section>
  <div class="stats-grid">${stat('Active leads',s.active,'Across your programmes','users')}${stat('Applications',s.applications,'In the admissions journey','file')}${stat('Enrolled learners',s.enrolled,'Confirmed learner records','shield')}${stat('Actions overdue',s.overdue,'Ready for your attention','clock')}</div>
  <div class="dashboard-grid"><div><section class="panel"><div class="panel-header"><div><h2>Your next conversations</h2><p>Prioritised by urgency and recorded intent</p></div><button class="text-button" data-go="leads">View all ${icon('arrow')}</button></div><div class="panel-body">${focus.length?focus.map(personRow).join(''):empty('Your pipeline is clear','Create a lead to start a new learner journey.')}</div></section>
  <section class="panel mt"><div class="panel-header"><div><h2>Where journeys begin</h2><p>Leads by first-touch source</p></div><button class="text-button" data-go="leads">Explore ${icon('arrow')}</button></div><div class="panel-body source-bars">${sourceBars()}<div class="info-strip">${icon('link')}One person. One connected journey.</div></div></section></div>
@@ -2467,7 +2483,7 @@ async function render(){
   if(current.startsWith('leads/'))html=await leadDetail360(current.split('/')[1]);
   else if(current.startsWith('applications/'))html=await applicationDetail(current.split('/')[1]);
   else{
-   const view=({'my-day':myDay,today:cockpitToday,notifications,documents,monitoring,analytics,'data-quality':dataQuality,'integration-centre':integrationCentre,'admin-audit':adminAuditCentre,leads,planner,inbox,applications,events,zoho:zohoPage,automations,settings,developer,audit:auditView,more}[current]||cockpitToday);
+   const view=({'my-day':myDay,today:cockpitToday,notifications,documents,monitoring,analytics,'data-quality':dataQuality,'integration-centre':integrationCentre,'admin-audit':adminAuditCentre,leads,planner,inbox,applications,events,zoom,zoho:zohoPage,automations,settings,developer,audit:auditView,more}[current]||cockpitToday);
    html=await view();
   }
   if(seenPages.includes(currentPage))markPageSeen(currentPage);
@@ -2517,7 +2533,7 @@ function applicationIntakeOptions(leadId=''){
  const programmeNames=new Map((data.programmes||[]).map(p=>[p.id,p.name]));
  const lead=(data.leads||[]).find(l=>l.id===leadId);
  const intakes=(data.intakes||[]).filter(i=>!lead?.programme_id||i.programme_id===lead.programme_id);
- if(!intakes.length)return [[DEFAULT_INTAKE_ID,'Next intake (not configured)']];
+ if(!intakes.length)return [[DEFAULT_INTAKE_ID,'Unassigned intake']];
  return intakes.map(i=>[i.id,`${i.name} · ${programmeNames.get(i.programme_id)||'Programme intake'}`]);
 }
 function applicationIntakeSelect(leadId=''){

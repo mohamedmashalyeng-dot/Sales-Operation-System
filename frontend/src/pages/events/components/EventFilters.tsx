@@ -1,6 +1,6 @@
 import Button from "@/components/base/Button";
 import SearchInput from "@/components/base/SearchInput";
-import Select from "@/components/base/Select";
+import Select, { type SelectOption } from "@/components/base/Select";
 
 export const DATE_FILTERS = [
   { value: "next-7", label: "Next 7 days" },
@@ -16,6 +16,7 @@ interface EventFiltersProps {
   onDateFilter: (value: string) => void;
   source: string;
   onSource: (value: string) => void;
+  sourceOptions: SelectOption[];
   search: string;
   onSearch: (value: string) => void;
 }
@@ -25,6 +26,7 @@ export default function EventFilters({
   onDateFilter,
   source,
   onSource,
+  sourceOptions,
   search,
   onSearch,
 }: EventFiltersProps) {
@@ -55,12 +57,7 @@ export default function EventFilters({
             className="w-full sm:w-[11rem]"
             value={source}
             onChange={onSource}
-            options={[
-              { value: "all", label: "All sources" },
-              { value: "Eventbrite", label: "Eventbrite" },
-              { value: "Zoom", label: "Zoom" },
-              { value: "Manual", label: "Manual" },
-            ]}
+            options={sourceOptions}
           />
         </div>
         <div className="flex-1 basis-full lg:basis-auto lg:min-w-[14rem]">

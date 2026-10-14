@@ -250,7 +250,7 @@ dialog:has(.email-reader){width:min(1100px,calc(100% - 36px))}
 .email-reader-head{align-items:flex-start}
 .email-reader-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;font-size:12px;color:var(--muted)}
 .email-reader-labels{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
-.email-reader-body{max-height:58vh;overflow:auto;white-space:pre-wrap;line-height:1.75;font-size:13px;color:var(--ink);background:#fbf8fd;border:1px solid var(--line);border-radius:8px;padding:18px 20px;overflow-wrap:anywhere}
+.email-reader-body{max-width:100%;max-height:58vh;overflow:auto;white-space:pre-wrap;line-height:1.75;font-size:13px;color:var(--ink);background:#fbf8fd;border:1px solid var(--line);border-radius:8px;padding:18px 20px;overflow-wrap:anywhere;word-break:break-word}
 .email-thread{display:grid;gap:16px}
 .email-thread-day{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}
 .email-thread-day-title{padding:10px 15px;background:#fbf8fd;border-bottom:1px solid var(--line);font-size:11px;font-weight:700;color:#6f35b2}

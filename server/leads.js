@@ -384,6 +384,8 @@ const LEAD_LIST_COLUMNS = `
   id, person_id, first_name, last_name, email, employer, phone, city,
   programme_id, programme, level, owner_id, owner, stage, priority,
   source_first_touch, source_lead_capture, contact_permission, created_at, next_action_at,
+  coalesce(data->>'intake', data->>'intake_name', data->>'preferredIntake', data->>'preferred_intake', data->>'currentIntake', data->>'current_intake') as intake,
+  data->>'intake_id' as intake_id,
   data->>'zoho_record_id' as zoho_record_id,
   data->>'zoho_module' as zoho_module,
   (

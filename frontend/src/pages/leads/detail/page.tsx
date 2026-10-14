@@ -401,7 +401,7 @@ export default function LeadDetailPage() {
                     <li key={thread.id}>
                       <button
                         type="button"
-                        onClick={() => navigate(`/inbox/${thread.id}`)}
+                        onClick={() => navigate(`/inbox/${encodeURIComponent(thread.id)}`)}
                         className="flex w-full cursor-pointer items-start gap-3 px-5 py-3.5 text-left hover:bg-background-100/70"
                       >
                         <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary-100 text-base text-primary-700">

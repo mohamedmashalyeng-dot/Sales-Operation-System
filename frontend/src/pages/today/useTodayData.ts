@@ -4,6 +4,7 @@ import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { Lead, Task, User } from "@/store/types";
 import { formatDate, relativeTime } from "@/utils/format";
 import { computeApprenticeshipMetrics } from "@/utils/apprenticeship";
+import { leadIntakeOptions, leadProgrammeOptions, leadSourceOptions, ownerOptions } from "@/utils/filterOptions";
 import type {
   ActivityItem,
   Appointment,
@@ -61,6 +62,8 @@ export interface TodayData {
   team: TeamRow[];
   ownerOptions: { value: string; label: string }[];
   programmeOptions: { value: string; label: string }[];
+  intakeOptions: { value: string; label: string }[];
+  sourceOptions: { value: string; label: string }[];
 }
 
 export function useTodayData(filters: TodayFilterValues): TodayData {
@@ -513,15 +516,10 @@ export function useTodayData(filters: TodayFilterValues): TodayData {
     }
 
     /* --------------------------------- options ------------------------------- */
-    const programmes = Array.from(new Set(state.leads.map((l) => l.programme))).sort();
-    const programmeOptions = [
-      { value: "all", label: "All programmes" },
-      ...programmes.map((p) => ({ value: p, label: p })),
-    ];
-    const ownerOptions = [
-      { value: "all", label: "All owners" },
-      ...state.users.map((u) => ({ value: u.id, label: u.name })),
-    ];
+    const programmes = leadProgrammeOptions(state);
+    const intakes = leadIntakeOptions(state);
+    const owners = ownerOptions(state);
+    const sources = leadSourceOptions(state);
 
     // getUser referenced to keep the dependency honest when host names resolve.
     void getUser;
@@ -535,8 +533,10 @@ export function useTodayData(filters: TodayFilterValues): TodayData {
       activity: activityItems,
       inboxTracking,
       team,
-      ownerOptions,
-      programmeOptions,
+      ownerOptions: owners,
+      programmeOptions: programmes,
+      intakeOptions: intakes,
+      sourceOptions: sources,
     };
   }, [state, filters, canSeeOwner, seesAll, can, userName, getUser]);
 }

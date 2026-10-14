@@ -1,6 +1,6 @@
 # Kent Business College Workspace Project Plan
 
-Date: 2026-10-12
+Date: 2026-10-14
 
 ## 1. Project Overview
 
@@ -10,12 +10,13 @@ The current application combines:
 
 - A Node.js backend started from `server.js`
 - Modular backend code in `server/` and `server/routes/`
-- A static production frontend built from `index.html`, `app.js`, `styles.css`, and `sw.js`
+- A Readdy-style frontend built from `frontend/` into `frontend/out/`, served by the Node backend
+- Legacy static frontend assets in `index.html`, `app.js`, `styles.css`, and `sw.js` for fallback/reference paths
 - Optional NestJS source modules in `src/`
 - Local JSON storage for development and PostgreSQL or MongoDB support for production
 - Integrations for Gmail, Zoom, Zoho, Eventbrite, and related admissions workflows
 
-Recent UI work migrated the existing KBC interface to a Readdy-inspired visual system while preserving the real KBC data, routes, authentication, and backend behavior.
+Recent UI work migrated the existing KBC interface to a Readdy-inspired visual system while preserving the real KBC data, routes, authentication, and backend behavior. As of 2026-10-14, the app has been verified locally and on Hostinger, with Zoho sync throttling tuned to reduce provider rate-limit retries.
 
 ## 2. Project Goals
 
@@ -32,10 +33,21 @@ Completed:
 
 - Existing static frontend identified as the production UI layer.
 - Readdy-inspired visual system applied to the current frontend.
+- Readdy frontend build verified with `npm run ui:build`.
 - Dashboard, sidebar, topbar, cards, filters, tables, forms, and modals restyled.
 - Real KBC navigation labels, routes, users, and API data preserved.
 - Frontend and service-worker cache keys updated after UI changes.
 - Security and frontend smoke tests documented as passing in the migration report.
+- Local server verified on `http://127.0.0.1:5500/` with `/api/health` returning healthy JSON.
+- Hostinger deployment confirmed working.
+- Zoho integration confirmed connected; sync rate-limit handling is now a monitoring item, not a deployment blocker.
+
+Operational notes:
+
+- Port `3000` may already be occupied locally; use `PORT=5500 npm start` when needed.
+- Hostinger should use `server.js` with `npm start`.
+- If Hostinger reads environment variables from its dashboard instead of `.env.hostinger`, mirror the Zoho throttling values from that file.
+- Zoho may show "retrying" for a short period after hitting provider limits; it should clear after the next successful retry.
 
 Key files:
 
@@ -47,6 +59,8 @@ Key files:
 - `app.js`
 - `styles.css`
 - `sw.js`
+- `frontend/`
+- `frontend/out/`
 - `sql/`
 - `scripts/`
 - `READDY_UI_MIGRATION_REPORT.md`
@@ -74,7 +88,7 @@ Key files:
 
 ## 5. Delivery Phases
 
-### Phase 1: Baseline Review
+### Phase 1: Baseline Review - Complete
 
 Objectives:
 
@@ -96,7 +110,7 @@ Acceptance criteria:
 - `/api/health` returns the expected storage mode.
 - Required environment variables are clearly listed.
 
-### Phase 2: UI Stabilization
+### Phase 2: UI Stabilization - Complete / Monitor
 
 Objectives:
 
@@ -117,7 +131,7 @@ Acceptance criteria:
 - Tables remain usable on small screens.
 - Existing routes and actions still work after style changes.
 
-### Phase 3: Data And Workflow Validation
+### Phase 3: Data And Workflow Validation - Complete / Ongoing
 
 Objectives:
 
@@ -138,7 +152,7 @@ Acceptance criteria:
 - Inbox and task workflows remain functional.
 - Admin monitoring pages show real operational data.
 
-### Phase 4: Integration Readiness
+### Phase 4: Integration Readiness - Complete / Monitor
 
 Objectives:
 
@@ -151,14 +165,16 @@ Deliverables:
 - Environment variable checklist
 - Integration setup notes
 - Health-check and diagnostic script results
+- Zoho sync throttling values documented in `.env.hostinger`
 
 Acceptance criteria:
 
 - Required OAuth callback URLs are configured.
 - Missing credentials fail clearly and safely.
 - Integration status is visible to admins.
+- Zoho remains connected and retries safely when the provider rate-limits requests.
 
-### Phase 5: Security And Reliability
+### Phase 5: Security And Reliability - Ongoing
 
 Objectives:
 
@@ -179,7 +195,7 @@ Acceptance criteria:
 - Production secrets are stored outside the repository.
 - `.env`, local databases, and `node_modules` are not deployed as public files.
 
-### Phase 6: Deployment
+### Phase 6: Deployment - Complete / Verify After Each Change
 
 Objectives:
 
@@ -194,6 +210,7 @@ Deliverables:
 - Production health-check result
 - Post-deployment smoke test result
 - Rollback notes
+- Restart/redeploy confirmation after environment changes
 
 Acceptance criteria:
 
@@ -212,6 +229,7 @@ Acceptance criteria:
 | Integration readiness | 1 day | Developer / Account owner |
 | Security and reliability | 0.5-1 day | Developer |
 | Deployment and verification | 0.5-1 day | Developer / Host owner |
+| Production monitoring and tuning | Ongoing | Developer / Admin user |
 
 ## 7. Testing Plan
 
@@ -222,6 +240,7 @@ node --check app.js
 node --check sw.js
 npm run test:frontend
 npm run test:security
+npm run ui:build
 ```
 
 Recommended manual checks:
@@ -237,6 +256,8 @@ Recommended manual checks:
 - Mobile navigation
 - Offline/service-worker refresh behavior
 - `/api/health`
+- Integration status panel
+- Zoho retry state after rate-limit cooldown
 
 ## 8. Deployment Checklist
 
@@ -248,6 +269,9 @@ Recommended manual checks:
 - Set `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD` before first start.
 - Configure production `DATABASE_URL`.
 - Configure OAuth redirect URLs for the production domain.
+- Build the Readdy frontend with `npm run ui:build` before packaging/deploying if the host does not build it automatically.
+- Ensure `frontend/out/` exists on the deployed app or configure the host pipeline to generate it.
+- Apply Zoho throttling values in Hostinger env settings when environment variables are managed in the Hostinger panel.
 - Confirm `.env`, `node_modules`, local database files, and backups are not uploaded publicly.
 - Visit `/api/health` after deployment.
 - Run a short smoke test on the live domain.
@@ -259,25 +283,26 @@ Recommended manual checks:
 | Missing production environment variables | App or integrations fail at runtime | Use the deployment checklist before launch |
 | OAuth redirect mismatch | Gmail, Zoom, or Eventbrite login fails | Match provider settings to production callback URLs |
 | Browser serves old cached frontend | Users see stale UI or service worker behavior | Bump cache keys after frontend changes |
+| `frontend/out/` missing on deploy | Hostinger serves fallback UI or missing assets | Run `npm run ui:build` or add a build step before deployment |
 | Local JSON storage used in production | Data reliability and scaling issues | Configure PostgreSQL or MongoDB before launch |
+| Zoho provider rate limits | Integration status shows retrying and sync progress slows | Keep Zoho concurrency at 1, use longer poll intervals, and allow retry cooldowns |
 | UI overrides drift over time | Inconsistent pages and hard-to-debug styling | Keep shared tokens and final scoped CSS layers documented |
 | Uploading private files | Security exposure | Never deploy `.env`, backups, or local database files publicly |
 
 ## 10. Open Questions
 
-- What is the final production domain?
-- Which production database provider will be used?
+- Is `sales.kentbusinesscollege.com` the final production domain for all OAuth callbacks?
+- Is the current production database provider final, or should a backup/branching process be documented?
 - Who owns each OAuth provider account?
 - Are there any additional admin roles or permission levels required?
 - What reporting metrics matter most for admissions leadership?
-- What is the expected launch date?
+- What monitoring cadence should be used for Zoho/Gmail/Zoom/Eventbrite sync health?
 
 ## 11. Next Actions
 
-1. Confirm production domain and hosting account.
-2. Confirm production database choice and connection string.
-3. Review environment variables against `.env.example` and `hostinger.env.example`.
-4. Run the frontend and security test suites.
-5. Complete a manual smoke test on the main workflows.
-6. Deploy to Hostinger.
-7. Verify `/api/health` and admin workflows on production.
+1. Mirror the latest `.env.hostinger` Zoho throttling values into Hostinger if the hosting panel owns env vars.
+2. Restart/redeploy Hostinger after env changes.
+3. Recheck the integration status panel after Zoho's retry cooldown.
+4. Run `npm run ui:build`, `npm run test:frontend`, and `npm run test:security` before the next release.
+5. Confirm `frontend/out/` is present or generated during deployment.
+6. Keep `/api/health`, admin login, dashboard, leads, inbox, applications, and integrations in the post-deploy smoke test.

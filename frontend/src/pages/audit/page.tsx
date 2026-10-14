@@ -36,7 +36,7 @@ function recordRoute(entry: AuditEntry): string | null {
     case "event":
       return `/events/${entry.entityId}`;
     case "thread":
-      return `/inbox/${entry.entityId}`;
+      return `/inbox/${encodeURIComponent(entry.entityId)}`;
     case "task":
       return "/planner";
     default:

@@ -330,7 +330,7 @@ export default function ApplicationDetailPage() {
                       <li key={thread.id}>
                         <button
                           type="button"
-                          onClick={() => navigate(`/inbox/${thread.id}`)}
+                          onClick={() => navigate(`/inbox/${encodeURIComponent(thread.id)}`)}
                           className="flex w-full cursor-pointer items-center gap-2 rounded-md border border-background-200 bg-background-50 px-3 py-2 text-left text-[12.5px] text-foreground-700 hover:border-primary-300"
                         >
                           <i className="ri-mail-line text-foreground-500"></i>

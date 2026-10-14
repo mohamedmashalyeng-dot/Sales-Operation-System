@@ -1,8 +1,12 @@
 import Button from "@/components/base/Button";
 import SearchInput from "@/components/base/SearchInput";
 import Select from "@/components/base/Select";
-import { APPLICATION_STATUSES, INTAKES, PROGRAMMES } from "@/config/crm";
 import { useWorkspace } from "@/store/WorkspaceProvider";
+import {
+  applicationIntakeOptions,
+  applicationProgrammeOptions,
+  applicationStatusOptions,
+} from "@/utils/filterOptions";
 
 export interface ApplicationFilterState {
   search: string;
@@ -33,6 +37,9 @@ export default function ApplicationFilters({
 }: ApplicationFiltersProps) {
   const { state } = useWorkspace();
   const update = (patch: Partial<ApplicationFilterState>) => onChange({ ...filters, ...patch });
+  const statusOptions = applicationStatusOptions(state);
+  const programmeOptions = applicationProgrammeOptions(state);
+  const intakeOptions = applicationIntakeOptions(state);
 
   const activeCount = [
     filters.status !== "all",
@@ -51,10 +58,7 @@ export default function ApplicationFilters({
             className="w-full sm:w-[11rem]"
             value={filters.status}
             onChange={(v) => update({ status: v })}
-            options={[
-              { value: "all", label: "All statuses" },
-              ...APPLICATION_STATUSES.map((s) => ({ value: s, label: s })),
-            ]}
+            options={statusOptions}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -64,10 +68,7 @@ export default function ApplicationFilters({
             className="w-full sm:w-[13rem]"
             value={filters.programme}
             onChange={(v) => update({ programme: v })}
-            options={[
-              { value: "all", label: "All programmes" },
-              ...PROGRAMMES.map((p) => ({ value: p, label: p })),
-            ]}
+            options={programmeOptions}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -77,7 +78,7 @@ export default function ApplicationFilters({
             className="w-full sm:w-[11rem]"
             value={filters.intake}
             onChange={(v) => update({ intake: v })}
-            options={[{ value: "all", label: "All intakes" }, ...INTAKES.map((i) => ({ value: i, label: i }))]}
+            options={intakeOptions}
           />
         </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
@@ -112,7 +113,7 @@ export default function ApplicationFilters({
         </Button>
       </div>
       <p className="mt-2 text-[11px] text-foreground-400">
-        {state.applications.length} applications in the shared demonstration dataset
+        {state.applications.length} applications in the active workspace dataset
       </p>
     </div>
   );

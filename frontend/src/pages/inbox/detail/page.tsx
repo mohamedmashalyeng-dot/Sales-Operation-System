@@ -12,12 +12,22 @@ import { labelById } from "@/config/crm";
 import { usePermissions } from "@/hooks/usePermissions";
 import LabelMultiSelect from "@/pages/inbox/components/LabelMultiSelect";
 import TaskFormModal from "@/pages/planner/components/TaskFormModal";
+import { mapBackendEmailThread } from "@/store/backendSync";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import type { EmailMessage } from "@/store/types";
+import type { EmailMessage, EmailThread } from "@/store/types";
 import { durationLabel, isAwaitingReply, isOverdue, responseDeadlineTone } from "@/utils/inbox";
 import { formatDateTime, relativeTime } from "@/utils/format";
 
 type BackendEmailRecord = Record<string, unknown>;
+const EMAIL_DETAIL_TIMEOUT_MS = 10000;
+
+function routeParamId(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 function text(...values: unknown[]): string {
   for (const value of values) {
@@ -80,7 +90,8 @@ function messageFromBackendEmail(
 }
 
 export default function ThreadDetailPage() {
-  const { id = "" } = useParams();
+  const { id: routeId = "" } = useParams();
+  const id = routeParamId(routeId);
   const navigate = useNavigate();
   const { toast } = useToast();
   const {
@@ -102,22 +113,40 @@ export default function ThreadDetailPage() {
 
   const [reply, setReply] = useState("");
   const [followUpOpen, setFollowUpOpen] = useState(false);
+  const [backendThread, setBackendThread] = useState<EmailThread | null>(null);
   const [detailMessages, setDetailMessages] = useState<EmailMessage[] | null>(null);
+  const [detailLoading, setDetailLoading] = useState(Boolean(id));
+  const [detailError, setDetailError] = useState<string | null>(null);
 
-  const thread = state.threads.find((t) => t.id === id);
+  const storedThread = state.threads.find((t) => t.id === id);
+  const thread = storedThread ?? (backendThread?.id === id ? backendThread : null);
+  const threadVisible = Boolean(thread && (storedThread ? canSeeOwner(thread.ownerId) : true));
 
   useEffect(() => {
-    if (thread && thread.readState === "unread" && canSeeOwner(thread.ownerId)) {
+    setReply("");
+    setBackendThread(null);
+    setDetailMessages(null);
+    setDetailError(null);
+    setDetailLoading(Boolean(id));
+  }, [id]);
+
+  useEffect(() => {
+    if (storedThread && storedThread.readState === "unread" && canSeeOwner(storedThread.ownerId)) {
       markThreadRead(id, "read");
     }
-    setReply("");
-    setDetailMessages(null);
-  }, [id, thread, markThreadRead, canSeeOwner]);
+  }, [id, storedThread, markThreadRead, canSeeOwner]);
 
   useEffect(() => {
-    if (!thread || !canSeeOwner(thread.ownerId)) return;
+    if (!id || (storedThread && !canSeeOwner(storedThread.ownerId))) return;
     const controller = new AbortController();
-    fetch(`/api/emails/${encodeURIComponent(thread.id)}`, {
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, EMAIL_DETAIL_TIMEOUT_MS);
+    setDetailLoading(true);
+    setDetailError(null);
+    fetch(`/api/emails/${encodeURIComponent(id)}`, {
       credentials: "include",
       headers: { Accept: "application/json" },
       signal: controller.signal,
@@ -129,39 +158,53 @@ export default function ThreadDetailPage() {
       .then((payload) => {
         const records = Array.isArray(payload.thread) && payload.thread.length ? payload.thread : payload.email ? [payload.email] : [];
         if (!records.length) return;
-        const owner = thread.ownerId ? state.users.find((user) => user.id === thread.ownerId) : undefined;
+        const baseThread = storedThread ?? mapBackendEmailThread(payload.email ?? records[0], state.users, state.leads);
+        if (!storedThread) setBackendThread(baseThread);
+        const owner = baseThread.ownerId ? state.users.find((user) => user.id === baseThread.ownerId) : undefined;
         const mapped = records.map((record) =>
           messageFromBackendEmail(record, {
-            id: thread.id,
-            senderName: thread.senderName,
-            senderEmail: thread.senderEmail,
+            id: baseThread.id,
+            senderName: baseThread.senderName,
+            senderEmail: baseThread.senderEmail,
             ownerName: owner?.name ?? currentUser.name,
             ownerEmail: owner?.email ?? currentUser.email,
-            receivedAt: thread.receivedAt,
-            preview: thread.preview,
+            receivedAt: baseThread.receivedAt,
+            preview: baseThread.preview,
           }),
         );
         const hasOutbound = mapped.some((message) => message.direction === "outbound");
         const responseNote = text(payload.email?.response_note);
         if (responseNote && !hasOutbound) {
           mapped.push({
-            id: `${thread.id}-reply`,
+            id: `${baseThread.id}-reply`,
             direction: "outbound",
             fromName: owner?.name ?? currentUser.name,
             fromEmail: owner?.email ?? currentUser.email,
-            toEmail: thread.senderEmail,
+            toEmail: baseThread.senderEmail,
             body: responseNote,
-            sentAt: isoDate(payload.email?.response_at, thread.receivedAt),
+            sentAt: isoDate(payload.email?.response_at, baseThread.receivedAt),
             authorId: owner?.id ?? currentUser.id,
           });
         }
         setDetailMessages(mapped);
       })
       .catch((error) => {
-        if ((error as Error).name !== "AbortError") setDetailMessages(null);
+        if ((error as Error).name !== "AbortError") {
+          setDetailMessages(null);
+          setDetailError(error instanceof Error ? error.message : "Email detail unavailable");
+        } else if (timedOut) {
+          setDetailError("Email detail is taking too long to respond. Try opening it again.");
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(timeout);
+        setDetailLoading(false);
       });
-    return () => controller.abort();
-  }, [canSeeOwner, currentUser.email, currentUser.id, currentUser.name, state.users, thread]);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [canSeeOwner, currentUser.email, currentUser.id, currentUser.name, id, state.leads, state.users, storedThread]);
 
   const messages = useMemo(
     () =>
@@ -171,14 +214,28 @@ export default function ThreadDetailPage() {
     [detailMessages, thread],
   );
 
-  if (!thread || !canSeeOwner(thread.ownerId)) {
+  if (!thread && detailLoading) {
+    return (
+      <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6">
+        <Card>
+          <EmptyState
+            icon="ri-loader-4-line"
+            title="Loading email"
+            message="Opening this message from the backend."
+          />
+        </Card>
+      </div>
+    );
+  }
+
+  if (!thread || !threadVisible) {
     return (
       <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6">
         <Card>
           <EmptyState
             icon="ri-lock-2-line"
             title="Email not available"
-            message="This thread does not exist, or your demo role cannot see it."
+            message={detailError || "This thread does not exist, or your demo role cannot see it."}
             action={
               <Button variant="outline" onClick={() => navigate("/inbox")}>
                 Back to Inbox
@@ -329,10 +386,10 @@ export default function ThreadDetailPage() {
                 return (
                   <div
                     key={message.id}
-                    className={`flex gap-3 ${outbound ? "flex-row-reverse" : ""}`}
+                    className={`flex min-w-0 max-w-full gap-3 ${outbound ? "flex-row-reverse" : ""}`}
                   >
                     <Avatar name={message.fromName} size="sm" />
-                    <div className={`max-w-[46rem] ${outbound ? "text-right" : ""}`}>
+                    <div className={`min-w-0 max-w-full flex-1 lg:max-w-[46rem] ${outbound ? "text-right" : ""}`}>
                       <div className={`flex items-center gap-2 ${outbound ? "justify-end" : ""}`}>
                         <span className="text-[12px] font-semibold text-foreground-900">
                           {outbound ? "You" : message.fromName}
@@ -342,11 +399,12 @@ export default function ThreadDetailPage() {
                         </span>
                       </div>
                       <div
-                        className={`mt-1.5 whitespace-pre-line rounded-lg border px-4 py-3 text-left text-[13px] leading-relaxed ${
+                        className={`mt-1.5 max-w-full whitespace-pre-wrap break-words rounded-lg border px-4 py-3 text-left text-[13px] leading-relaxed ${
                           outbound
                             ? "border-primary-200 bg-primary-50 text-foreground-800"
                             : "border-background-200 bg-background-100 text-foreground-700"
                         }`}
+                        style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
                       >
                         {messageBody || (
                           <span className="italic text-foreground-400">

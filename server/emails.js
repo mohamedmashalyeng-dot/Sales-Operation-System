@@ -394,7 +394,7 @@ function emailSummaryDataSql() {
       'trashed_at', coalesce(data->>'trashed_at', ''),
       'trash_reason', coalesce(data->>'trash_reason', ''),
       'is_read', coalesce(data->'is_read', 'true'::jsonb),
-      'snippet', left(coalesce(nullif(data->>'snippet', ''), nullif(body, ''), ''), 260)
+      'snippet', left(coalesce(nullif(data->>'snippet', ''), ''), 260)
     )
   `;
 }
@@ -783,20 +783,19 @@ function emailDetailThread(baseEmail, emails = []) {
   return [...unique.values()].sort((a, b) => new Date(a.received_at || a.created_at || 0) - new Date(b.received_at || b.created_at || 0));
 }
 
-async function loadEmailDetailThread(baseEmail) {
+async function loadEmailDetailThread(baseEmail, trace = null) {
   if (!State.postgresPool) return [baseEmail];
   const threadId = String(baseEmail.gmail_thread_id || '').trim();
-  const email = normalizeEmail(baseEmail.email || baseEmail.from);
-  const leadId = String(baseEmail.lead_id || '');
-  const candidates = await State.postgresPool.query(
+  if (!threadId) return [baseEmail];
+  const candidates = await Storage.timedPostgresQueryWithStatementTimeout(
+    trace,
+    'email_detail_thread',
     `select data from app_emails
-     where id = $1
-        or ($2 <> '' and data->>'gmail_thread_id' = $2)
-        or ($3 <> '' and lower(coalesce(email, data->>'email', data->>'from', '')) = lower($3))
-        or ($4 <> '' and coalesce(lead_id, data->>'lead_id', '') = $4)
+     where id = $1 or data->>'gmail_thread_id' = $2
      order by received_at asc nulls last, id
-     limit 200`,
-    [baseEmail.id, threadId, email, leadId]
+     limit 100`,
+    [baseEmail.id, threadId],
+    Config.EMAIL_LIST_STATEMENT_TIMEOUT_MS
   );
   return emailDetailThread(baseEmail, candidates.rows.map(item => item.data));
 }
@@ -832,14 +831,25 @@ async function hydrateEmailDetailBodiesWorkspace(db, thread) {
   if (changed) await Storage.saveDb(db);
 }
 
-async function loadEmailDetail(id) {
+async function loadEmailDetail(id, trace = null) {
   await Storage.ensureStorage();
   if (State.postgresPool) {
-    const result = await State.postgresPool.query(`select data from app_emails where id = $1 limit 1`, [id]);
+    const result = await Storage.timedPostgresQueryWithStatementTimeout(
+      trace,
+      'email_detail',
+      `select data from app_emails where id = $1 limit 1`,
+      [id],
+      Config.EMAIL_LIST_STATEMENT_TIMEOUT_MS
+    );
     if (!result.rows[0]) throw Http.statusError(404, 'Email not found.');
     const email = result.rows[0].data;
-    const thread = await loadEmailDetailThread(email);
-    await hydrateEmailDetailBodiesPostgres(thread);
+    let thread = [email];
+    try {
+      thread = await loadEmailDetailThread(email, trace);
+    } catch {
+      thread = [email];
+    }
+    void hydrateEmailDetailBodiesPostgres(thread).catch(() => {});
     const detailEmail = thread.find(item => item.id === email.id) || email;
     return { email: publicEmailDetail(detailEmail), thread: thread.map(publicEmailDetail) };
   }
@@ -847,7 +857,7 @@ async function loadEmailDetail(id) {
   const email = (db.emails || []).find(item => item.id === id);
   if (!email) throw Http.statusError(404, 'Email not found.');
   const thread = emailDetailThread(email, db.emails || []);
-  await hydrateEmailDetailBodiesWorkspace(db, thread);
+  void hydrateEmailDetailBodiesWorkspace(db, thread).catch(() => {});
   return { email: publicEmailDetail(email), thread: thread.map(publicEmailDetail) };
 }
 

@@ -18,6 +18,7 @@ import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { Lead } from "@/store/types";
 import { STAGE_TONES } from "@/utils/crm";
 import { formatDateTime, relativeTime } from "@/utils/format";
+import { ownerOptions } from "@/utils/filterOptions";
 import { buildIntegrationStatuses } from "@/utils/integrations";
 
 type ZohoView = "records" | "health" | "mapping" | "followups";
@@ -61,6 +62,7 @@ export default function ZohoPage() {
   const [zohoStoredError, setZohoStoredError] = useState("");
 
   const visibleLeads = state.leads.filter((l) => canSeeOwner(l.ownerId));
+  const owners = useMemo(() => ownerOptions(state), [state]);
   const zohoStatus = useMemo(
     () => buildIntegrationStatuses(state, backendLoadedAt, integrationOverview).find((item) => item.key === "zoho"),
     [state, backendLoadedAt, integrationOverview],
@@ -245,10 +247,7 @@ export default function ZohoPage() {
                   setOwner(value);
                   setRecordsPage(1);
                 }}
-                options={[
-                  { value: "all", label: "All owners" },
-                  ...state.users.map((u) => ({ value: u.id, label: u.name })),
-                ]}
+                options={owners}
               />
               <Select
                 label="Sync state"
