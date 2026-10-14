@@ -1,20 +1,13 @@
 'use strict';
 
 process.env.NEST_COMPAT_MODE = 'true';
-process.env.KBC_UI = 'legacy';
 
 const assert = require('assert');
 const { bootstrap, publicStaticFile, withoutIntegrationSecrets } = require('../server.js');
 
 const allowed = [
-  ['/', 'index.html'],
-  ['/index.html', 'index.html'],
-  ['/app.js', 'app.js'],
-  ['/styles.css', 'styles.css'],
-  ['/manifest.webmanifest', 'manifest.webmanifest'],
   ['/assets/images/kent-logo-full-dark.png', 'assets/images/kent-logo-full-dark.png'],
-  ['/assets/images/Kent%20Business%20College%20logo.svg', 'assets/images/Kent Business College logo.svg'],
-  ['/font.woff2', 'font.woff2']
+  ['/assets/images/Kent%20Business%20College%20logo.svg', 'assets/images/Kent Business College logo.svg']
 ];
 
 const blocked = [
@@ -183,7 +176,7 @@ assert.strictEqual(publicErrorMessage(new Error('Gmail SMTP is not configured.')
 });
 
 // Content-Security-Policy: own scripts only, inline scripts by hash with LF line endings.
-const policy = contentSecurityPolicy('<html><script src="/app.js"></script><script>\r\nrun();\r\n</script></html>');
+const policy = contentSecurityPolicy('<html><script src="/assets/index.js"></script><script>\r\nrun();\r\n</script></html>');
 const inlineHash = require('crypto').createHash('sha256').update('\nrun();\n').digest('base64');
 assert(policy.includes(`script-src 'self' 'sha256-${inlineHash}'`), 'inline scripts should be allowed by hash only');
 assert(!/script-src[^;]*unsafe-inline/.test(policy), 'inline scripts must not be allowed in general');
@@ -220,17 +213,19 @@ function staticResponse(url, headers = {}) {
   });
 }
 (async () => {
-  const script = await staticResponse('/app.js?v=any-build');
+  const outIndex = require('fs').readFileSync(require('path').join(__dirname, '..', 'frontend', 'out', 'index.html'), 'utf8');
+  const scriptPath = outIndex.match(/src="([^"]+\.js)"/)?.[1];
+  assert(scriptPath, 'Readdy build should include a script asset');
+  const script = await staticResponse(scriptPath);
   assert.strictEqual(script.status, 200);
-  assert.strictEqual(script.headers['cache-control'], 'public, max-age=604800', 'app.js asked for with a build id may be reused for a week');
-  assert.strictEqual((await staticResponse('/app.js')).headers['cache-control'], 'no-cache', 'app.js asked for without a build id should be checked every time');
-  assert(script.headers.etag && script.headers['last-modified'], 'app.js should carry an ETag and Last-Modified');
-  const unchanged = await staticResponse('/app.js?v=any-build', { 'if-none-match': script.headers.etag });
+  assert.strictEqual(script.headers['cache-control'], 'public, max-age=604800', 'Readdy assets may be reused for a week');
+  assert(script.headers.etag && script.headers['last-modified'], 'Readdy script should carry an ETag and Last-Modified');
+  const unchanged = await staticResponse(scriptPath, { 'if-none-match': script.headers.etag });
   assert.strictEqual(unchanged.status, 304, 'an unchanged file should be answered with 304');
   assert.strictEqual(unchanged.size, 0, 'a 304 answer should carry no body');
-  const changed = await staticResponse('/app.js?v=any-build', { 'if-none-match': 'W/"something-else"' });
+  const changed = await staticResponse(scriptPath, { 'if-none-match': 'W/"something-else"' });
   assert.strictEqual(changed.status, 200, 'a different ETag should get the file');
-  for (const page of ['/', '/sw.js', '/manifest.webmanifest']) {
+  for (const page of ['/', '/leads']) {
     assert.strictEqual((await staticResponse(page)).headers['cache-control'], 'no-cache', `${page} should be checked with the server every time`);
   }
   assert.strictEqual((await staticResponse('/assets/images/kent-logo-full-dark.png')).headers['cache-control'], 'public, max-age=604800', 'images may be reused for a week');

@@ -4,14 +4,15 @@ import { resolve } from "node:path";
 import AutoImport from "unplugin-auto-import/vite";
 // import { readdyJsxRuntimeProxyPlugin } from "./vite.jsx-runtime-proxy";
 
-const base = process.env.BASE_PATH || "/";
+const assetBase = process.env.ASSET_BASE_PATH || process.env.BASE_PATH || "/";
+const routerBase = process.env.ROUTER_BASE_PATH || "/";
 const isPreview = process.env.IS_PREVIEW ? true : false;
-const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:3000";
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:5500";
 //const proxyPlugins = isPreview ? [readdyJsxRuntimeProxyPlugin()] : [];
 // https://vite.dev/config/
 export default defineConfig({
   define: {
-    __BASE_PATH__: JSON.stringify(base),
+    __BASE_PATH__: JSON.stringify(routerBase),
     __IS_PREVIEW__: JSON.stringify(isPreview),
     __READDY_PROJECT_ID__: JSON.stringify(process.env.PROJECT_ID || ""),
     __READDY_VERSION_ID__: JSON.stringify(process.env.VERSION_ID || ""),
@@ -70,7 +71,7 @@ export default defineConfig({
       dts: true,
     }),
   ],
-  base,
+  base: assetBase,
   build: {
     sourcemap: true,
     outDir: 'out',

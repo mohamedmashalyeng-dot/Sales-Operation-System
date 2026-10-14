@@ -24,6 +24,10 @@ const Jobs = require('./server/jobs');
 const StaticFiles = require('./server/static-files');
 const Routes = require('./server/routes');
 
+process.on('unhandledRejection', error => {
+  console.error(`[unhandledRejection] ${error?.stack || error?.message || error}`);
+});
+
 const server = http.createServer(async (req, res) => {
   const startedAt = performance.now();
   req.__requestEntryAt = startedAt;
@@ -44,15 +48,33 @@ const server = http.createServer(async (req, res) => {
 if (process.env.NEST_COMPAT_MODE !== 'true') {
   server.listen(Config.PORT, Config.HOST, () => {
     console.log(`Kent Business College backend running on ${Config.HOST}:${Config.PORT}`);
-    Jobs.startAutoSync();
-    Monitoring.startMonitoringSnapshotScheduler();
-    setTimeout(() => Applications.runEnrolledLeadApplicationBackfill(), 5000);
+    const frontendBuild = StaticFiles.readdyBuildStatus();
+    if (frontendBuild.ok) {
+      console.log(`Readdy frontend build ready: ${frontendBuild.directory}`);
+    } else {
+      console.error(frontendBuild.message);
+    }
+    try {
+      Jobs.startAutoSync();
+    } catch (error) {
+      console.error(`Background auto sync startup failed: ${error.stack || error.message || error}`);
+    }
+    try {
+      Monitoring.startMonitoringSnapshotScheduler();
+    } catch (error) {
+      console.error(`Monitoring snapshot scheduler startup failed: ${error.stack || error.message || error}`);
+    }
+    setTimeout(() => {
+      Applications.runEnrolledLeadApplicationBackfill()
+        .catch(error => console.error(`Lead application backfill startup failed: ${error.stack || error.message || error}`));
+    }, 5000);
   });
 }
 
 module.exports = {
   handleApi: Routes.handleApi,
   serveStatic: StaticFiles.serveStatic,
+  readdyBuildStatus: StaticFiles.readdyBuildStatus,
   publicStaticFile: StaticFiles.publicStaticFile,
   withoutIntegrationSecrets: Workspace.withoutIntegrationSecrets,
   startAutoSync: Jobs.startAutoSync,

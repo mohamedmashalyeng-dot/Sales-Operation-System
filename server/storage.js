@@ -45,6 +45,22 @@ function storageMode() {
   return usesMongoStorage() ? 'mongodb' : 'json-file';
 }
 
+function postgresSslMode(value) {
+  try {
+    return String(new URL(value).searchParams.get('sslmode') || '').toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function postgresUsesLibpqCompatSsl(value) {
+  try {
+    return String(new URL(value).searchParams.get('uselibpqcompat') || '').toLowerCase() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function databaseSafeMetadata() {
   const meta = {
     storage: storageMode(),
@@ -61,7 +77,8 @@ function databaseSafeMetadata() {
     const parsed = new URL(Config.DATABASE_URL);
     const host = parsed.hostname;
     meta.host_kind = /neon\.tech$/i.test(host) ? 'neon' : host ? 'other' : '';
-    meta.ssl_configured = Config.DATABASE_URL.includes('sslmode=require') || parsed.searchParams.get('sslmode') === 'require';
+    const sslMode = postgresSslMode(Config.DATABASE_URL);
+    meta.ssl_configured = Boolean(sslMode && sslMode !== 'disable' && sslMode !== 'allow');
     meta.pooled_endpoint = /pooler|pool|pooled/i.test(host);
     const region = host.match(/\b([a-z]+-[a-z]+-\d)\b/i);
     meta.host_region_hint = region ? region[1] : '';
@@ -133,7 +150,7 @@ async function getPostgresPool() {
   }
   State.postgresPool = new Pool({
     connectionString: Config.DATABASE_URL,
-    ssl: Config.DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined,
+    ssl: postgresSslMode(Config.DATABASE_URL) === 'require' && !postgresUsesLibpqCompatSsl(Config.DATABASE_URL) ? { rejectUnauthorized: false } : undefined,
     max: Config.POSTGRES_POOL_MAX,
     idleTimeoutMillis: Config.POSTGRES_POOL_IDLE_TIMEOUT_MS,
     connectionTimeoutMillis: Config.POSTGRES_POOL_CONNECTION_TIMEOUT_MS,

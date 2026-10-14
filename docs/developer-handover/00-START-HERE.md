@@ -24,7 +24,7 @@ KBC Workspace is the Kent Business College admissions, CRM and operations worksp
 - Default frontend source of truth: `frontend/`.
 - Default frontend build output: `frontend/out/`.
 - Fallback legacy frontend: `index.html`, `app.js`, `styles.css`, `sw.js`.
-- Static serving mode: `server/static-files.js` serves `frontend/out` when present and `KBC_UI` is not `legacy`; otherwise it serves the root legacy files.
+- Static serving mode: `server/static-files.js` serves `frontend/out`; the root legacy UI is no longer a runtime fallback.
 - Production database expected by current docs/env: PostgreSQL/Neon through `DATABASE_URL`.
 - Other storage modes still supported in code: MongoDB and local JSON file.
 - Background jobs start from `Jobs.startAutoSync()` inside `server.js`, but only run when `BACKGROUND_JOBS_ENABLED=true`.

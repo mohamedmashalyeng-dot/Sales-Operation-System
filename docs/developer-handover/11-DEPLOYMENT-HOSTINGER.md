@@ -23,7 +23,7 @@ npm run ui:install
 npm run ui:build
 ```
 
-Confirm `frontend/out/index.html` exists. If it is missing, production will serve the legacy root frontend unless `KBC_UI` changes that behavior.
+Confirm `frontend/out/index.html` exists. If it is missing, production will return a Readdy build-missing error instead of serving the legacy root frontend.
 
 ## Environment Variables
 
@@ -47,7 +47,7 @@ Use `.env.example` and `hostinger.env.example` for names only. Do not copy real 
 Production should use PostgreSQL/Neon via:
 
 ```env
-DATABASE_URL=postgresql://...?...sslmode=require
+DATABASE_URL=postgresql://...?...sslmode=verify-full
 ```
 
 The code can create many tables automatically when `SKIP_SCHEMA_SETUP=false`. Keep it false during schema-changing deploys unless migrations are already applied. For production performance/concurrent index migrations, use the SQL files intentionally.
@@ -79,7 +79,7 @@ Zoom uses Server-to-Server OAuth credentials, not a browser callback.
 
 - Re-deploy the previous working package/build.
 - Preserve the production database; do not reset it.
-- If a frontend-only release broke, restore previous `frontend/out` or set `KBC_UI=legacy` temporarily if the legacy UI is acceptable.
+- If a frontend-only release broke, restore the previous `frontend/out` build or rebuild from the last known good frontend source.
 - If a sync release broke, disable jobs with `BACKGROUND_JOBS_ENABLED=false`, restart, inspect `integration_jobs`, then repair.
 
 ## Hostinger-Specific Notes

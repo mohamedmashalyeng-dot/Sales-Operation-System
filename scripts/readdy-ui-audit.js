@@ -36,6 +36,8 @@ assert(pkg.scripts['ui:build'], 'Root ui:build script missing');
 assert(pkg.scripts['ui:dev'], 'Root ui:dev script missing');
 assert(pkg.scripts['start:readdy'], 'Root start:readdy script missing');
 assert(pkg.scripts['test:readdy-ui'], 'Root test:readdy-ui script missing');
+assert(pkg.scripts['test:frontend'] === 'npm run test:readdy-ui', 'Root test:frontend should point at the Readdy UI audit');
+assert(!pkg.scripts['start:legacy'], 'Root start:legacy script should not remain after legacy frontend removal');
 
 for (const forbidden of ['firebase', '@supabase/supabase-js', '@stripe/react-stripe-js']) {
   assert(!uiPkg.dependencies?.[forbidden], `${forbidden} should not be carried into the Readdy migration shell`);
@@ -44,9 +46,8 @@ assert(uiPkg.dependencies?.remixicon, 'Remix Icon should be served from a fronte
 assert(!/cdnjs\.cloudflare\.com/i.test(indexHtml), 'Readdy index.html should not depend on CDN stylesheets');
 assert(main.includes("remixicon/fonts/remixicon.css"), 'Readdy main.tsx should import local Remix Icon CSS');
 
-assert(staticFiles.includes("process.env.KBC_UI || 'readdy'"), 'Static server should use Readdy as the default UI');
-assert(staticFiles.includes("KBC_UI_MODE !== 'legacy'"), 'Static server should keep a legacy UI opt-out');
-assert(pkg.scripts['start:legacy'] === 'node scripts/start-legacy-ui.js', 'Root start:legacy script should opt out of Readdy');
+assert(!staticFiles.includes('KBC_UI_MODE'), 'Static server should not keep a legacy UI opt-out');
+assert(staticFiles.includes('Readdy frontend build is missing'), 'Static server should fail clearly when the Readdy build is missing');
 assert(staticFiles.includes('frontend') && staticFiles.includes('out'), 'Static server must point at frontend/out for the Readdy build');
 assert(gitignore.includes('frontend/node_modules/') && gitignore.includes('frontend/out/'), 'Frontend build artifacts should be ignored');
 assert(provider.includes('loadBackendWorkspace'), 'WorkspaceProvider should hydrate the Readdy UI from backend APIs');

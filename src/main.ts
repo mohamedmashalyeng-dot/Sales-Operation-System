@@ -6,6 +6,10 @@ process.env.NEST_COMPAT_MODE = 'true';
 
 const legacy = require('../server.js');
 
+process.on('unhandledRejection', error => {
+  console.error(`[unhandledRejection] ${(error as any)?.stack || (error as any)?.message || error}`);
+});
+
 function requestPath(req: any): string {
   try {
     return new URL(req.url, `http://${req.headers.host}`).pathname;
@@ -39,7 +43,11 @@ async function bootstrap() {
   const port = Number(process.env.PORT || 3000);
   await app.listen(port, '0.0.0.0');
   console.log(`Kent Business College Nest backend running on port ${port}`);
-  legacy.startAutoSync();
+  try {
+    legacy.startAutoSync();
+  } catch (error: any) {
+    console.error(`Background auto sync startup failed: ${error?.stack || error?.message || error}`);
+  }
 }
 
 bootstrap();

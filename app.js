@@ -1,7 +1,8 @@
 'use strict';
-const APP_BUILD_ID='20261006-cache-first';
+const APP_BUILD_ID='20261014-login-status';
 window.KBC_APP_BUILD=APP_BUILD_ID;
 window.__KBC_DIAGNOSTICS__ ||= {build:APP_BUILD_ID,requests:[]};
+console.info(`[KBC] app build ${APP_BUILD_ID}`);
 const diagEnabled=()=>localStorage.getItem('KBC_DIAG')==='1'||new URLSearchParams(location.search).get('debug_frontend')==='true';
 function diagMark(event,meta={}){
  if(!diagEnabled())return;
@@ -2827,8 +2828,9 @@ async function login(){
  const stored=getStoredUser();
  if(data)return;
  const forgot=authMode==='forgot',notice=authNotice,emailValue=authEmail||stored?.email||'';
+ const debugBuild=new URLSearchParams(location.search).get('debug_frontend')==='true'?`<p class="small muted mono">Frontend build: ${esc(APP_BUILD_ID)}</p>`:'';
  authNotice='';
- $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p><form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':passwordRevealField('password','Password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
+ $('#app').innerHTML=`<main class="login"><div class="login-art">${logo()}<div><div class="hero-art" aria-hidden="true"><div class="arch"></div><div class="arch"></div><div class="arch"></div><div class="arch"></div></div><div class="eyebrow">Potential, in progress</div><h1>Every journey.<br>A way forward.</h1><p>Connect the conversations, people and opportunities that turn potential into a new chapter.</p></div><div class="small">SALES & ADMISSIONS, CONNECTED.</div></div><div class="login-form-wrap"><div class="login-form"><div class="mobile-logo">${logo()}</div><h2>${forgot?'Reset your password.':'Welcome back.'}</h2><p class="muted">${forgot?'Enter your registered email and we will send a reset link.':'Login with an invited workspace account.'}</p>${debugBuild}<form id="login-form">${field('email','Work email',emailValue,'email','autocomplete="username" placeholder="you@yourorganisation.com"')}${forgot?'':passwordRevealField('password','Password','autocomplete="current-password" placeholder="Enter your password" minlength="8"')}<div class="form-error" role="alert">${esc(notice)}</div><button class="button primary full" type="submit">${forgot?'Send reset link':'Login'} ${icon('arrow')}</button></form><p class="auth-helper">${forgot?'<button class="text-button" data-act="auth-mode" data-id="login">Back to Login</button>':'Need access? Ask the developer to invite your account. <button class="text-button" data-act="auth-mode" data-id="forgot">Forgot password?</button>'}</p></div></div></main>`;
  $('#login-form')?.querySelector('[data-password-toggle]')?.addEventListener('click',e=>{
   const button=e.currentTarget,input=button.closest('.password-input-wrap')?.querySelector('input');
   if(!input)return;
@@ -2856,7 +2858,10 @@ async function login(){
   }
   return;
  }catch(err){
-  form.querySelector('.form-error').textContent=err.message;
+  const message=err.message==='Unable to complete the request.'
+   ? `Cached app script detected. Reload the page and clear the service worker cache. Build: ${APP_BUILD_ID}`
+   : err.message;
+  form.querySelector('.form-error').textContent=message;
  }finally{setActionLoading(button,false);}});
 }
 function resetTokenFromRoute(){

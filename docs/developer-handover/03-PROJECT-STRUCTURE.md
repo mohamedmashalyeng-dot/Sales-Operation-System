@@ -8,7 +8,7 @@
 - `hostinger.env.example`: safe Hostinger-oriented env template.
 - `PROJECT_PLAN.md`: current planning/status notes.
 - `README.md`: shorter setup/deploy overview.
-- `index.html`, `app.js`, `styles.css`, `developer.css`, `sw.js`: legacy static frontend fallback.
+- `index.html`, `app.js`, `styles.css`, `developer.css`, `sw.js`: legacy static frontend artifacts; not used as the runtime fallback.
 - `manifest.webmanifest`, `offline.html`: legacy/static browser support files.
 
 ## `server/`

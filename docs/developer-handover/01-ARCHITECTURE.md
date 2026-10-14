@@ -39,7 +39,7 @@ flowchart TD
 
 ## Legacy But Still Required
 
-- `index.html`, `app.js`, `styles.css`, `developer.css`, `sw.js`: fallback UI when `frontend/out/index.html` is missing or `KBC_UI=legacy`.
+- `index.html`, `app.js`, `styles.css`, `developer.css`, `sw.js`: legacy artifacts; the runtime no longer falls back to them.
 - Workspace-loaded fallback route handlers in many `server/routes/*.js` files. The dispatcher reaches these after direct DB routes by calling `Storage.loadDb()`.
 - JSON file storage at `data/pathway-db.json`: local fallback when `DATABASE_URL` is absent.
 - MongoDB support: still in `server/storage.js`, but current production guidance uses PostgreSQL.

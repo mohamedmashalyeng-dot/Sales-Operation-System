@@ -8,11 +8,25 @@ const ROOT = path.join(__dirname, '..');
 
 loadEnv();
 
+function normalizePostgresConnectionString(value) {
+  if (!/^postgres(ql)?:\/\//i.test(value || '')) return value || '';
+  try {
+    const parsed = new URL(value);
+    const sslMode = String(parsed.searchParams.get('sslmode') || '').toLowerCase();
+    const libpqCompat = String(parsed.searchParams.get('uselibpqcompat') || '').toLowerCase() === 'true';
+    if (!libpqCompat && ['prefer', 'require', 'verify-ca'].includes(sslMode)) {
+      parsed.searchParams.set('sslmode', 'verify-full');
+      return parsed.toString();
+    }
+  } catch {}
+  return value || '';
+}
+
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_FILE = path.join(DATA_DIR, 'pathway-db.json');
-const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.MONGODB_URI || process.env.MONGO_URI || '';
+const DATABASE_URL = normalizePostgresConnectionString(process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.MONGODB_URI || process.env.MONGO_URI || '');
 const DATABASE_NAME = process.env.DATABASE_NAME || process.env.MONGODB_DB || 'pathway';
 const MONGO_STATE_COLLECTION = process.env.MONGO_STATE_COLLECTION || 'app_state';
 const POSTGRES_STATE_TABLE = process.env.POSTGRES_STATE_TABLE || 'app_state';

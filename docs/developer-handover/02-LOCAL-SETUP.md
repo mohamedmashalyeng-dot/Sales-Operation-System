@@ -24,7 +24,7 @@ Important local options:
 - `PORT`: server port. Defaults to `3000`.
 - `DATABASE_URL`: leave empty for local JSON storage; set a PostgreSQL URL to test production mode.
 - `BACKGROUND_JOBS_ENABLED`: use `false` locally unless intentionally testing sync jobs.
-- `KBC_UI`: default is `readdy`; set `legacy` to force root `index.html/app.js/styles.css`.
+- `KBC_UI`: Readdy is the supported runtime UI; `legacy` no longer forces the root static frontend.
 - `KBC_READDY_OUT_DIR`: optional override for the frontend build output directory.
 - `VITE_API_PROXY_TARGET`: API target for the Vite dev server.
 

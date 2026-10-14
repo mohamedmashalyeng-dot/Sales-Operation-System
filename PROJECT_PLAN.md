@@ -283,7 +283,7 @@ Recommended manual checks:
 | Missing production environment variables | App or integrations fail at runtime | Use the deployment checklist before launch |
 | OAuth redirect mismatch | Gmail, Zoom, or Eventbrite login fails | Match provider settings to production callback URLs |
 | Browser serves old cached frontend | Users see stale UI or service worker behavior | Bump cache keys after frontend changes |
-| `frontend/out/` missing on deploy | Hostinger serves fallback UI or missing assets | Run `npm run ui:build` or add a build step before deployment |
+| `frontend/out/` missing on deploy | Hostinger cannot serve the Readdy UI | Run `npm run ui:build` or add a build step before deployment |
 | Local JSON storage used in production | Data reliability and scaling issues | Configure PostgreSQL or MongoDB before launch |
 | Zoho provider rate limits | Integration status shows retrying and sync progress slows | Keep Zoho concurrency at 1, use longer poll intervals, and allow retry cooldowns |
 | UI overrides drift over time | Inconsistent pages and hard-to-debug styling | Keep shared tokens and final scoped CSS layers documented |
