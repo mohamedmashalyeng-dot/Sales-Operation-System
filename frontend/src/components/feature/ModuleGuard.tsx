@@ -5,9 +5,8 @@ import { roleNavVisible } from "@/config/permissions";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 
 /**
- * Simulated route guard. Hides a module's pages from any workspace role whose
- * navigation does not include the module key, so restricted pages cannot be
- * reached by direct URL. Frontend-only — not real security.
+ * Navigation guard for the signed-in role. The API independently enforces
+ * account capabilities and record ownership.
  */
 export default function ModuleGuard({ navKey, children }: { navKey: string; children: ReactNode }) {
   const { role } = useWorkspace();
@@ -18,7 +17,7 @@ export default function ModuleGuard({ navKey, children }: { navKey: string; chil
           <EmptyState
             icon="ri-lock-2-line"
             title="Access restricted"
-            message="Your workspace role does not have access to this module. Switch roles from the profile menu to explore it."
+            message="Your account role does not have access to this module. Contact your workspace administrator if access is needed."
           />
         </Card>
       </div>

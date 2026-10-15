@@ -17,6 +17,25 @@ assert.equal(Documents.fileType('photo.jpeg'), 'image', 'image file type detecti
 const review = Documents.uploadSecurityReview('evil.exe', 'application/x-msdownload');
 assert.equal(review.executable_blocked, true, 'executable extension should be flagged');
 assert.equal(review.allowed_type, false, 'unsafe content type should be flagged');
+assert.equal(Documents.fileType('documents.zip'), 'zip', 'ZIP file type detection failed');
+const zip = Documents.uploadSecurityReview('documents.zip', 'application/zip');
+assert.equal(zip.allowed_type, true, 'ZIP content type should be allowed');
+const preparedZip = require('../server/upload-security').validateEvidenceUpload({
+  filename: '../documents.zip',
+  content_type: 'application/zip',
+  content_base64: Buffer.from([0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0]).toString('base64')
+});
+assert.equal(preparedZip.filename, '.._documents.zip', 'ZIP upload filename should be sanitized before storage');
+assert.equal(preparedZip.file_type, 'zip', 'validated ZIP upload should report a zip file type');
+assert.throws(
+  () => require('../server/upload-security').validateEvidenceUpload({
+    filename: 'fake.zip',
+    content_type: 'application/zip',
+    content_base64: Buffer.from('not a zip').toString('base64')
+  }),
+  /does not match/,
+  'ZIP uploads should be checked by signature'
+);
 
 const safe = Documents.safeDocument({ id: 'ER-1', filename: 'proof.pdf', content_base64: 'SECRET', lead_id: 'L-1' });
 assert(!JSON.stringify(safe).includes('SECRET'), 'document list must not include file content');

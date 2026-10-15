@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/utils/format";
+import { Spinner } from "@/components/base/LoadingState";
 
 export type ButtonVariant =
   | "primary"
@@ -39,6 +40,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   leftIcon?: ReactNode;
   rightIcon?: ReactNode;
   fullWidth?: boolean;
+  loading?: boolean;
 }
 
 export default function Button({
@@ -47,6 +49,7 @@ export default function Button({
   leftIcon,
   rightIcon,
   fullWidth,
+  loading = false,
   className,
   children,
   type = "button",
@@ -63,8 +66,10 @@ export default function Button({
         className,
       )}
       {...rest}
+      disabled={rest.disabled || loading}
+      aria-busy={loading || rest["aria-busy"] || undefined}
     >
-      {leftIcon ? (
+      {loading ? <Spinner size="sm" /> : leftIcon ? (
         <span className="flex h-4 w-4 items-center justify-center text-base leading-none">
           {leftIcon}
         </span>

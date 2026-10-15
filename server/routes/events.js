@@ -15,6 +15,13 @@ const NOT_HANDLED = require('./not-handled');
 async function eventsRoutes(ctx) {
   const { route, method, res, trace, req, url } = ctx;
   let lightweightMatch = null;
+  lightweightMatch = route.match(/^\/api\/events\/([^/]+)\/people$/);
+  if (lightweightMatch && method === 'GET') {
+    await Auth.currentSessionUser(req, trace);
+    return Http.sendJson(res, await Events.loadEventPeoplePage(decodeURIComponent(lightweightMatch[1]), {
+      limit: url.searchParams.get('limit'), offset: url.searchParams.get('offset')
+    }, trace), 200, {}, trace);
+  }
   lightweightMatch = route.match(/^\/api\/events\/([^/]+)$/);
   if (lightweightMatch && method === 'GET') {
     await Auth.currentSessionUser(req, trace);
@@ -26,6 +33,10 @@ async function eventsRoutes(ctx) {
       limit: url.searchParams.get('limit'),
       cursor: url.searchParams.get('cursor'),
       upcoming: url.searchParams.get('upcoming'),
+      search: url.searchParams.get('search'),
+      source: url.searchParams.get('source'),
+      start_from: url.searchParams.get('start_from'),
+      start_to: url.searchParams.get('start_to'),
       include_total: url.searchParams.get('include_total')
     }, trace), 200, {}, trace);
   }

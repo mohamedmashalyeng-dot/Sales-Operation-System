@@ -66,7 +66,7 @@ export interface ScenarioDef {
   };
 }
 
-export const SCENARIOS: ScenarioDef[] = [
+const ALL_SCENARIOS: ScenarioDef[] = [
   {
     id: "A",
     key: "scenario-a",
@@ -490,6 +490,10 @@ export const SCENARIOS: ScenarioDef[] = [
     related: { leadRoute: "/leads/L-2065", sourceRoute: "/sources?tab=conversion" },
   },
 ];
+
+// Walkthroughs for removed modules are no longer offered in the workspace.
+export const SCENARIOS = ALL_SCENARIOS.filter(scenario =>
+  !scenario.steps.some(step => step.route && /^\/(campaigns|future-intake|sources)(?:[/?]|$)/.test(step.route)));
 
 export function scenarioById(id: string): ScenarioDef | undefined {
   return SCENARIOS.find((s) => s.id === id || s.key === id);

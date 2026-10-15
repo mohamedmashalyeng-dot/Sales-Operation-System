@@ -123,7 +123,8 @@ export const ATTENDANCE_OUTCOMES: AttendanceOutcome[] = [
   "Did Not Attend",
 ];
 
-export const ATTENDANCE_TONES: Record<AttendanceOutcome, BadgeTone> = {
+export const ATTENDANCE_TONES: Record<AttendanceOutcome | "Waiting", BadgeTone> = {
+  Waiting: "warning",
   "Attendance Unknown": "neutral",
   Attended: "success",
   "Did Not Attend": "warning",
@@ -156,10 +157,12 @@ export type EventAudienceFilter =
   | "attended"
   | "did-not-attend"
   | "attendance-unknown"
+  | "waiting"
   | "follow-up-required";
 
 export const EVENT_AUDIENCE_FILTERS: { id: EventAudienceFilter; label: string; icon: string }[] = [
   { id: "all", label: "All", icon: "ri-list-check" },
+  { id: "waiting", label: "Waiting", icon: "ri-time-line" },
   { id: "invited-only", label: "Invited only", icon: "ri-mail-send-line" },
   { id: "registered", label: "Registered", icon: "ri-user-add-line" },
   { id: "cancelled", label: "Registration cancelled", icon: "ri-user-unfollow-line" },

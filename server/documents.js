@@ -9,36 +9,9 @@ const Auth = require('./auth');
 const Applications = require('./applications');
 const Leads = require('./leads');
 const Tasks = require('./tasks');
+const UploadSecurity = require('./upload-security');
 
-const ALLOWED_UPLOAD_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg']);
-const EXECUTABLE_EXTENSIONS = new Set(['.exe', '.bat', '.cmd', '.com', '.scr', '.ps1', '.js', '.vbs', '.msi', '.jar']);
-
-function safeFileName(name = '') {
-  return String(name || 'document')
-    .replace(/[\r\n"]/g, '_')
-    .replace(/[\\/]+/g, '_')
-    .slice(0, 180);
-}
-
-function fileType(filename = '') {
-  const ext = path.extname(String(filename || '')).toLowerCase();
-  if (ext === '.pdf') return 'pdf';
-  if (['.png', '.jpg', '.jpeg'].includes(ext)) return 'image';
-  return ext ? ext.slice(1) : 'unknown';
-}
-
-function uploadSecurityReview(filename = '', contentType = '') {
-  const clean = safeFileName(filename);
-  const ext = path.extname(clean).toLowerCase();
-  return {
-    filename: clean,
-    file_type: fileType(clean),
-    allowed_type: !contentType || ALLOWED_UPLOAD_TYPES.has(String(contentType).toLowerCase()),
-    executable_blocked: EXECUTABLE_EXTENSIONS.has(ext),
-    path_traversal_blocked: clean !== filename,
-    content_disposition: 'attachment'
-  };
-}
+const { ALLOWED_UPLOAD_TYPES, EXECUTABLE_EXTENSIONS, safeFileName, fileType, uploadSecurityReview } = UploadSecurity;
 
 function safeDocument(row = {}) {
   const filename = safeFileName(row.filename || row.title || 'document');

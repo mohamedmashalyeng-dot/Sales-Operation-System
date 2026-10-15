@@ -12,20 +12,13 @@ export interface TodayFilterState {
 }
 
 export const DEFAULT_FILTERS: TodayFilterState = {
-  range: "7d",
+  range: "month",
   programme: "all",
   intake: "all",
   owner: "all",
   source: "all",
   search: "",
 };
-
-export const RANGE_OPTIONS: SelectOption[] = [
-  { value: "today", label: "Today" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
-  { value: "quarter", label: "This quarter" },
-];
 
 interface TodayFiltersProps {
   filters: TodayFilterState;
@@ -56,16 +49,6 @@ export default function TodayFilters({
   return (
     <div className="rounded-lg border border-background-200 bg-background-50 p-3 md:p-4">
       <div className="flex flex-wrap items-end gap-2.5">
-        <div className="min-w-[9rem] flex-1 sm:flex-none">
-          <Select
-            label="Date range"
-            size="sm"
-            className="w-full sm:w-[10rem]"
-            value={filters.range}
-            onChange={(v) => update({ range: v })}
-            options={RANGE_OPTIONS}
-          />
-        </div>
         <div className="min-w-[9rem] flex-1 sm:flex-none">
           <Select
             label="Programme"
@@ -113,7 +96,7 @@ export default function TodayFilters({
           <SearchInput
             value={filters.search}
             onChange={(v) => update({ search: v })}
-            placeholder="Search leads, tasks, activity…"
+            placeholder="Search leads, applications…"
           />
         </div>
         <Button
@@ -121,7 +104,7 @@ export default function TodayFilters({
           size="sm"
           className="shrink-0"
           leftIcon={<i className="ri-refresh-line"></i>}
-          onClick={() => onChange({ ...DEFAULT_FILTERS })}
+          onClick={() => onChange({ ...DEFAULT_FILTERS, range: filters.range })}
           disabled={activeCount === 0 && !filters.search}
         >
           Reset{activeCount > 0 ? ` (${activeCount})` : ""}

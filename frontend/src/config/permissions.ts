@@ -1,11 +1,8 @@
 import type { BadgeTone } from "@/components/base/Badge";
 
 /**
- * Frontend-only, simulated permission model.
- *
- * IMPORTANT: This is NOT real security. It exists purely so the browser
- * workspace can show how the four operational roles behave differently. All
- * checks happen in the browser and can be bypassed by anyone with devtools.
+ * Navigation and action presentation for server-assigned account roles.
+ * The API independently enforces capabilities and record ownership.
  */
 
 export type RoleId = "sales" | "enrolment" | "manager" | "admin";
@@ -107,6 +104,7 @@ const SALES_OPS: Capability[] = [
   "leads.edit",
   "leads.assign",
   "leads.logCall",
+  "applications.view",
   "attribution.view",
   "attribution.manage",
   "inbox.view",
@@ -361,10 +359,14 @@ export function roleById(id: RoleId): RoleDefinition {
 }
 
 export function roleCan(roleId: RoleId, capability: Capability): boolean {
+  if (/^(campaigns|attribution|intake)\./.test(capability)) return false;
+  if ((roleId === "sales" || roleId === "enrolment") && ["leads.assign","inbox.assign","planner.assign","events.view","events.manage","events.callback","events.import","zoom.view","zoho.view","employer.manage"].includes(capability)) return false;
   return roleById(roleId).capabilities.includes(capability);
 }
 
 export function roleNavVisible(roleId: RoleId, navKey: string): boolean {
+  if (["campaigns", "attribution", "future-intake"].includes(navKey)) return false;
+  if ((roleId === "sales" || roleId === "enrolment") && ["events","zoom","zoho","scenarios"].includes(navKey)) return false;
   const keys = roleById(roleId).navKeys;
   return keys === "*" || keys.includes(navKey);
 }

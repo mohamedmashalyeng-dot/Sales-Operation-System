@@ -29,7 +29,7 @@ import { relativeTime } from "@/utils/format";
 import { ownerOptions } from "@/utils/filterOptions";
 
 const PER_PAGE = 50;
-const INBOX_REQUEST_TIMEOUT_MS = 10000;
+const INBOX_REQUEST_TIMEOUT_MS = 45000;
 
 type BackendEmailPage = {
   emails?: Record<string, any>[];
@@ -47,6 +47,7 @@ export default function InboxPage() {
     currentUserId,
     userName,
     backendLoadedAt,
+    backendLoading,
     composeThread,
     refreshBackendWorkspace,
     toggleThreadFlag,
@@ -82,7 +83,8 @@ export default function InboxPage() {
     }
   }, [searchParams]);
 
-  const backendInboxMode = Boolean(backendLoadedAt);
+  const waitingForBackend = backendLoading && !backendLoadedAt;
+  const backendInboxMode = Boolean(backendLoadedAt || waitingForBackend);
   const loadedBackendThreads = useMemo(() => Object.values(backendPages).flat(), [backendPages]);
   const sourceThreads = backendInboxMode ? loadedBackendThreads : state.threads;
   const owners = useMemo(
@@ -286,7 +288,7 @@ export default function InboxPage() {
             variant="outline"
             leftIcon={<i className={syncingGmail ? "ri-loader-4-line" : "ri-mail-download-line"}></i>}
             onClick={syncAllGmail}
-            disabled={syncingGmail}
+            loading={syncingGmail} disabled={syncingGmail}
           >
             {syncingGmail ? "Syncing..." : "Sync Gmail"}
           </Button>
@@ -411,9 +413,9 @@ export default function InboxPage() {
           />
         ) : paged.length === 0 ? (
           <EmptyState
-            icon={backendEmailLoading ? "ri-loader-4-line" : "ri-inbox-archive-line"}
-            title={backendEmailLoading ? "Loading emails" : "Nothing here"}
-            message={backendEmailLoading ? "Pulling this inbox page from the backend." : "No emails match this status and filter combination."}
+            icon={backendEmailLoading || waitingForBackend ? "ri-loader-4-line" : "ri-inbox-archive-line"}
+            title={backendEmailLoading || waitingForBackend ? "Loading emails" : "Nothing here"}
+            message={backendEmailLoading || waitingForBackend ? "Pulling this inbox page from the backend." : "No emails match this status and filter combination."}
           />
         ) : (
           <ul className="divide-y divide-background-200">

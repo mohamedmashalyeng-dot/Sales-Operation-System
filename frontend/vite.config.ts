@@ -7,7 +7,7 @@ import AutoImport from "unplugin-auto-import/vite";
 const assetBase = process.env.ASSET_BASE_PATH || process.env.BASE_PATH || "/";
 const routerBase = process.env.ROUTER_BASE_PATH || "/";
 const isPreview = process.env.IS_PREVIEW ? true : false;
-const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:5500";
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || "http://127.0.0.1:3000";
 //const proxyPlugins = isPreview ? [readdyJsxRuntimeProxyPlugin()] : [];
 // https://vite.dev/config/
 export default defineConfig({

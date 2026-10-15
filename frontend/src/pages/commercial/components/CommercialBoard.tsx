@@ -1,4 +1,5 @@
 import Badge from "@/components/base/Badge";
+import { Link } from "react-router-dom";
 import EmptyState from "@/components/base/EmptyState";
 import Select from "@/components/base/Select";
 import PermissionGate from "@/components/feature/PermissionGate";
@@ -15,9 +16,11 @@ export interface CommercialRow {
 interface CommercialBoardProps {
   rows: CommercialRow[];
   onStageChange: (opp: CommercialOpportunity, stage: CommercialStage) => void;
+  onEdit?: (opp: CommercialOpportunity) => void;
+  saving?: boolean;
 }
 
-export default function CommercialBoard({ rows, onStageChange }: CommercialBoardProps) {
+export default function CommercialBoard({ rows, onStageChange, onEdit, saving }: CommercialBoardProps) {
   const { userName } = useWorkspace();
 
   if (rows.length === 0) {
@@ -50,7 +53,7 @@ export default function CommercialBoard({ rows, onStageChange }: CommercialBoard
               ) : (
                 columnRows.map(({ opp, lead }) => (
                   <div key={opp.id} className="rounded-lg border border-background-200 bg-background-50 p-3">
-                    <p className="text-[13px] font-bold text-foreground-900">{lead?.name ?? opp.leadId}</p>
+                    <Link className="text-[13px] font-bold text-primary-700 hover:underline" to={`/leads/${encodeURIComponent(opp.leadId)}`}>{lead?.name ?? opp.leadId}</Link>
                     <p className="mt-0.5 text-[11px] text-foreground-500">{opp.suggestedProgramme}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       <Badge tone="secondary">{opp.optionType}</Badge>
@@ -66,12 +69,14 @@ export default function CommercialBoard({ rows, onStageChange }: CommercialBoard
                       <div className="mt-2.5 border-t border-background-200 pt-2.5">
                         <Select
                           size="sm"
+                          disabled={saving}
                           value={opp.stage}
                           onChange={(v) => onStageChange(opp, v as CommercialStage)}
                           options={COMMERCIAL_STAGES.map((s) => ({ value: s, label: s }))}
                         />
                       </div>
                     </PermissionGate>
+                    {onEdit ? <button type="button" disabled={saving} onClick={() => onEdit(opp)} className="mt-2 text-xs font-semibold text-primary-700 hover:underline">Edit opportunity</button> : null}
                   </div>
                 ))
               )}

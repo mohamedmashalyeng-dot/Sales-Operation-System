@@ -187,30 +187,6 @@ export default function ScenarioDetail({ scenario }: { scenario: ScenarioDef }) 
         />
       </div>
 
-      <Card>
-        <CardHeader
-          icon="ri-bar-chart-grouped-line"
-          iconTone="primary"
-          title="Expected reporting outcomes"
-          subtitle="How this journey is reflected in Sources & Attribution"
-        />
-        <CardBody className="space-y-2">
-          {(scenario.reportImpact ?? []).map((item) => (
-            <div key={item} className="flex items-start gap-2.5 text-[13px] text-foreground-700">
-              <span className="mt-0.5 flex h-4 w-4 items-center justify-center text-base text-primary-600">
-                <i className="ri-arrow-right-s-line"></i>
-              </span>
-              <span>{item}</span>
-            </div>
-          ))}
-          <Link
-            to={scenario.related.sourceRoute}
-            className="mt-1 inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md bg-primary-500 px-3 text-[12px] font-semibold text-background-50 hover:bg-primary-600"
-          >
-            <i className="ri-flow-chart"></i> Open Sources &amp; Attribution
-          </Link>
-        </CardBody>
-      </Card>
     </div>
   );
 }

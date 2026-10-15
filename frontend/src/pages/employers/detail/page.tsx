@@ -1,8 +1,17 @@
-import { useMemo } from "react";
+import LoadingState from "@/components/base/LoadingState";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
 import { Card, CardBody, CardHeader } from "@/components/base/Card";
+import EmptyState from "@/components/base/EmptyState";
+import Input from "@/components/base/Input";
+import Modal from "@/components/base/Modal";
+import { useToast } from "@/components/base/Toast";
+import { useBusinessData } from "@/hooks/useBusinessData";
+import { usePermissions } from "@/hooks/usePermissions";
+import { loadBackendEmployerApplications, saveBusinessRecord } from "@/store/backendSync";
+import type { Application } from "@/store/types";
 import { AGREEMENT_TONES, DAS_TONES } from "@/config/employer";
 import OnboardingPanel from "@/pages/employers/components/OnboardingPanel";
 import { useWorkspace } from "@/store/WorkspaceProvider";
@@ -12,24 +21,56 @@ export default function EmployerDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const { state, userName } = useWorkspace();
-  const name = decodeURIComponent(id);
+  const { data, loading, error, reload } = useBusinessData(true, id);
+  const { can } = usePermissions();
+  const { toast } = useToast();
+  const [editingContact, setEditingContact] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [contact, setContact] = useState({ contactName: "", email: "", phone: "" });
+  const normalize = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+  const employer = data?.employers.find(row => normalize(row.name) === normalize(id));
+  const name = employer?.name || id;
+  const [relatedApps, setRelatedApps] = useState<Application[]>([]);
+  const [appsState, setAppsState] = useState("loading");
+  useEffect(() => {
+    if (!employer?.name) return;
+    const controller = new AbortController();
+    setRelatedApps([]); setAppsState("loading");
+    void loadBackendEmployerApplications(employer.name, state.users, controller.signal).then(apps => {
+      if (!controller.signal.aborted) { setRelatedApps(apps); setAppsState("ready"); }
+    }).catch(() => { if (!controller.signal.aborted) setAppsState("error"); });
+    return () => controller.abort();
+  }, [employer?.name, state.users]);
 
-  const agreement = state.employerAgreements.find((a) => a.employerName === name);
-  const das = state.dasRecords.find((d) => d.employerName === name);
+  const agreement = state.employerAgreements.find((a) => normalize(a.employerName) === normalize(name));
+  const das = state.dasRecords.find((d) => normalize(d.employerName) === normalize(name));
 
   const relatedLeadIds = useMemo(() => {
-    const ids = new Set<string>();
+    const ids = new Set<string>(employer?.leadIds || []);
     if (agreement?.leadId) ids.add(agreement.leadId);
     if (das?.leadId) ids.add(das.leadId);
-    state.leads.filter((l) => l.name === name).forEach((l) => ids.add(l.id));
+    state.leads.filter((l) => normalize(l.employer || "") === normalize(name)).forEach((l) => ids.add(l.id));
     return ids;
-  }, [agreement, das, state.leads, name]);
+  }, [agreement, das, state.leads, name, employer]);
 
   const relatedLeads = state.leads.filter((l) => relatedLeadIds.has(l.id));
-  const relatedApps = state.applications.filter((a) => a.leadId && relatedLeadIds.has(a.leadId));
   const activity = state.activity
     .filter((a) => relatedLeadIds.has(a.entityId) || a.target.includes(name))
     .slice(0, 8);
+
+  if (loading || error || !employer) return <div className="mx-auto max-w-[1200px] p-6"><Card><CardBody>
+    {loading ? <LoadingState>Loading employer...</LoadingState> : error ? <><p role="alert">{error}</p><Button onClick={() => void reload()}>Try again</Button></>
+      : <EmptyState icon="ri-building-2-line" title="Employer not found" message="This employer is unavailable or you do not have access to it." action={<Button onClick={() => navigate('/employers')}>Back to employers</Button>} />}
+  </CardBody></Card></div>;
+
+  const saveContact = async () => {
+    setSaving(true);
+    try {
+      await saveBusinessRecord("employers", { name, ...contact }, employer.id);
+      setEditingContact(false); await reload(); toast({ title: "Employer contact saved", tone: "success" });
+    } catch (reason) { toast({ title: "Could not save contact", message: reason instanceof Error ? reason.message : "Please try again.", tone: "error" }); }
+    finally { setSaving(false); }
+  };
 
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-5 px-4 py-5 md:px-6 md:py-6">
@@ -48,8 +89,10 @@ export default function EmployerDetailPage() {
             <div>
               <h1 className="font-heading text-2xl font-extrabold text-foreground-950">{name}</h1>
               <p className="mt-1 text-[13px] text-foreground-500">
-                {agreement?.employerContact ?? relatedLeads[0]?.contactName ?? "No primary contact recorded"}
+                {employer.contactName || agreement?.employerContact || "No primary contact recorded"}
               </p>
+              {employer.email ? <a className="mt-1 block text-sm text-primary-700" href={`mailto:${employer.email}`}>{employer.email}</a> : null}
+              {employer.phone ? <p className="text-sm text-foreground-500">{employer.phone}</p> : null}
               <div className="mt-3 flex flex-wrap gap-2">
                 <Badge tone={AGREEMENT_TONES[(agreement?.status ?? "Not Sent") as keyof typeof AGREEMENT_TONES] ?? "neutral"}>
                   Agreement: {agreement?.status ?? "Not Sent"}
@@ -63,10 +106,12 @@ export default function EmployerDetailPage() {
         </div>
       </Card>
 
+      {can("employer.manage") ? <Button size="sm" variant="outline" onClick={() => { setContact({ contactName: employer.contactName, email: employer.email, phone: employer.phone }); setEditingContact(true); }}>Edit contact</Button> : null}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_20rem]">
         <OnboardingPanel
+          dataLoaded
           employerName={name}
-          employerContact={agreement?.employerContact ?? relatedLeads[0]?.contactName ?? ""}
+          employerContact={employer.contactName || agreement?.employerContact || ""}
           leadId={agreement?.leadId ?? das?.leadId ?? relatedLeads[0]?.id}
           applicationId={agreement?.applicationId}
         />
@@ -95,7 +140,9 @@ export default function EmployerDetailPage() {
               </div>
               <div>
                 <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-foreground-400">Applications</p>
-                {relatedApps.length === 0 ? (
+                {appsState === "loading" ? <LoadingState className="text-[12px] text-foreground-500">Loading linked applications...</LoadingState>
+                  : appsState === "error" ? <p role="alert" className="text-[12px] text-red-700">Applications could not be loaded. Reopen this employer to try again.</p>
+                    : relatedApps.length === 0 ? (
                   <p className="text-[12px] text-foreground-500">No linked applications.</p>
                 ) : (
                   <ul className="space-y-1.5">
@@ -144,6 +191,13 @@ export default function EmployerDetailPage() {
           </Button>
         </div>
       </div>
+      <Modal open={editingContact} onClose={() => { if (!saving) setEditingContact(false); }} title="Edit employer contact" footer={<><Button variant="outline" disabled={saving} onClick={() => setEditingContact(false)}>Cancel</Button><Button loading={saving} disabled={saving} onClick={() => void saveContact()}>{saving ? "Saving..." : "Save contact"}</Button></>}>
+        <div className="space-y-4">
+          <Input id="contact-name" label="Primary contact" value={contact.contactName} onChange={event => setContact({ ...contact, contactName: event.target.value })} />
+          <Input id="contact-email" label="Contact email" type="email" value={contact.email} onChange={event => setContact({ ...contact, email: event.target.value })} />
+          <Input id="contact-phone" label="Contact phone" type="tel" value={contact.phone} onChange={event => setContact({ ...contact, phone: event.target.value })} />
+        </div>
+      </Modal>
     </div>
   );
 }

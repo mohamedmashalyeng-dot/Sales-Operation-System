@@ -26,7 +26,7 @@ export default function CommercialReferralModal({ open, onClose, lead }: Commerc
   const users = state.users;
 
   const [fundingEligibilityOutcome, setFundingEligibilityOutcome] = useState<string>(
-    lead.eligibility?.decision ?? lead.eligibility?.status ?? "Not Eligible for Funding",
+    lead.eligibility?.decision ?? lead.eligibility?.status ?? "Information Required",
   );
   const [referralReason, setReferralReason] = useState<string>(COMMERCIAL_REFERRAL_REASONS[0]);
   const [programmeInterest, setProgrammeInterest] = useState(lead.programme);
@@ -38,11 +38,12 @@ export default function CommercialReferralModal({ open, onClose, lead }: Commerc
   const [commercialOwnerId, setCommercialOwnerId] = useState(lead.ownerId);
   const [nextFollowUpAt, setNextFollowUpAt] = useState("");
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setFundingEligibilityOutcome(
-      lead.eligibility?.decision ?? lead.eligibility?.status ?? "Not Eligible for Funding",
+      lead.eligibility?.decision ?? lead.eligibility?.status ?? "Information Required",
     );
     setReferralReason(COMMERCIAL_REFERRAL_REASONS[0]);
     setProgrammeInterest(lead.programme);
@@ -56,7 +57,7 @@ export default function CommercialReferralModal({ open, onClose, lead }: Commerc
     setNotes("");
   }, [open, lead]);
 
-  const submit = () => {
+  const submit = async () => {
     const input: CommercialInput = {
       leadId: lead.id,
       fundingEligibilityOutcome,
@@ -71,29 +72,30 @@ export default function CommercialReferralModal({ open, onClose, lead }: Commerc
       nextFollowUpAt: nextFollowUpAt ? new Date(nextFollowUpAt).toISOString() : new Date().toISOString(),
       notes: notes.trim(),
     };
-    referCommercial(input);
-    toast({
-      title: "Referred for commercial review",
-      message: "The original acquisition source and journey are unchanged.",
-      tone: "success",
-    });
-    onClose();
+    setSaving(true);
+    try {
+      await referCommercial(input);
+      toast({ title: "Referred for commercial review", tone: "success" });
+      onClose();
+    } catch (error) {
+      toast({ title: "Referral failed", message: error instanceof Error ? error.message : "Please try again.", tone: "error" });
+    } finally { setSaving(false); }
   };
 
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={() => { if (!saving) onClose(); }}
       size="lg"
       title="Refer for commercial review"
       description="Suitability and programme choice remain subject to staff review."
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={saving} onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="accent" leftIcon={<i className="ri-briefcase-4-line"></i>} onClick={submit}>
-            Refer to Commercial
+          <Button variant="accent" loading={saving} disabled={saving} leftIcon={<i className="ri-briefcase-4-line"></i>} onClick={submit}>
+            {saving ? "Saving..." : "Refer to Commercial"}
           </Button>
         </>
       }

@@ -1,6 +1,7 @@
 import { cn } from "@/utils/format";
-import kentLogoFull from "../../../../assets/images/kent-logo-full-dark.png";
-import kentLogoMark from "../../../../assets/images/Kent Business College logo.svg";
+
+const kentLogoFull = "/assets/images/kent-logo-full-dark.png";
+const kentLogoMark = "/assets/images/Kent%20Business%20College%20logo.svg";
 
 export default function Logo({ collapsed }: { collapsed?: boolean }) {
   return (

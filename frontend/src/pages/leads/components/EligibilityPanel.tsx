@@ -35,12 +35,20 @@ function seedResponses(lead: Lead): Record<string, EligibilityResponse> {
 
 export default function EligibilityPanel({ lead }: { lead: Lead }) {
   const { toast } = useToast();
-  const { state, userName, updateEligibility, recordEligibilityDecision, createTask } = useWorkspace();
+  const {
+    state,
+    userName,
+    updateEligibility,
+    recordEligibilityDecision,
+    createTask,
+    loadLeadDetail,
+  } = useWorkspace();
   const { can } = usePermissions();
 
   const [responses, setResponses] = useState<Record<string, EligibilityResponse>>(() =>
     seedResponses(lead),
   );
+  const [aiAnalysing, setAiAnalysing] = useState(false);
   const [decision, setDecision] = useState<"Verified Eligible" | "Not Eligible for Funding">(
     lead.eligibility?.decision ?? "Verified Eligible",
   );
@@ -55,6 +63,18 @@ export default function EligibilityPanel({ lead }: { lead: Lead }) {
   const list = useMemo(() => Object.values(responses), [responses]);
   const answered = list.filter((r) => r.answer !== "Unknown").length;
   const status = deriveScreeningStatus(list);
+  const recommendation = lead.eligibility?.aiRecommendation;
+  const verifiedDecision = lead.eligibility?.decision;
+  const supportedRecommendation = recommendation?.source === "openai"
+    && recommendation.confidence >= 0.8 && recommendation.evidence.length > 0
+    && recommendation.missing_information.length === 0;
+  const eligibilityAnswer = verifiedDecision === "Verified Eligible" ? "Eligible"
+    : verifiedDecision === "Not Eligible for Funding" ? "Not eligible"
+      : supportedRecommendation && recommendation.status === "Provisionally Eligible" ? "Likely eligible"
+        : supportedRecommendation && recommendation.status === "Not Eligible for Funding" ? "Likely not eligible"
+          : recommendation?.status === "Review Required" ? "Needs review" : "Not yet determined";
+  const answerTone = eligibilityAnswer === "Eligible" || eligibilityAnswer === "Likely eligible" ? "success"
+    : eligibilityAnswer === "Not eligible" || eligibilityAnswer === "Likely not eligible" ? "danger" : "warning";
   const missingEvidence = list.filter(
     (r) => r.answer === "Yes" && (r.evidence === "Not Requested" || r.evidence === "Requested"),
   ).length;
@@ -121,6 +141,57 @@ export default function EligibilityPanel({ lead }: { lead: Lead }) {
     toast({ title: "Evidence requested", message: "A Planner follow-up was created.", tone: "info" });
   };
 
+  const runAiAnalysis = async () => {
+    setAiAnalysing(true);
+    try {
+      const response = await fetch(`/api/leads/${encodeURIComponent(lead.id)}/ai-analysis`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ apply: true }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as {
+        analysis?: {
+          funding_status?: string;
+          contact_type?: string;
+          source?: string;
+          provider_warning?: string;
+        };
+        commercial_created?: boolean;
+        error?: string;
+      };
+      if (!response.ok) throw new Error(payload.error || "AI analysis failed.");
+      await loadLeadDetail(lead.id);
+      const usedFallback = Boolean(
+        payload.analysis?.source && payload.analysis.source !== "openai",
+      );
+      toast({
+        title: usedFallback
+          ? "Rules-based analysis recorded"
+          : payload.analysis?.funding_status === "Provisionally Eligible" ? "Likely eligible"
+            : payload.analysis?.funding_status === "Not Eligible for Funding" ? "Likely not eligible"
+              : payload.analysis?.funding_status || "AI analysis recorded",
+        message: usedFallback
+          ? payload.analysis?.provider_warning || "OpenAI is unavailable, so rules-based analysis was used."
+          : payload.commercial_created
+            ? "Commercial referral created from the AI recommendation."
+            : `Contact type: ${payload.analysis?.contact_type || "unknown"}.`,
+        tone: usedFallback || payload.analysis?.funding_status === "Not Eligible for Funding" ? "info" : "success",
+      });
+    } catch (error) {
+      toast({
+        title: "AI analysis failed",
+        message: error instanceof Error ? error.message : "Try again after checking the backend credentials.",
+        tone: "error",
+      });
+    } finally {
+      setAiAnalysing(false);
+    }
+  };
+
   const verification = lead.eligibility?.decision ? (
     <div className="rounded-lg border border-green-200 bg-green-50 p-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -147,8 +218,54 @@ export default function EligibilityPanel({ lead }: { lead: Lead }) {
       <Card>
         <CardHeader
           icon="ri-shield-check-line"
+          title="Is this lead eligible?"
+          subtitle={verifiedDecision ? "Recorded funding decision"
+            : recommendation?.source === "openai" ? "AI recommendation — awaiting verification"
+              : "Funding eligibility assessment"}
+        />
+        <CardBody className="space-y-4">
+          <div role="status" aria-live="polite" className="flex flex-wrap items-center gap-3">
+            <span data-testid="eligibility-answer"><Badge tone={answerTone}>{eligibilityAnswer}</Badge></span>
+            {recommendation && !verifiedDecision ? (
+              <span className="text-[12px] text-foreground-500">
+                {recommendation.source === "openai" ? "AI screening" : "Rules-based screening"}
+                {" · "}{formatDateTime(recommendation.analysed_at)}
+              </span>
+            ) : null}
+          </div>
+          <p className="text-[13px] text-foreground-700" data-testid="eligibility-explanation">
+            {verifiedDecision ? lead.eligibility?.decisionReasons || "A funding decision has been recorded."
+              : recommendation?.summary || "Run the AI eligibility check to see a recommendation, the reasons and any missing information."}
+          </p>
+          {!verifiedDecision && recommendation ? (
+            <>
+              <AssessmentList title="Reasons" items={recommendation.reasons} />
+              <AssessmentList title="Supporting evidence" items={recommendation.evidence} quote />
+              <AssessmentList title="Information needed to decide" items={recommendation.missing_information} />
+              {recommendation.provider_warning ? (
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-[12px] text-amber-800">{recommendation.provider_warning}</p>
+              ) : null}
+              <p className="text-[12px] text-foreground-500">
+                {supportedRecommendation ? "This recommendation needs an authorised reviewer to record the final funding decision."
+                  : "The available evidence is insufficient for a clear eligible or not eligible recommendation."}
+              </p>
+            </>
+          ) : null}
+          <PermissionGate capability="eligibility.screen">
+            <Button
+              size="sm" variant="outline" loading={aiAnalysing} disabled={aiAnalysing}
+              leftIcon={<i className="ri-sparkling-line"></i>} onClick={runAiAnalysis}
+            >
+              {aiAnalysing ? "Checking eligibility..." : "Check eligibility with AI"}
+            </Button>
+          </PermissionGate>
+        </CardBody>
+      </Card>
+      <Card>
+        <CardHeader
+          icon="ri-shield-check-line"
           iconTone="secondary"
-          title="Funding eligibility"
+          title="Manual screening progress"
           subtitle="Initial screening — configurable, not an authoritative funding decision"
         />
         <CardBody className="space-y-4">
@@ -209,6 +326,15 @@ export default function EligibilityPanel({ lead }: { lead: Lead }) {
                   onClick={escalate}
                 >
                   Escalate to Enrolment review
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  leftIcon={<i className="ri-sparkling-line"></i>}
+                  loading={aiAnalysing} disabled={aiAnalysing}
+                  onClick={runAiAnalysis}
+                >
+                  {aiAnalysing ? "Analysing..." : "AI analyse"}
                 </Button>
                 <Button size="sm" leftIcon={<i className="ri-save-line"></i>} onClick={save}>
                   Save screening
@@ -369,6 +495,18 @@ export default function EligibilityPanel({ lead }: { lead: Lead }) {
           </PermissionGate>
         </CardBody>
       </Card>
+    </div>
+  );
+}
+
+function AssessmentList({ title, items, quote = false }: { title: string; items: string[]; quote?: boolean }) {
+  if (!items.length) return null;
+  return (
+    <div>
+      <p className="text-[11px] font-bold uppercase tracking-wide text-foreground-500">{title}</p>
+      <ul className="mt-1 space-y-1 pl-4 text-[13px] text-foreground-700 list-disc">
+        {items.map((item, index) => <li key={`${index}-${item}`}>{quote ? <q>{item}</q> : item}</li>)}
+      </ul>
     </div>
   );
 }

@@ -41,7 +41,12 @@ async function accountRoutes(ctx) {
       throw Http.statusError(401, 'Email or password is incorrect.');
     }
     Auth.authThrottle.delete(loginLimits[0][0]);
+    if (!['admin','manager','sales','enrolment'].includes(Auth.canonicalWorkspaceRole(user.role))) throw Http.statusError(403, 'Your account has no active workspace role. Contact your workspace administrator.');
+    // A successful account switch revokes this browser's previous session. A
+    // failed password never signs out the account that was already signed in.
+    const previousSid = Http.parseCookies(req).sid;
     const sid = await Auth.createSession(user);
+    if (previousSid) await Auth.deleteSession(previousSid);
     Http.sendJson(res, { ok: true, user: Auth.publicUser(user) }, 200, { 'Set-Cookie': Auth.sessionCookie(req, sid) });
     Auth.recordPostgresLogin(user, req).catch(error => console.error(`Login audit failed: ${error.message || error}`));
     return;

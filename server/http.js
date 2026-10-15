@@ -46,12 +46,20 @@ function parseCookies(req) {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks = [];
+    let bytes = 0;
+    const webhook = String(req.url || '').split('?')[0] === '/api/integrations/call-evaluation/webhook';
+    const limit = webhook ? 256 * 1024 : 20 * 1024 * 1024;
     req.on('data', chunk => {
-      body += chunk;
-      if (body.length > 20 * 1024 * 1024) reject(statusError(413, 'Request is too large.'));
+      bytes += chunk.length;
+      if (bytes > limit) { reject(statusError(413, 'Request is too large.')); return; }
+      chunks.push(Buffer.from(chunk));
     });
     req.on('end', () => {
+      if (bytes > limit) return;
+      const raw = Buffer.concat(chunks);
+      if (webhook) req.rawBody = raw;
+      const body = raw.toString('utf8');
       if (!body) return resolve({});
       try {
         const parsed = JSON.parse(body);
@@ -61,6 +69,7 @@ function readBody(req) {
         reject(statusError(400, 'Invalid JSON body.'));
       }
     });
+    req.on('error', reject);
   });
 }
 

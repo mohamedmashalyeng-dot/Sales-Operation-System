@@ -355,6 +355,9 @@ function publicEmailDetail(email) {
   const detail = {
     ...publicEmailSummary(email),
     body: emailBodyText(email),
+    from_name: email.direction === 'outbound' ? email.from_name || email.owner || '' : email.from_name || emailDisplayName(email),
+    from_email: email.from_email || (email.direction !== 'outbound' ? email.from || email.email || '' : ''),
+    to_email: email.to_email || (email.direction === 'outbound' ? email.email || '' : ''),
     response_note: email.response_note || ''
   };
   delete detail.html;

@@ -236,17 +236,6 @@ export function useTodayData(filters: TodayFilterValues): TodayData {
         route: "/apprenticeship-reports",
       },
       {
-        id: "future-intake",
-        label: "Future intake pipeline",
-        value: appMetrics.futureIntakePipeline,
-        hint: appMetrics.futureIntakeOverdue
-          ? `${appMetrics.futureIntakeOverdue} follow-ups overdue`
-          : "Eligible learners deferred",
-        icon: "ri-calendar-schedule-line",
-        tone: "primary",
-        route: "/future-intake",
-      },
-      {
         id: "commercial",
         label: "Commercial pipeline",
         value: appMetrics.commercialOpen,
@@ -329,22 +318,6 @@ export function useTodayData(filters: TodayFilterValues): TodayData {
       });
     }
 
-    const overdueIntakes = state.futureIntakes
-      .map((fi) => ({ fi, lead: state.leads.find((l) => l.id === fi.leadId) }))
-      .filter(({ fi, lead }) => canSeeOwner(lead?.ownerId ?? fi.salesOwnerId))
-      .filter(({ fi }) => new Date(fi.nextFollowUpAt).getTime() < now);
-    if (overdueIntakes.length) {
-      attention.push({
-        id: "att-future-intake",
-        title: `${overdueIntakes.length} future intake follow-up${overdueIntakes.length > 1 ? "s" : ""} overdue`,
-        detail: `${overdueIntakes[0].lead?.name ?? overdueIntakes[0].fi.leadId} is due for re-engagement (${overdueIntakes[0].fi.preferredIntake}).`,
-        module: "Future Intake",
-        ageLabel: relativeTime(overdueIntakes[0].fi.nextFollowUpAt),
-        severity: "overdue",
-        action: "Open future intake",
-        route: "/future-intake",
-      });
-    }
     const eligibilityReviews = visibleLeads.filter(
       (l) => l.eligibility?.status === "Review Required" || l.eligibility?.status === "Information Required",
     );

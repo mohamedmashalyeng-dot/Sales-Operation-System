@@ -113,7 +113,7 @@ export default function ImportModal({ open, onClose }: { open: boolean; onClose:
                 variant={state === "done" ? "secondary" : state === "error" ? "danger" : "outline"}
                 size="sm"
                 className="shrink-0"
-                disabled={state === "running"}
+                loading={state === "running"} disabled={state === "running"}
                 leftIcon={
                   state === "running" ? (
                     <i className="ri-loader-4-line animate-spin"></i>

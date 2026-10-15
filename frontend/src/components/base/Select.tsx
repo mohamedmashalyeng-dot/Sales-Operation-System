@@ -17,6 +17,7 @@ export interface SelectProps {
   className?: string;
   size?: "sm" | "md";
   align?: "left" | "right";
+  disabled?: boolean;
 }
 
 export default function Select({
@@ -28,6 +29,7 @@ export default function Select({
   className,
   size = "md",
   align = "left",
+  disabled = false,
 }: SelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -44,6 +46,8 @@ export default function Select({
       ) : null}
       <button
         type="button"
+        disabled={disabled}
+        aria-label={label || placeholder}
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -51,6 +55,7 @@ export default function Select({
           "flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border border-background-300 bg-background-50 px-3 text-left text-foreground-800 transition-colors hover:border-background-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-200",
           size === "sm" ? "h-8 text-[13px]" : "h-9 text-sm",
           open && "border-primary-400 ring-2 ring-primary-200",
+          disabled && "cursor-not-allowed opacity-50",
         )}
       >
         <span className="flex min-w-0 items-center gap-2">
@@ -68,7 +73,7 @@ export default function Select({
         </span>
       </button>
 
-      {open ? (
+      {open && !disabled ? (
         <div
           role="listbox"
           className={cn(

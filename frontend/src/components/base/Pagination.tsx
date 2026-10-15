@@ -10,6 +10,8 @@ export interface PaginationProps {
 export default function Pagination({ page, pageCount, onPageChange, className }: PaginationProps) {
   if (pageCount <= 1) return null;
 
+  const jumpBack = Math.max(1, page - 10);
+  const jumpForward = Math.min(pageCount, page + 10);
   const pages: number[] = [];
   const start = Math.max(1, Math.min(page - 1, pageCount - 2));
   for (let i = start; i <= Math.min(pageCount, start + 2); i += 1) {
@@ -21,8 +23,19 @@ export default function Pagination({ page, pageCount, onPageChange, className }:
       <button
         type="button"
         disabled={page === 1}
+        onClick={() => onPageChange(jumpBack)}
+        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-background-300 text-foreground-600 transition-colors hover:bg-background-100 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Go back 10 pages"
+        title="Back 10 pages"
+      >
+        <i className="ri-arrow-left-double-line"></i>
+      </button>
+      <button
+        type="button"
+        disabled={page === 1}
         onClick={() => onPageChange(page - 1)}
         className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-background-300 text-foreground-600 transition-colors hover:bg-background-100 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Previous page"
       >
         <i className="ri-arrow-left-s-line"></i>
       </button>
@@ -46,8 +59,19 @@ export default function Pagination({ page, pageCount, onPageChange, className }:
         disabled={page === pageCount}
         onClick={() => onPageChange(page + 1)}
         className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-background-300 text-foreground-600 transition-colors hover:bg-background-100 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Next page"
       >
         <i className="ri-arrow-right-s-line"></i>
+      </button>
+      <button
+        type="button"
+        disabled={page === pageCount}
+        onClick={() => onPageChange(jumpForward)}
+        className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-background-300 text-foreground-600 transition-colors hover:bg-background-100 disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Go forward 10 pages"
+        title="Forward 10 pages"
+      >
+        <i className="ri-arrow-right-double-line"></i>
       </button>
     </nav>
   );

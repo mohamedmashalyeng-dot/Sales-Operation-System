@@ -5,10 +5,9 @@ import { Card, CardBody, CardHeader } from "@/components/base/Card";
 import MetricCard from "@/components/base/MetricCard";
 import Select from "@/components/base/Select";
 import { usePermissions } from "@/hooks/usePermissions";
-import { buildJourney } from "@/config/attribution";
 import { OPEN_COMMERCIAL_STAGES } from "@/config/commercial";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import type { Lead, Touchpoint } from "@/store/types";
+import type { Lead } from "@/store/types";
 import { computeApprenticeshipMetrics, groupCount, groupWithSecondary } from "@/utils/apprenticeship";
 import { leadProgrammeOptions, ownerOptions } from "@/utils/filterOptions";
 
@@ -44,21 +43,7 @@ export default function ApprenticeshipReportsPage() {
       .filter((l) => (days ? now - new Date(l.createdAt).getTime() <= days * 86400000 : true));
   }, [state.leads, canSeeOwner, programme, owner, range]);
 
-  const touchByLead = useMemo(() => {
-    const map = new Map<string, Touchpoint[]>();
-    state.touchpoints.forEach((t) => {
-      const list = map.get(t.leadId) ?? [];
-      list.push(t);
-      map.set(t.leadId, list);
-    });
-    return map;
-  }, [state.touchpoints]);
-
-  const journeyFor = (lead: Lead) => buildJourney(touchByLead.get(lead.id) ?? []);
-
   const enrolmentOwnerFor = (lead: Lead): string => {
-    const fi = state.futureIntakes.find((f) => f.leadId === lead.id);
-    if (fi) return userName(fi.enrolmentOwnerId);
     const app = state.applications.find((a) => a.leadId === lead.id);
     if (app) return userName(app.ownerId);
     return "Unassigned";
@@ -77,9 +62,7 @@ export default function ApprenticeshipReportsPage() {
   const toItems = (groups: { key: string; count: number; secondary?: number }[]): BarListItem[] =>
     groups.map((g) => ({ label: g.key, value: g.count, secondary: g.secondary }));
 
-  const wonLeads = leads.filter((l) => l.stage === "Won");
 
-  const intakeRows = state.futureIntakes.filter((f) => leads.some((l) => l.id === f.leadId));
   const commercialRows = state.commercialOpportunities.filter((c) => leads.some((l) => l.id === c.leadId));
 
   const sections: ReportSection[] = [
@@ -105,27 +88,6 @@ export default function ApprenticeshipReportsPage() {
       showSecondary: true,
       items: toItems(groupWithSecondary(leads, (l) => l.source, (l) => l.stage === "Won")),
       onSelect: (label) => navigate(`/leads?source=${encodeURIComponent(label)}`),
-    },
-    {
-      title: "First touch",
-      subtitle: "Acquisition attribution (first interaction)",
-      icon: "ri-fingerprint-line",
-      tone: "primary",
-      items: toItems(groupCount(leads, (l) => journeyFor(l).first?.source ?? "No touchpoints")),
-    },
-    {
-      title: "Second touch",
-      subtitle: "The next recorded interaction",
-      icon: "ri-route-line",
-      tone: "secondary",
-      items: toItems(groupCount(leads, (l) => journeyFor(l).second?.source ?? "No second touch")),
-    },
-    {
-      title: "Closing touch",
-      subtitle: "Only ever set by the closing workflow",
-      icon: "ri-flag-2-line",
-      tone: "accent",
-      items: toItems(groupCount(leads, (l) => l.closing?.channel ?? "Not closed")),
     },
     {
       title: "By Staff Sales owner",
@@ -154,13 +116,6 @@ export default function ApprenticeshipReportsPage() {
       icon: "ri-shield-check-line",
       tone: "primary",
       items: toItems(groupCount(leads, (l) => fundingRouteFor(l))),
-    },
-    {
-      title: "Deferral reasons",
-      subtitle: "Why learners choose a later intake",
-      icon: "ri-calendar-schedule-line",
-      tone: "secondary",
-      items: toItems(groupCount(intakeRows, (f) => f.reason)),
     },
     {
       title: "Commercial by stage",
@@ -212,8 +167,6 @@ export default function ApprenticeshipReportsPage() {
         <MetricCard label="Review required" value={metrics.reviewRequired} icon="ri-eye-line" tone="accent" />
         <MetricCard label="Not eligible for funding" value={metrics.notEligibleFunding} icon="ri-close-circle-line" tone="danger" />
         <MetricCard label="Eligible for current intake" value={metrics.eligibleCurrentIntake} icon="ri-checkbox-circle-line" tone="primary" />
-        <MetricCard label="Eligible but deferred" value={metrics.eligibleDeferred} icon="ri-time-line" tone="accent" />
-        <MetricCard label="Future intake pipeline" value={metrics.futureIntakePipeline} icon="ri-calendar-schedule-line" tone="secondary" />
         <MetricCard label="Commercial referrals" value={metrics.commercialReferrals} icon="ri-briefcase-4-line" tone="accent" />
         <MetricCard label="Commercial closed won" value={metrics.commercialClosedWon} icon="ri-trophy-line" tone="success" />
         <MetricCard label="Awaiting employer agreement" value={metrics.awaitingEmployerAgreement} icon="ri-file-paper-2-line" tone="primary" />
@@ -241,21 +194,6 @@ export default function ApprenticeshipReportsPage() {
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <Card>
-          <CardHeader icon="ri-trophy-line" iconTone="primary" title="Closed Won — first touch" subtitle="Acquisition source of won leads" />
-          <CardBody>
-            <BarList
-              tone="primary"
-              items={toItems(groupCount(wonLeads, (l) => journeyFor(l).first?.source ?? "No touchpoints"))}
-            />
-          </CardBody>
-        </Card>
-        <Card>
-          <CardHeader icon="ri-flag-2-line" iconTone="accent" title="Closed Won — closing channel" subtitle="Channel of the closing interaction" />
-          <CardBody>
-            <BarList tone="accent" items={toItems(groupCount(wonLeads, (l) => l.closing?.channel ?? "Not recorded"))} />
-          </CardBody>
-        </Card>
-        <Card>
           <CardHeader icon="ri-flow-chart" iconTone="secondary" title="Commercial pipeline" subtitle="Open vs decided" />
           <CardBody>
             <BarList
@@ -269,10 +207,8 @@ export default function ApprenticeshipReportsPage() {
       </div>
 
       <p className="text-[11px] leading-snug text-foreground-400">
-        Attribution method: acquisition is attributed to the first touch and conversion to the closing touch.
-        A touchpoint before closing is never assumed to have caused it. Deferred learners are never counted
-        as lost, verified-eligible learners are never counted as enrolments or starts, and commercial
-        acceptance is never counted as a funded apprenticeship start. All records are fictional.
+        Funding eligibility, applications, sales and confirmed enrolments are reported separately.
+        Commercial acceptance is not counted as a funded apprenticeship start.
       </p>
     </div>
   );

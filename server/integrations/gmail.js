@@ -20,7 +20,7 @@ let gmailAutoSyncTimer = null;
 let gmailAutoSyncRunning = false;
 const GMAIL_IMPORT_ALL_LIMIT = Math.max(1, Math.min(Number(process.env.GMAIL_IMPORT_ALL_LIMIT || 50000), 100000));
 const GMAIL_IMPORT_PAGE_SIZE = Math.max(1, Math.min(Number(process.env.GMAIL_IMPORT_PAGE_SIZE || 100), 500));
-const GMAIL_ENROLMENT_LABELS = new Set(['apprenticeship intersted', 'apprenticeship interested']);
+const GMAIL_ENROLMENT_LABELS = new Set(['enrolled', 'enrolment confirmed', 'enrollment confirmed', 'apprenticeship intersted', 'apprenticeship interested']);
 const GMAIL_ENROLMENT_LABEL_PREFIXES = ['apprenticeship interests'];
 
 function gmailQueryDate(value) {
@@ -52,7 +52,10 @@ function gmailImportTotalLimit(maxResults) {
 }
 
 async function saveGmailImportTables(db, options = {}) {
-  if (!State.postgresPool) return Storage.saveDb(db);
+  if (!State.postgresPool) {
+    Applications.ensureEnrolledApplicationsLocal(db, { name: 'Gmail Sync' });
+    return Storage.saveDb(db);
+  }
   const leadRows = uniqueRowsById(filterImportRows(Leads.importLeadRows(db), options.leadIds));
   const taskRows = uniqueRowsById(filterImportRows(Tasks.importTaskRows(db), options.taskIds));
   const emailRows = filterImportRows(Emails.importEmailRows(db), options.emailIds);
@@ -107,6 +110,11 @@ async function saveGmailImportTables(db, options = {}) {
          created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
       [Applications.jsonValue(leadRows)]
     );
+    const applicationLeadIds = new Set([...(options.enrolledLeadIds || []), ...leadRows.filter(row => Applications.isEnrolledStage(row.stage)).map(row => row.id)]);
+    for (const id of applicationLeadIds) {
+      const lead = (await client.query('select data from app_leads where id=$1 for update', [id])).rows[0]?.data;
+      await Applications.ensureApplicationForLeadFastDb(client, lead, { name: 'Gmail Sync' });
+    }
     await client.query(
       `with rows as (
          select * from jsonb_to_recordset($1::jsonb) as x(
@@ -605,6 +613,7 @@ function applyGmailEnrolmentLabels(db, user, changed) {
       email.lead_id = lead.id;
       changed?.emailIds?.add(email.id);
     }
+    changed?.enrolledLeadIds?.add(lead.id);
     if (lead.stage === 'Enrolled') continue;
     lead.stage = 'Enrolled';
     lead.enrolled_from_gmail_label = label;
@@ -767,7 +776,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     inbox: latestOnly ? '' : gmailSyncPageToken(db, 'inbox', Config.GMAIL_INCREMENTAL_ONLY),
     sent: latestOnly ? '' : gmailSyncPageToken(db, 'sent', Config.GMAIL_INCREMENTAL_ONLY)
   };
-  const changed = { leadIds: new Set(), taskIds: new Set(), emailIds: new Set(), auditIds: new Set() };
+  const changed = { leadIds: new Set(), taskIds: new Set(), emailIds: new Set(), auditIds: new Set(), enrolledLeadIds: new Set() };
   const labelsRefreshed = refreshStoredGmailLabelNames(db, labelMap, changed);
   const historyResult = options.skipTrash ? { history_trash: 0, history_restored: 0, history_skipped: true } : await syncGmailHistoryChanges(db, auth, changed);
   const trashResult = options.skipTrash ? { trashed: 0, scanned_trash: 0, trash_sync_skipped: true } : await syncGmailTrashLabels(db, auth, changed, { force: options.forceTrash });
@@ -1061,5 +1070,6 @@ exports.hydrateEmailBody = hydrateEmailBody;
 exports.GMAIL_SYSTEM_LABELS = GMAIL_SYSTEM_LABELS;
 exports.uniqueStrings = uniqueStrings;
 exports.gmailEnrolmentLabel = gmailEnrolmentLabel;
+exports.applyGmailEnrolmentLabels = applyGmailEnrolmentLabels;
 exports.importGmailMessages = importGmailMessages;
 exports.scheduleGmailAutoSync = scheduleGmailAutoSync;

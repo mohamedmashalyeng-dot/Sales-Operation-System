@@ -881,13 +881,20 @@ function uniqueLeadsByIdentity(leads = []) {
 async function updateLeadFastDb(id, body, user) {
   if (!State.postgresPool) return null;
   await Storage.ensureStorage();
+  await require('./call-journey-store').ensure();
   const client = await State.postgresPool.connect();
   try {
     await client.query('begin');
     const result = await client.query(`select data from app_leads where id = $1 for update`, [id]);
     const lead = result.rows[0]?.data;
     if (!lead) throw Http.statusError(404, 'Lead not found.');
-    if (body.stage !== undefined) lead.stage = body.stage;
+    if (body.stage !== undefined && body.stage !== lead.stage) {
+      const Journey = require('./call-journey');
+      const applications = (await client.query('select data from app_applications where lead_id = $1', [id])).rows.map(row => row.data);
+      Journey.enforceStage(lead, body.stage, user, body, Journey.facts(lead, { applications, agreements: [] }), true);
+      await client.query("select set_config('kbc.stage_context',$1,true)", [JSON.stringify({ source: 'manual', reason: body.reason || 'Manual lead update', approved_by: user.id })]);
+      lead.stage = body.stage; lead.stage_origin = 'manual'; lead.stage_updated_at = new Date().toISOString();
+    }
     if (body.owner_id !== undefined) lead.owner_id = body.owner_id;
     if (body.priority !== undefined) lead.priority = body.priority;
     await client.query(

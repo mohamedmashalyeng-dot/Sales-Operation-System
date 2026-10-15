@@ -111,7 +111,7 @@ export default function AuditPage() {
         <h1 className="mt-1 font-heading text-2xl font-extrabold text-foreground-950">Audit Trail</h1>
         <p className="mt-1 text-[13px] text-foreground-500">
           Every meaningful mutation writes an audit entry — record creation, edits, status changes,
-          owner reassignment, task completion, replies, attendance, stage changes and attribution
+          owner reassignment, task completion, replies, attendance, stage changes and record updates
           corrections. {state.audit.length} entries recorded in this session.
         </p>
       </div>

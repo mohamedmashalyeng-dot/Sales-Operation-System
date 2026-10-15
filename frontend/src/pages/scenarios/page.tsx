@@ -9,7 +9,6 @@ import { scenarioDataRevision, scenarioSummary } from "@/utils/scenarios";
 import { describeEvidence, useScenarioEvidence } from "@/hooks/useScenarioEvidence";
 import ScenarioDetail from "@/pages/scenarios/components/ScenarioDetail";
 import QaSummaryPanel from "@/pages/scenarios/components/QaSummaryPanel";
-import IntegrityPanel from "@/pages/scenarios/components/IntegrityPanel";
 import RoleUatChecklist from "@/pages/scenarios/components/RoleUatChecklist";
 import { cn } from "@/utils/format";
 
@@ -53,7 +52,7 @@ export default function ScenariosPage() {
             Demo Scenarios
           </h1>
           <p className="mt-1 max-w-3xl text-[13px] text-foreground-500">
-            Six clickable end-to-end apprenticeship journeys built on the real shared records. Use the
+            Guided end-to-end apprenticeship journeys built on the real shared records. Use the
             guided walkthrough to step through each journey, open the actual screens and record honest
             manual QA evidence. Information sessions are always optional — a prospect can reach an
             application and enrolment without ever attending one.
@@ -134,7 +133,6 @@ export default function ScenariosPage() {
         {selected ? <ScenarioDetail scenario={selected} /> : null}
       </div>
 
-      <IntegrityPanel state={state} />
 
       <RoleUatChecklist currentRoleId={state.roleId} />
     </div>

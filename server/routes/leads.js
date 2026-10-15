@@ -15,6 +15,7 @@ const Applications = require('../applications');
 const Monitoring = require('../monitoring');
 const Bootstrap = require('../bootstrap');
 const Authorization = require('../authorization');
+const LeadAiAnalysis = require('../lead-ai-analysis');
 const NOT_HANDLED = require('./not-handled');
 
 async function logCallFastDb(body, user) {
@@ -98,7 +99,11 @@ async function leadsRoutes(ctx) {
     const user = await Auth.currentSessionUser(req);
     await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
     await Storage.ensureStorage();
-    return Http.sendJson(res, await Leads.loadLeadDetailDb(decodeURIComponent(lightweightMatch[1])));
+    const detail = await Leads.loadLeadDetailDb(decodeURIComponent(lightweightMatch[1]));
+    // A previously owned duplicate can point at a master now assigned elsewhere.
+    // Authorize the resolved record before returning its contents.
+    if (detail.lead?.id !== decodeURIComponent(lightweightMatch[1])) await Authorization.requireRecord(user,'lead',detail.lead?.id);
+    return Http.sendJson(res, detail);
   }
   lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/(timeline|emails|tasks|application|applications|meetings|calls|files|notes)$/);
   if (lightweightMatch && method === 'GET' && Storage.usesPostgresStorage()) {
@@ -139,6 +144,14 @@ async function leadsRoutes(ctx) {
     const user = await Auth.currentSessionUser(req);
     await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
     return Http.sendJson(res, await Leads.addProgrammeOpportunityFastDb(lightweightMatch[1], body, user));
+  }
+  lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/ai-analysis$/);
+  if (lightweightMatch && method === 'POST' && State.postgresPool) {
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'lead', lightweightMatch[1]);
+    return Http.sendJson(res, await LeadAiAnalysis.analyseLeadFastDb(decodeURIComponent(lightweightMatch[1]), user, {
+      apply: body.apply !== false
+    }));
   }
   lightweightMatch = route.match(/^\/api\/leads\/([^/]+)\/notes$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
@@ -181,8 +194,18 @@ async function leadsWorkspaceRoutes(ctx) {
     if (tab === 'emails') return Http.sendJson(res, { items: (db.emails || []).filter(email => String(email.lead_id) === String(lead.id)).slice(0, limit), emails: (db.emails || []).filter(email => String(email.lead_id) === String(lead.id)).slice(0, limit), has_more: false, next_cursor: '', limit });
     if (tab === 'tasks') return Http.sendJson(res, { items: (db.tasks || []).filter(task => String(task.lead_id) === String(lead.id)).slice(0, limit), tasks: (db.tasks || []).filter(task => String(task.lead_id) === String(lead.id)).slice(0, limit), has_more: false, next_cursor: '', limit });
     if (tab === 'application') return Http.sendJson(res, { items: applications.slice(0, limit), applications: applications.slice(0, limit), application: applications[0] || null, has_more: false, next_cursor: '', limit });
-    if (tab === 'meetings') return Http.sendJson(res, { items: (db.events || []).filter(event => (event.attendees || []).some(attendee => String(attendee.lead_id) === String(lead.id))).slice(0, limit), events: (db.events || []).filter(event => (event.attendees || []).some(attendee => String(attendee.lead_id) === String(lead.id))).slice(0, limit), has_more: false, next_cursor: '', limit });
-    if (tab === 'calls') return Http.sendJson(res, { items: (db.zoom?.calls || []).filter(call => String(call.lead_id || '') === String(lead.id)).slice(0, limit), calls: (db.zoom?.calls || []).filter(call => String(call.lead_id || '') === String(lead.id)).slice(0, limit), has_more: false, next_cursor: '', limit });
+    if (tab === 'meetings') {
+      const fields=['id','name','title','start_at','end_at','duration','duration_mins','location','status','zoom_meeting_id','zoom_meeting_uuid','zoom_host_label','zoom_account_label','meeting_link','zoom_link','join_url'];
+      const items=(db.events || []).filter(event => (event.attendees || []).some(a => String(a.lead_id)===String(lead.id))).slice(0,limit)
+        .map(event => Object.fromEntries(fields.filter(key => event[key]!==undefined).map(key => [key,event[key]])));
+      return Http.sendJson(res,{items,events:items,has_more:false,next_cursor:'',limit});
+    }
+    if (tab === 'calls') {
+      const fields=['id','lead_id','direction','caller_number','caller_name','callee_number','callee_name','started_at','ended_at','occurred_at','duration_sec','duration','result','status','owner_id'];
+      const items=(db.zoom?.calls || []).filter(call => String(call.lead_id || '')===String(lead.id)).slice(0,limit)
+        .map(call => Object.fromEntries(fields.filter(key => call[key]!==undefined).map(key => [key,call[key]])));
+      return Http.sendJson(res,{items,calls:items,has_more:false,next_cursor:'',limit});
+    }
     if (tab === 'files') {
       const files = applications.flatMap(app => (app.requirements || []).flatMap(req => req.latest ? [{ ...req.latest, title: req.title, application_id: app.id, requirement_id: req.id, content_base64: undefined, download_url: `/api/evidence/${encodeURIComponent(req.latest.id)}/file` }] : []));
       return Http.sendJson(res, { items: files.slice(0, limit), files: files.slice(0, limit), has_more: false, next_cursor: '', limit });
@@ -234,6 +257,12 @@ async function leadsWorkspaceRoutes(ctx) {
     await Authorization.requireRecord(user, 'lead', match[1], db);
     if (body.owner_id !== undefined) body.owner_id = Authorization.ownerForWrite(user, body.owner_id);
     const lead = Leads.leadFor(db, match[1]);
+    if (body.stage !== undefined && body.stage !== lead.stage) {
+      const Journey = require('../call-journey');
+      Journey.enforceStage(lead, body.stage, user, body, Journey.facts(lead, { applications: (db.applications || []).filter(app => app.lead_id === lead.id), agreements: db.meta?.employerAgreements || [] }), true);
+      db.__stage_context = { [lead.id]: { source: 'manual', reason: body.reason || 'Manual lead update', approved_by: user.id } };
+      lead.stage_origin = 'manual'; lead.stage_updated_at = new Date().toISOString();
+    }
     // Only the fields the request carries: assigning all three wiped the owner, the stage or the
     // priority whenever one of them was left out.
     for (const field of ['stage', 'owner_id', 'priority']) if (body[field] !== undefined) lead[field] = body[field];
@@ -282,6 +311,14 @@ async function leadsWorkspaceRoutes(ctx) {
     Audit.addAudit(db, user, 'Programme opportunity linked', 'lead', original.id, programme.name);
     await Storage.saveDb(db);
     return Http.sendJson(res, { id: original.id, created: false });
+  }
+
+  match = route.match(/^\/api\/leads\/([^/]+)\/ai-analysis$/);
+  if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'lead', match[1], db);
+    return Http.sendJson(res, await LeadAiAnalysis.analyseLeadWorkspace(db, decodeURIComponent(match[1]), user, {
+      apply: body.apply !== false
+    }));
   }
 
   match = route.match(/^\/api\/leads\/([^/]+)\/notes$/);

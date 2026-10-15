@@ -14,12 +14,19 @@ const Leads = require('./leads');
 const Tasks = require('./tasks');
 const StaticFiles = require('./static-files');
 const Automations = require('./automations');
+const UploadSecurity = require('./upload-security');
 
 const jsonValue = value => JSON.stringify(value ?? null);
 
-function publicApplication(app) {
+function publicApplication(app, lead = null) {
   return {
     ...app,
+    email: app.email || lead?.email || '',
+    phone: app.phone || lead?.phone || '',
+    owner_id: app.owner_id || lead?.owner_id || '',
+    enrolment_evidence: app.enrolment_evidence || (lead?.enrolled_from_gmail_label ? {
+      source: 'gmail_label', label: lead.enrolled_from_gmail_label, observed_at: lead.enrolled_from_gmail_label_at || null
+    } : lead?.enrolment_evidence || null),
     requirements: (app.requirements || []).map(req => ({
       ...req,
       latest: req.latest ? { ...req.latest, content_base64: undefined } : null
@@ -130,14 +137,14 @@ function admissionsStageSql(alias = 'a') {
 }
 
 function loadApplicationList(db) {
-  const enrolledLeadIds = new Set((db.leads || [])
+  const leadById = new Map((db.leads || [])
     .filter(lead => lead?.id && !lead.deleted_at && isEnrolledStage(lead.stage))
-    .map(lead => String(lead.id)));
+    .map(lead => [String(lead.id), lead]));
   return (db.applications || [])
-    .filter(app => enrolledLeadIds.has(String(app.lead_id || '')))
+    .filter(app => leadById.has(String(app.lead_id || '')))
     .slice()
     .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
-    .map(publicApplication);
+    .map(app => publicApplication(app, leadById.get(String(app.lead_id))));
 }
 
 async function loadApplicationListDb(options = {}, trace = null) {
@@ -156,7 +163,6 @@ async function loadApplicationListDb(options = {}, trace = null) {
     createdFrom: Tasks.parseOptionalIsoDate(options.created_from, 'created_from'),
     createdTo: Tasks.parseOptionalIsoDate(options.created_to, 'created_to')
   };
-  if (!options.cursor) await runEnrolledLeadApplicationBackfill();
   if (State.postgresPool) {
     const values = [];
     const conditions = [
@@ -193,7 +199,9 @@ async function loadApplicationListDb(options = {}, trace = null) {
     const listValues = cursor ? [...values, safeLimit + 1] : [...values, safeLimit + 1, safeOffset];
     const [result, total] = await Promise.all([
       Storage.timedPostgresQuery(trace, 'applications_page',
-        `select a.data, a.created_at
+        `select a.data, a.created_at, jsonb_build_object('email',l.email,'phone',l.phone,'owner_id',l.owner_id,
+          'enrolled_from_gmail_label',l.data->>'enrolled_from_gmail_label','enrolled_from_gmail_label_at',l.data->>'enrolled_from_gmail_label_at',
+          'enrolment_evidence',l.data->'enrolment_evidence') as lead
          from app_applications a
          left join app_leads l on l.id = a.lead_id
          ${whereSql}
@@ -205,7 +213,7 @@ async function loadApplicationListDb(options = {}, trace = null) {
     ]);
     return Perf.perfPhase(trace, 'mapping', async () => {
       const pageRows = result.rows.slice(0, safeLimit);
-      const applications = pageRows.map(item => publicApplication(item.data));
+      const applications = pageRows.map(item => publicApplication(item.data, item.lead));
       const count = total ? Number(total.rows[0]?.count || 0) : null;
       const last = pageRows[pageRows.length - 1];
       const nextCursor = result.rows.length > safeLimit && last?.data?.id ? Util.encodePageCursor({ created_at: last.created_at || last.data.created_at || null, id: last.data.id }) : '';
@@ -252,7 +260,7 @@ async function loadApplicationListDb(options = {}, trace = null) {
 }
 
 function applicationAdmissionSummary(app, lead = null, activity = [], tasks = []) {
-  const safeApp = publicApplication(app);
+  const safeApp = publicApplication(app, lead);
   const outstanding = outstandingRequirements(safeApp);
   const stage = admissionsStageForApplication(safeApp);
   return {
@@ -559,6 +567,7 @@ async function transitionApplicationStatusFastDb(id, body, user) {
       const previousStatus = app.status || 'In review';
       app.status = targetStatus;
       if (targetStatus === 'Enrolled') app.learner = { external_reference: body.external_reference, enrolled_at: new Date().toISOString(), note: body.note };
+      await client.query("select set_config('kbc.stage_context',$1,true)", [JSON.stringify({ source: 'application', approved_by: user.id, reason: `Application status: ${targetStatus}` })]);
       lead.stage = targetStatus === 'Eligible' ? 'Ready for Enrolment' : targetStatus === 'Not Eligible' ? 'Not Eligible' : targetStatus === 'Enrolled' ? 'Enrolled' : 'Eligibility';
       await client.query(`update app_applications set status = $2, learner = $3::jsonb, data = $4::jsonb where id = $1`, [app.id, app.status, jsonValue(app.learner || null), jsonValue(app)]);
       await client.query(`update app_leads set stage = $2, data = $3::jsonb where id = $1`, [lead.id, lead.stage, jsonValue(lead)]);
@@ -617,7 +626,10 @@ async function seedDocumentTemplatesFromDisk() {
 }
 
 function applicationRequirements(appId, files = [], options = {}) {
-  const byKey = new Map((Array.isArray(files) ? files : []).map(file => [String(file.key || ''), file]));
+  const byKey = new Map((Array.isArray(files) ? files : []).map(file => {
+    const prepared = file?.content_base64 ? UploadSecurity.validateEvidenceUpload(file) : file;
+    return [String(file.key || ''), { ...file, ...prepared }];
+  }));
   return APPLICATION_DOCUMENT_TEMPLATES.map(([key, title], index) => {
     const file = byKey.get(key);
     return {
@@ -626,12 +638,15 @@ function applicationRequirements(appId, files = [], options = {}) {
       title,
       latest: file?.content_base64 ? {
         id: `ER-${appId}-${index + 1}-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
-        filename: String(file.filename || title),
+        filename: file.filename || title,
         version: 1,
         status: options.verified ? 'Verified' : 'Pending',
         reviewer: options.verified ? options.reviewer || null : null,
         reviewed_at: options.verified ? new Date().toISOString() : null,
-        content_base64: file.content_base64
+        content_base64: file.content_base64,
+        content_type: file.content_type,
+        file_type: file.file_type,
+        size: file.size
       } : null
     };
   });
@@ -652,9 +667,11 @@ function isEnrolledStage(stage) {
 
 function automaticEnrolledLearner(lead, now = new Date().toISOString()) {
   return {
-    external_reference: lead.learner_reference || lead.external_reference || `AUTO-${lead.id}`,
-    enrolled_at: lead.enrolled_at || now,
-    note: 'Application created automatically because the lead is enrolled.'
+    external_reference: lead.learner_reference || lead.external_reference || null,
+    enrolled_at: lead.enrolled_at || null,
+    recorded_at: now,
+    source: lead.enrolled_from_gmail_label ? 'gmail_label' : lead.enrolment_evidence?.source || 'kbc_enrolled_stage',
+    note: 'Existing enrolled status imported; original enrolment date is retained only when supplied.'
   };
 }
 
@@ -675,6 +692,10 @@ function automaticApplicationFromLead(appId, lead, user, now = new Date().toISOS
   return {
     id: appId,
     lead_id: lead.id,
+    email: lead.email || '',
+    phone: lead.phone || '',
+    owner_id: lead.owner_id || '',
+    programme_id: lead.programme_id || null,
     first_name: lead.first_name,
     last_name: lead.last_name,
     programme: lead.programme,
@@ -683,16 +704,31 @@ function automaticApplicationFromLead(appId, lead, user, now = new Date().toISOS
     manager: user?.name || lead.owner || 'System',
     member: lead.first_name,
     created_at: now,
-    contract: { status: 'Verified', note: 'Lead was already enrolled; application was created automatically.' },
-    requirements: applicationRequirements(appId, [], { verified: true, reviewer: user?.name || 'System' }),
+    contract: { status: 'Draft', note: 'Enrolment status imported. Agreement verification was not supplied.' },
+    requirements: applicationRequirements(appId),
+    enrolment_evidence: lead.enrolment_evidence || (lead.enrolled_from_gmail_label ? { source: 'gmail_label', label: lead.enrolled_from_gmail_label, observed_at: lead.enrolled_from_gmail_label_at || null } : { source: 'kbc_enrolled_stage' }),
     learner
   };
 }
 
 const automaticApplicationFromEnrolledLead = automaticApplicationFromLead;
+function ensureEnrolledApplicationsLocal(db, user, options = {}) {
+  if (!Config.AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && !options.force) return [];
+  db.applications ||= []; db.audit ||= [];
+  const existing = new Set(db.applications.map(app => String(app.lead_id)));
+  const created = [];
+  for (const lead of options.leads || db.leads || []) {
+    if (!lead?.id || lead.deleted_at || !isEnrolledStage(lead.stage) || existing.has(String(lead.id))) continue;
+    if (created.length >= (options.limit || Config.ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT)) break;
+    const app = automaticApplicationFromLead(Util.nextId('A', [db.applications]), lead, user);
+    db.applications.push(app); existing.add(String(lead.id)); created.push(app);
+    Audit.addAudit(db, user || { name: 'System' }, 'Application created for enrolled learner', 'lead', lead.id, app.id);
+  }
+  return created;
+}
 
 async function ensureApplicationForLeadFastDb(client, lead, user, options = {}) {
-  if (!Config.AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS || !lead?.id || !isEnrolledStage(lead.stage)) return null;
+  if ((!Config.AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && !options.force) || !lead?.id || lead.deleted_at || !isEnrolledStage(lead.stage)) return null;
   await client.query(`select pg_advisory_xact_lock(hashtext($1))`, [`auto-application:${lead.id}`]);
   const existing = await client.query(`select data from app_applications where lead_id = $1 limit 1`, [lead.id]);
   if (existing.rows[0]) return null;
@@ -712,6 +748,37 @@ async function ensureApplicationForLeadFastDb(client, lead, user, options = {}) 
   );
   await Audit.appendAuditFast(client, user || { name: 'System' }, options.auditAction || 'Application auto-created for lead', 'lead', lead.id, app.id);
   return { application: app, attribution };
+}
+
+let enrolledReconcileQueue = Promise.resolve();
+async function reconcileEnrolledApplications(user, options = {}) {
+  const run = async () => {
+    await Storage.ensureStorage();
+    const limit = Math.min(50000, Math.max(1, Number(options.limit) || Config.ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT));
+    if (!State.postgresPool || !Storage.usesPostgresStorage()) {
+      const db = await Storage.loadDb();
+      const created = ensureEnrolledApplicationsLocal(db, user, { force: true, limit });
+      if (created.length) await Storage.saveDb(db);
+      return { created: created.length, enrolled_learners: (db.leads || []).filter(lead => !lead.deleted_at && isEnrolledStage(lead.stage)).length };
+    }
+    const rows = (await State.postgresPool.query(`select l.id from app_leads l where ${Leads.activeLeadCondition('l')}
+      and lower(coalesce(l.stage,l.data->>'stage',''))='enrolled'
+      and not exists(select 1 from app_applications a where a.lead_id=l.id) order by l.id limit $1`, [limit])).rows;
+    let created = 0;
+    for (const row of rows) {
+      const client = await State.postgresPool.connect();
+      try {
+        await client.query('begin');
+        const lead = (await client.query('select data from app_leads where id=$1 for update', [row.id])).rows[0]?.data;
+        if (await ensureApplicationForLeadFastDb(client, lead, user, { force: true })) created++;
+        await client.query('commit');
+      } catch (error) { await client.query('rollback'); throw error; }
+      finally { client.release(); }
+    }
+    if (created) State.dbCache = null;
+    return { created };
+  };
+  const pending = enrolledReconcileQueue.then(run); enrolledReconcileQueue = pending.catch(() => {}); return pending;
 }
 
 const ensureApplicationForEnrolledLeadFastDb = ensureApplicationForLeadFastDb;
@@ -750,6 +817,7 @@ async function createApplicationFastDb(body, user) {
       requirements: applicationRequirements(appId, body.evidence_files, { verified: evidenceVerified, reviewer: user.name }),
       learner
     };
+    await client.query("select set_config('kbc.stage_context',$1,true)", [JSON.stringify({ source: 'application', approved_by: user.id, reason: 'KBC application created' })]);
     lead.stage = alreadyEnrolled ? 'Enrolled' : 'Application Submitted';
     await client.query(
       `update app_leads set stage = $2, data = $3::jsonb where id = $1`,
@@ -804,13 +872,17 @@ async function uploadEvidenceFastDb(id, body) {
     if (!app) throw Http.statusError(404, 'Application not found.');
     const req = (app.requirements || []).find(item => item.id === body.requirement_id);
     if (!req) throw Http.statusError(404, 'Requirement not found.');
+    const upload = UploadSecurity.validateEvidenceUpload(body);
     req.latest = {
       id: `ER-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
-      filename: body.filename,
+      filename: upload.filename,
       version: (req.latest?.version || 0) + 1,
       status: 'Pending',
       reviewer: null,
-      content_base64: body.content_base64
+      content_base64: upload.content_base64,
+      content_type: upload.content_type,
+      file_type: upload.file_type,
+      size: upload.size
     };
     if (!app.learner) app.status = 'In review';
     await client.query(
@@ -840,10 +912,10 @@ async function sendEvidenceFileFastDb(id, res) {
   const app = result.rows[0]?.data;
   const req = (app?.requirements || []).find(item => item.latest?.id === id);
   if (!req?.latest?.content_base64) throw Http.statusError(404, 'Evidence not found.');
-  const filename = String(req.latest.filename || 'evidence-file').replace(/[\r\n"]/g, '_');
+  const filename = UploadSecurity.safeFileName(req.latest.filename || 'evidence-file');
   const content = Buffer.from(req.latest.content_base64 || '', 'base64');
   res.writeHead(200, {
-    'Content-Type': StaticFiles.mime[path.extname(filename).toLowerCase()] || 'application/octet-stream',
+    'Content-Type': req.latest.content_type || StaticFiles.mime[path.extname(filename).toLowerCase()] || 'application/octet-stream',
     'Content-Disposition': `attachment; filename="${filename}"`
   });
   res.end(content);
@@ -932,6 +1004,7 @@ async function reviewApplicationFastDb(id, body, user) {
     const lead = leadResult.rows[0]?.data;
     if (!lead) throw Http.statusError(404, 'Lead not found.');
     app.status = body.status;
+    await client.query("select set_config('kbc.stage_context',$1,true)", [JSON.stringify({ source: 'application', approved_by: user.id, reason: 'Application eligibility decision' })]);
     lead.stage = body.status === 'Eligible' ? 'Ready for Enrolment' : 'Not Eligible';
     await client.query(`update app_applications set status = $2, data = $3::jsonb where id = $1`, [app.id, app.status, jsonValue(app)]);
     await client.query(`update app_leads set stage = $2, data = $3::jsonb where id = $1`, [lead.id, lead.stage, jsonValue(lead)]);
@@ -962,6 +1035,7 @@ async function enrolApplicationFastDb(id, body, user) {
     if (!lead) throw Http.statusError(404, 'Lead not found.');
     app.status = 'Enrolled';
     app.learner = { external_reference: body.external_reference, enrolled_at: new Date().toISOString(), note: body.note };
+    await client.query("select set_config('kbc.stage_context',$1,true)", [JSON.stringify({ source: 'application', approved_by: user.id, reason: 'KBC enrolment recorded' })]);
     lead.stage = 'Enrolled';
     const snapshot = { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture };
     const attribution = { ...lead, programme: app.programme, snapshot };
@@ -997,6 +1071,7 @@ async function deleteApplicationFastDb(id, user) {
       const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [app.lead_id]);
       lead = leadResult.rows[0]?.data || null;
       if (lead && ['Application Submitted', 'Eligibility', 'Ready for Enrolment', 'Not Eligible', 'Enrolled'].includes(lead.stage)) {
+        await client.query("select set_config('kbc.stage_context',$1,true)", [JSON.stringify({ source: 'application', approved_by: user.id, reason: 'Application removed by authorised staff' })]);
         lead.stage = 'Qualified';
         await client.query(`update app_leads set stage = $2, data = $3::jsonb where id = $1`, [lead.id, lead.stage, jsonValue(lead)]);
       }
@@ -1055,94 +1130,13 @@ let leadApplicationBackfillRunning = false;
 async function runEnrolledLeadApplicationBackfill() {
   if (!Config.ENROLLED_LEAD_APPLICATION_BACKFILL_ENABLED || leadApplicationBackfillRunning) return;
   leadApplicationBackfillRunning = true;
-  let created = 0;
   try {
-    await Storage.ensureStorage();
-    if (!State.postgresPool || !Storage.usesPostgresStorage()) {
-      const db = await Storage.loadDb();
-      db.applications ||= [];
-      db.leads ||= [];
-      db.audit ||= [];
-      const leadById = new Map(db.leads.map(lead => [String(lead.id), lead]));
-      const beforeCleanup = db.applications.length;
-      db.applications = db.applications.filter(app => {
-        const lead = leadById.get(String(app.lead_id));
-        const autoDraft = app?.contract?.note === 'Application created automatically from lead.' && !app?.learner;
-        return !(autoDraft && lead && !isEnrolledStage(lead.stage));
-      });
-      const missingLeads = db.leads
-        .filter(lead => lead?.id && !lead.deleted_at && isEnrolledStage(lead.stage))
-        .filter(lead => !db.applications.some(app => String(app.lead_id) === String(lead.id)))
-        .slice(0, Config.ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT);
-      for (const lead of missingLeads) {
-        const appId = Util.nextId('A', [db.applications]);
-        const app = automaticApplicationFromLead(appId, lead, { name: 'System' });
-        db.applications.push(app);
-        db.attribution ||= [];
-        db.attribution.unshift({ ...lead, programme: app.programme, snapshot: { first_touch: lead.source_first_touch, lead_capture: lead.source_lead_capture, conversion_source: lead.source_lead_capture } });
-        Audit.addAudit(db, { name: 'System' }, 'Application auto-created during lead backfill', 'lead', lead.id, app.id);
-        created += 1;
-      }
-      if (created || beforeCleanup !== db.applications.length) {
-        await Storage.saveDb(db);
-        console.log(`Lead application backfill created ${created} local application(s).`);
-      }
-      return created;
-    }
-    const cleanup = await State.postgresPool.query(
-      `delete from app_applications a
-       using app_leads l
-       where a.lead_id = l.id
-         and a.data->'contract'->>'note' = 'Application created automatically from lead.'
-         and coalesce(a.data->'learner', 'null'::jsonb) = 'null'::jsonb
-         and lower(coalesce(l.stage, l.data->>'stage', '')) <> 'enrolled'`
-    );
-    if (cleanup.rowCount) {
-      State.dbCache = null;
-      console.log(`Lead application backfill removed ${cleanup.rowCount} non-enrolled auto-created application(s).`);
-    }
-    const result = await State.postgresPool.query(
-      `select l.id
-       from app_leads l
-       where ${Leads.activeLeadCondition('l')}
-         and lower(coalesce(l.stage, l.data->>'stage', '')) = 'enrolled'
-         and not exists (select 1 from app_applications a where a.lead_id = l.id)
-       order by l.created_at nulls last, l.id
-       limit $1`,
-      [Config.ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT]
-    );
-    for (const row of result.rows) {
-      const client = await State.postgresPool.connect();
-      try {
-        await client.query('begin');
-        const leadResult = await client.query(`select data from app_leads where id = $1 for update`, [row.id]);
-        const lead = leadResult.rows[0]?.data;
-        const auto = await ensureApplicationForLeadFastDb(client, lead, { name: 'System' }, {
-          auditAction: 'Application auto-created during lead backfill'
-        });
-        if (auto) created += 1;
-        await client.query('commit');
-      } catch (error) {
-        await client.query('rollback');
-        console.error(`Lead application backfill failed for ${row.id}: ${error.message || error}`);
-      } finally {
-        client.release();
-      }
-    }
-    if (created) {
-      State.dbCache = null;
-      console.log(`Lead application backfill created ${created} application(s).`);
-    } else if (result.rows.length) {
-      console.log('Lead application backfill found no missing applications after locking leads.');
-    } else {
-      console.log('Lead application backfill found no leads missing applications.');
-    }
+    const result = await reconcileEnrolledApplications({ name: 'System' });
+    console.log(`Enrolled learner application backfill created ${result.created} application(s).`);
+    return result.created;
   } catch (error) {
-    console.error(`Lead application backfill failed: ${error.message || error}`);
-  } finally {
-    leadApplicationBackfillRunning = false;
-  }
-  return created;
+    console.error(`Enrolled learner application backfill failed: ${error.message || error}`);
+  } finally { leadApplicationBackfillRunning = false; }
 }
 
 exports.jsonValue = jsonValue;
@@ -1164,6 +1158,8 @@ exports.applicationLearnerFromBody = applicationLearnerFromBody;
 exports.isEnrolledStage = isEnrolledStage;
 exports.leadIntakeName = leadIntakeName;
 exports.automaticApplicationFromLead = automaticApplicationFromLead;
+exports.ensureEnrolledApplicationsLocal = ensureEnrolledApplicationsLocal;
+exports.reconcileEnrolledApplications = reconcileEnrolledApplications;
 exports.ensureApplicationForLeadFastDb = ensureApplicationForLeadFastDb;
 exports.createApplicationFastDb = createApplicationFastDb;
 exports.uploadEvidenceFastDb = uploadEvidenceFastDb;

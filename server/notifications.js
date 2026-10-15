@@ -18,7 +18,8 @@ const TYPES = new Set([
   'integration_failure',
   'integration_reconnect_required',
   'data_quality_warning',
-  'system_notice'
+  'system_notice',
+  'call_analysis_ready'
 ]);
 
 function notificationId(userId, type, entityType, entityId) {

@@ -347,6 +347,7 @@ async function createPostgresAppTables(trace = null) {
       data jsonb not null default '{}'::jsonb
     )
   `);
+  await tracedPostgresPoolQuery(trace, 'schema_call_journey', fs.readFileSync(require('node:path').join(__dirname, '../sql/2026-10-15_call_driven_journey.sql'), 'utf8'));
   await tracedPostgresPoolQuery(trace, 'schema_tasks_table', `
     create table if not exists app_tasks (
       id text primary key,
@@ -625,6 +626,7 @@ async function saveDb(db, options = {}) {
   if (db && (db.__partial || db.__partial_load)) throw Http.statusError(500, 'Refusing to save a partially loaded workspace. Load the full workspace first.');
   await ensureStorage();
   const data = Workspace.recalculate(db);
+  if (!State.postgresPool) require('./stage-history').syncLocal(data);
   if (State.postgresPool) {
     await Auth.upsertPostgresUsers(data.users);
     await savePostgresTables(data, options);
@@ -769,6 +771,7 @@ async function loadPostgresTables(options = {}) {
     emails: emails.rows.map(item => item.data),
     applications: applications.rows.map(item => item.data),
     events: events.rows.map(item => item.data),
+    commercialOpportunities: row.meta?.commercialOpportunities || [],
     integrations: seeded.integrations,
     intakes: intakes.rows.map(item => item.data),
     audit: audit.rows.map(item => item.data),

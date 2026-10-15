@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import LoadingState from "@/components/base/LoadingState";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Button from "@/components/base/Button";
 import EmptyState from "@/components/base/EmptyState";
@@ -14,12 +15,14 @@ import LeadFilters, {
 } from "@/pages/leads/components/LeadFilters";
 import LeadFormModal from "@/pages/leads/components/LeadFormModal";
 import LeadTable, { type LeadSortKey } from "@/pages/leads/components/LeadTable";
+import { loadBackendLeadPage } from "@/store/backendSync";
 import { useWorkspace, type LeadInput } from "@/store/WorkspaceProvider";
 import type { Lead } from "@/store/types";
 import { leadSessionGroup, registrationsByEmail, sessionGroupMeta, type SessionGroupId } from "@/utils/conversion";
 
 const PRIORITY_ORDER: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
-const PER_PAGE = 8;
+const PER_PAGE = 50;
+type ProgrammeLookupState = { programmes?: Array<{ id: string; name: string }> };
 
 export default function LeadsPage() {
   const navigate = useNavigate();
@@ -38,6 +41,12 @@ export default function LeadsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Lead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Lead | null>(null);
+  const [leadRows, setLeadRows] = useState<Lead[]>([]);
+  const [leadTotal, setLeadTotal] = useState<number | null>(null);
+  const [leadHasMore, setLeadHasMore] = useState(false);
+  const [leadLoading, setLeadLoading] = useState(true);
+  const pageCursorsRef = useRef<Record<number, string>>({ 1: "" });
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     const next = { ...DEFAULT_LEAD_FILTERS };
@@ -86,17 +95,9 @@ export default function LeadsPage() {
       next.apolloOnly = true;
       touched = true;
     }
-    if (searchParams.get("invited") === "1") {
-      next.eventbriteInvited = true;
-      touched = true;
-    }
     const chip = searchParams.get("filter");
     if (chip === "apollo") {
       next.apolloOnly = true;
-      touched = true;
-    }
-    if (chip === "eventbrite-invited") {
-      next.eventbriteInvited = true;
       touched = true;
     }
     if (touched) setFilters(next);
@@ -120,7 +121,6 @@ export default function LeadsPage() {
     if (filters.source !== "all") params.set("source", filters.source);
     if (filters.priority !== "all") params.set("priority", filters.priority);
     if (filters.apolloOnly) params.set("apollo", "1");
-    if (filters.eventbriteInvited) params.set("invited", "1");
     if (filters.acquisitionFrom) params.set("acqFrom", filters.acquisitionFrom);
     if (filters.acquisitionTo) params.set("acqTo", filters.acquisitionTo);
     if (segment !== "all") params.set("segment", segment);
@@ -133,28 +133,98 @@ export default function LeadsPage() {
 
   const regIndex = useMemo(() => registrationsByEmail(state.events), [state.events]);
 
-  // Leads who received a linked Eventbrite campaign invitation. Filtered from
-  // recipient activity — deliberately NOT the same as Apollo-sourced leads.
-  const invitedLeadIds = useMemo(() => {
-    const ids = new Set<string>();
-    (Array.isArray(state.campaigns) ? state.campaigns : []).forEach((campaign) => {
-      (Array.isArray(campaign.recipients) ? campaign.recipients : []).forEach((recipient) => {
-        if (recipient.invitedAt && recipient.leadId) ids.add(recipient.leadId);
-      });
-    });
-    return ids;
-  }, [state.campaigns]);
+  const programmeIdForFilter = useMemo(() => {
+    if (filters.programme === "all") return "all";
+    const programmes = (state as ProgrammeLookupState).programmes || [];
+    return programmes.find((programme) => programme.name === filters.programme || programme.id === filters.programme)?.id ?? filters.programme;
+  }, [filters.programme, state]);
+
+  const leadSourceForFilter = filters.apolloOnly ? "Apollo.io" : filters.source;
+  const apiSort = sortKey === "name" ? "name" : "created_at";
+
+  const fetchLeadPage = useCallback(
+    async (targetPage: number) => {
+      const requestId = requestIdRef.current + 1;
+      requestIdRef.current = requestId;
+      setLeadLoading(true);
+      const cursors = { ...pageCursorsRef.current };
+      const knownPages = Object.keys(cursors).map(Number).filter((cursorPage) => cursorPage <= targetPage);
+      const startPage = Math.max(1, ...knownPages);
+      let cursor = cursors[startPage] ?? "";
+      let rows: Lead[] = [];
+      let hasMore = false;
+      let total: number | null = null;
+
+      try {
+        for (let nextPage = startPage; nextPage <= targetPage; nextPage += 1) {
+          const result = await loadBackendLeadPage(state.users, {
+            limit: PER_PAGE,
+            cursor,
+            search: filters.search.trim(),
+            stage: filters.stage,
+            ownerId: filters.owner === "unassigned" ? "" : filters.owner,
+            programmeId: programmeIdForFilter,
+            source: leadSourceForFilter,
+            createdFrom: filters.acquisitionFrom || undefined,
+            createdTo: filters.acquisitionTo ? `${filters.acquisitionTo}T23:59:59` : undefined,
+            sort: apiSort,
+            dir: sortDir,
+            includeTotal: !cursor,
+          });
+          rows = result.leads;
+          hasMore = result.hasMore;
+          total = result.total;
+          if (result.nextCursor) cursors[nextPage + 1] = result.nextCursor;
+          cursor = result.nextCursor;
+          if (!result.hasMore && nextPage < targetPage) break;
+        }
+        if (requestIdRef.current !== requestId) return;
+        pageCursorsRef.current = cursors;
+        setLeadRows(rows);
+        if (total !== null) setLeadTotal(total);
+        setLeadHasMore(hasMore);
+        setPage(targetPage);
+      } catch (error) {
+        if (requestIdRef.current === requestId) {
+          toast({
+            title: "Leads could not be loaded",
+            message: error instanceof Error ? error.message : "The backend did not return this page.",
+            tone: "error",
+          });
+        }
+      } finally {
+        if (requestIdRef.current === requestId) setLeadLoading(false);
+      }
+    },
+    [
+      apiSort,
+      filters.acquisitionFrom,
+      filters.acquisitionTo,
+      filters.owner,
+      filters.search,
+      filters.stage,
+      leadSourceForFilter,
+      programmeIdForFilter,
+      sortDir,
+      state.users,
+      toast,
+    ],
+  );
+
+  useEffect(() => {
+    pageCursorsRef.current = { 1: "" };
+    setLeadTotal(null);
+    setSelectedIds([]);
+    void fetchLeadPage(1);
+  }, [fetchLeadPage]);
 
   const filtered = useMemo(() => {
     const nowTs = Date.now();
-    const q = filters.search.trim().toLowerCase();
-    return state.leads.filter((lead) => {
+    return leadRows.filter((lead) => {
       if (!canSeeOwner(lead.ownerId)) return false;
       if (segment !== "all" && leadSessionGroup(lead, regIndex) !== (segment as SessionGroupId)) {
         return false;
       }
-      if (filters.apolloOnly && lead.source !== "Apollo.io") return false;
-      if (filters.eventbriteInvited && !invitedLeadIds.has(lead.id)) return false;
       if (quick === "followup-overdue") {
         if (lead.stage === "Won" || lead.stage === "Lost") return false;
         if (new Date(lead.nextActionAt).getTime() >= nowTs) return false;
@@ -162,30 +232,10 @@ export default function LeadsPage() {
       if (quick === "created-week" && nowTs - new Date(lead.createdAt).getTime() > 7 * 86400000) {
         return false;
       }
-      if (filters.stage !== "all" && lead.stage !== filters.stage) return false;
-      if (filters.programme !== "all" && lead.programme !== filters.programme) return false;
-      if (filters.source !== "all" && lead.source !== filters.source) return false;
       if (filters.priority !== "all" && lead.priority !== filters.priority) return false;
-      if (filters.acquisitionFrom) {
-        const from = new Date(`${filters.acquisitionFrom}T00:00:00`).getTime();
-        if (new Date(lead.acquisitionDate).getTime() < from) return false;
-      }
-      if (filters.acquisitionTo) {
-        const to = new Date(`${filters.acquisitionTo}T23:59:59`).getTime();
-        if (new Date(lead.acquisitionDate).getTime() > to) return false;
-      }
-      if (filters.owner !== "all") {
-        if (filters.owner === "unassigned" ? lead.ownerId !== "" : lead.ownerId !== filters.owner) {
-          return false;
-        }
-      }
-      if (q) {
-        const haystack = `${lead.name} ${lead.contactName} ${lead.email} ${lead.programme} ${lead.source} ${lead.tags.join(" ")}`.toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
       return true;
     });
-  }, [state.leads, filters, quick, canSeeOwner, segment, regIndex, invitedLeadIds]);
+  }, [leadRows, filters.priority, quick, canSeeOwner, segment, regIndex]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -203,9 +253,10 @@ export default function LeadsPage() {
     return list;
   }, [filtered, sortKey, sortDir]);
 
-  const pageCount = Math.max(1, Math.ceil(sorted.length / PER_PAGE));
+  const totalForPaging = leadTotal ?? (page - 1) * PER_PAGE + leadRows.length + (leadHasMore ? PER_PAGE : 0);
+  const pageCount = Math.max(1, Math.ceil(totalForPaging / PER_PAGE));
   const currentPage = Math.min(page, pageCount);
-  const paged = sorted.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE);
+  const paged = sorted;
 
   const handleSort = (key: LeadSortKey) => {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -222,6 +273,11 @@ export default function LeadsPage() {
     const pageIds = paged.map((l) => l.id);
     const allOn = pageIds.every((id) => selectedIds.includes(id));
     setSelectedIds(allOn ? selectedIds.filter((id) => !pageIds.includes(id)) : [...new Set([...selectedIds, ...pageIds])]);
+  };
+
+  const handlePageChange = (nextPage: number) => {
+    if (nextPage < 1 || nextPage > pageCount || nextPage === currentPage) return;
+    void fetchLeadPage(nextPage);
   };
 
   const handleSubmit = (input: LeadInput) => {
@@ -248,11 +304,11 @@ export default function LeadsPage() {
     setDeleteTarget(null);
   };
 
-  const newThisWeek = state.leads.filter(
+  const newThisWeek = leadRows.filter(
     (l) => Date.now() - new Date(l.createdAt).getTime() < 7 * 86400000,
   ).length;
-  const qualified = state.leads.filter((l) => l.stage === "Qualified").length;
-  const overdueFollowUps = state.leads.filter(
+  const qualified = leadRows.filter((l) => l.stage === "Qualified").length;
+  const overdueFollowUps = leadRows.filter(
     (l) =>
       l.stage !== "Won" &&
       l.stage !== "Lost" &&
@@ -270,7 +326,7 @@ export default function LeadsPage() {
             Leads
           </h1>
           <p className="mt-1 text-[13px] text-foreground-500">
-            CRM workspace · {state.leads.length} records · showing {paged.length} of {sorted.length}
+            CRM workspace · {leadTotal?.toLocaleString() ?? totalForPaging.toLocaleString()} records · showing {paged.length} on this page
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -302,10 +358,10 @@ export default function LeadsPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="Total leads" value={state.leads.length} icon="ri-contacts-book-2-line" tone="primary" />
-        <MetricCard label="New this week" value={newThisWeek} icon="ri-user-add-line" tone="accent" />
-        <MetricCard label="Qualified" value={qualified} icon="ri-shield-check-line" tone="success" />
-        <MetricCard label="Overdue follow-ups" value={overdueFollowUps} icon="ri-alarm-warning-line" tone="danger" />
+        <MetricCard label="Total leads" value={leadTotal ?? totalForPaging} icon="ri-contacts-book-2-line" tone="primary" />
+        <MetricCard label="New on page" value={newThisWeek} icon="ri-user-add-line" tone="accent" />
+        <MetricCard label="Qualified on page" value={qualified} icon="ri-shield-check-line" tone="success" />
+        <MetricCard label="Overdue on page" value={overdueFollowUps} icon="ri-alarm-warning-line" tone="danger" />
       </div>
 
       {segment !== "all" ? (
@@ -321,7 +377,7 @@ export default function LeadsPage() {
         </div>
       ) : null}
 
-      {filters.apolloOnly || filters.eventbriteInvited || filters.acquisitionFrom || filters.acquisitionTo ? (
+      {filters.apolloOnly || filters.acquisitionFrom || filters.acquisitionTo ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent-200 bg-accent-100/60 px-4 py-2.5">
           <span className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-accent-900">
             <i className="ri-filter-3-line"></i>
@@ -329,9 +385,7 @@ export default function LeadsPage() {
             {filters.apolloOnly ? (
               <strong>Apollo.io — original source (lead&apos;s own recorded provider)</strong>
             ) : null}
-            {filters.apolloOnly && filters.eventbriteInvited ? <span>·</span> : null}
-            {filters.eventbriteInvited ? <strong>Invited through Eventbrite (linked recipient activity)</strong> : null}
-            {(filters.apolloOnly || filters.eventbriteInvited) && (filters.acquisitionFrom || filters.acquisitionTo) ? (
+            {filters.apolloOnly && (filters.acquisitionFrom || filters.acquisitionTo) ? (
               <span>·</span>
             ) : null}
             {filters.acquisitionFrom || filters.acquisitionTo ? (
@@ -347,7 +401,6 @@ export default function LeadsPage() {
               setFilters((f) => ({
                 ...f,
                 apolloOnly: false,
-                eventbriteInvited: false,
                 acquisitionFrom: "",
                 acquisitionTo: "",
               }))
@@ -404,12 +457,14 @@ export default function LeadsPage() {
           position="top"
           currentPage={currentPage}
           pageCount={pageCount}
-          total={filtered.length}
+          total={totalForPaging}
           itemLabel="leads"
-          onPageChange={setPage}
+          onPageChange={handlePageChange}
         />
 
-        {paged.length === 0 ? (
+        {leadLoading ? (
+          <LoadingState className="px-4 py-10 text-center text-[13px] font-medium text-foreground-500">Loading 50 leads...</LoadingState>
+        ) : paged.length === 0 ? (
           <EmptyState
             icon="ri-user-search-line"
             title="No leads match your filters"
@@ -441,9 +496,9 @@ export default function LeadsPage() {
         <PaginationFooter
           currentPage={currentPage}
           pageCount={pageCount}
-          total={filtered.length}
+          total={totalForPaging}
           itemLabel="leads"
-          onPageChange={setPage}
+          onPageChange={handlePageChange}
         />
       </div>
 

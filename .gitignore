@@ -1,6 +1,7 @@
 .env
 .env.hostinger
 data/pathway-db.json
+data/pathway-db.backup-*.json
 node_modules/
 dist/
 npm-debug.log*

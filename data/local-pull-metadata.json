@@ -1,0 +1,26 @@
+{
+  "pulled_at": "2026-10-14T13:17:29.557Z",
+  "source": {
+    "storage": "postgres",
+    "ssl_configured": true,
+    "pooled_endpoint": true,
+    "pool_max": 10,
+    "idle_timeout_ms": 600000,
+    "connection_timeout_ms": 10000,
+    "host_kind": "neon",
+    "host_region_hint": "us-east-2"
+  },
+  "target": "data\\pathway-db.json",
+  "ms": 514230,
+  "counts": {
+    "users": 2,
+    "leads": 129307,
+    "tasks": 41502,
+    "emails": 7680,
+    "applications": 1503,
+    "events": 90,
+    "audit": 7069,
+    "attribution": 1503,
+    "zoho_records": 184465
+  }
+}

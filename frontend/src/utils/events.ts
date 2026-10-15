@@ -1,4 +1,5 @@
 import type { BadgeTone } from "@/components/base/Badge";
+import { eventAttendance, recordedAttendance, type AttendanceDisplay } from "@/utils/eventAttendance";
 import {
   type AttendanceOutcome,
   type EventAudienceFilter,
@@ -30,7 +31,7 @@ export interface EventAudienceRow {
   registrationId?: string;
   registeredAt?: string;
   registrationStatus: RegistrationStatus | "Not Registered";
-  attendance: AttendanceOutcome;
+  attendance: AttendanceDisplay;
   leadId?: string;
   salesOwnerId?: string;
   followUpRequired: boolean;
@@ -61,10 +62,7 @@ export function deriveRegistrationStatus(reg: EventRegistration): RegistrationSt
  * from a completed registration outcome). Otherwise it stays Unknown.
  */
 export function resolveAttendance(reg: EventRegistration): AttendanceOutcome {
-  if (reg.attendance) return reg.attendance;
-  if (reg.outcome === "attended") return "Attended";
-  if (reg.outcome === "no-show") return "Did Not Attend";
-  return "Attendance Unknown";
+  return recordedAttendance(reg);
 }
 
 function recipientInvitationStatus(recipient: CampaignRecipient): RecipientStatus {
@@ -114,7 +112,7 @@ export function buildEventAudience(
         campaignName: campaign.name,
         invitationStatus: recipientInvitationStatus(recipient),
         registrationStatus: recipient.outcome === "Cancelled Registration" ? "Cancelled Registration" : "Not Registered",
-        attendance: "Attendance Unknown",
+        attendance: eventAttendance(event, {}),
         leadId: recipient.leadId ?? lead?.id,
         followUpRequired: false,
         notes: "",
@@ -123,7 +121,7 @@ export function buildEventAudience(
   });
 
   safeRegistrations.forEach((reg) => {
-    const key = normalise(reg.email);
+    const key = normalise(reg.email) || `registration:${reg.id}`;
     const lead = leadByEmail.get(key);
     const existing = rows.get(key);
     rows.set(key, {
@@ -137,7 +135,7 @@ export function buildEventAudience(
       registrationId: reg.id,
       registeredAt: reg.registeredAt,
       registrationStatus: deriveRegistrationStatus(reg),
-      attendance: resolveAttendance(reg),
+      attendance: eventAttendance(event, reg),
       leadId: existing?.leadId ?? lead?.id,
       salesOwnerId: reg.salesOwnerId ?? lead?.ownerId,
       followUpRequired: Boolean(reg.followUpRequired) || Boolean(reg.callbackAt),
@@ -169,6 +167,8 @@ export function matchesEventFilter(row: EventAudienceRow, filter: EventAudienceF
       return row.attendance === "Did Not Attend";
     case "attendance-unknown":
       return row.registrationStatus === "Registered" && row.attendance === "Attendance Unknown";
+    case "waiting":
+      return row.attendance === "Waiting";
     case "follow-up-required":
       return row.followUpRequired || row.attendance === "Did Not Attend";
     default:
@@ -183,6 +183,7 @@ export interface EventAudienceSummary {
   attended: number;
   didNotAttend: number;
   attendanceUnknown: number;
+  waiting: number;
   notRegistered: number;
   followUpRequired: number;
 }
@@ -198,6 +199,7 @@ export function summariseAudience(rows: EventAudienceRow[]): EventAudienceSummar
     attendanceUnknown: list.filter(
       (r) => r.registrationStatus === "Registered" && r.attendance === "Attendance Unknown",
     ).length,
+    waiting: list.filter(row => row.attendance === "Waiting").length,
     notRegistered: list.filter((r) => r.registrationStatus === "Not Registered").length,
     followUpRequired: list.filter((r) => r.followUpRequired || r.attendance === "Did Not Attend").length,
   };

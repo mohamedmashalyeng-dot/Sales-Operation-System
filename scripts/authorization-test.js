@@ -36,7 +36,13 @@ async function main() {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'kbc-authz-'));
   fs.copyFileSync(path.join(root, 'server.js'), path.join(folder, 'server.js'));
   fs.cpSync(path.join(root, 'server'), path.join(folder, 'server'), { recursive: true });
+  fs.mkdirSync(path.join(folder, 'sql'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'sql', '2026-10-15_call_driven_journey.sql'), path.join(folder, 'sql', '2026-10-15_call_driven_journey.sql'));
   for (const file of ['index.html', 'package.json']) fs.copyFileSync(path.join(root, file), path.join(folder, file));
+  // Supply a tiny built frontend so static authorization checks exercise the normal serving path.
+  const fixtureFrontend = path.join(folder, 'frontend', 'out');
+  fs.mkdirSync(fixtureFrontend, { recursive: true });
+  fs.writeFileSync(path.join(fixtureFrontend, 'index.html'), '<!doctype html><html><body>Authorization fixture</body></html>');
   // Files that must never be served, each with a marker to look for in the answers.
   const marker = 'AUTHZ-TEST-MARKER-not-a-real-secret';
   for (const [file, content] of [['.env', `AUTHZ_MARKER=${marker}\n`], ['.env.hostinger', `AUTHZ_MARKER=${marker}\n`], ['backup.zip', marker], ['dump.sql', marker], ['app.log', marker], ['.git/config', marker], ['data/export.json', marker], ['sql/schema.sql', marker]]) {
@@ -45,6 +51,7 @@ async function main() {
   }
   const port = await freePort();
   const env = { ...process.env, PORT: String(port), NODE_PATH: path.join(root, 'node_modules'), DEV_PANEL_PASSWORD: developerPassword, NODE_ENV: 'test', BACKGROUND_JOBS_ENABLED: 'false', ENROLLED_LEAD_APPLICATION_BACKFILL: 'false', MONITORING_SNAPSHOT_ENABLED: 'false', ZOHO_SYNC_WORKER: 'false' };
+  env.CALL_EVALUATION_WEBHOOK_SECRET = 'isolated-call-webhook-secret-for-tests-1234567890';
   for (const name of ['DATABASE_URL', 'POSTGRES_URL', 'MONGODB_URI', 'MONGO_URI', 'NEST_COMPAT_MODE']) delete env[name];
   if (databaseUrl) env.DATABASE_URL = databaseUrl;
   const server = spawn(process.execPath, ['server.js'], { cwd: folder, env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -79,13 +86,25 @@ async function main() {
       if (attempt === 59) throw new Error(`the test server did not start:\n${log.slice(-600)}`);
     }
 
+    // Signed external results bypass session cookies, never signature verification.
+    const rawResult = JSON.stringify({ event_id: 'http-test', evaluation_id: 'http-eval', external_call_id: 'unknown-call', status: 'completed', summary: 'أحمد مهتم', lead_signals: { answered: true } });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `v1=${require('node:crypto').createHmac('sha256', env.CALL_EVALUATION_WEBHOOK_SECRET).update(`${timestamp}.`).update(rawResult).digest('hex')}`;
+    const webhook = async (signatureValue, time = timestamp, raw = rawResult) => {
+      const response = await fetch(`${base}/api/integrations/call-evaluation/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-KBC-Timestamp': time, 'X-KBC-Signature': signatureValue }, body: raw });
+      return { status: response.status, text: await response.text() };
+    };
+    expectStatus('valid signed UTF-8 webhook reaches stable-call matching without a session', await webhook(signature), 409);
+    expectStatus('unsigned webhook is rejected', await webhook(''), 401);
+    expectStatus('tampered signed webhook is rejected', await webhook(signature, timestamp, rawResult.replace('http-eval', 'tampered')), 401);
+    expectStatus('stale webhook timestamp is rejected', await webhook(signature, '1000000000'), 401);
     // ---- accounts
     const developer = await signIn(developerEmail, developerPassword);
     check('developer signs in', developer.status === 200, String(developer.status));
     await call(developer, 'POST', '/api/leads/reconcile', {}); // fills the programme table the PostgreSQL routes read
     const stamp = Date.now();
     const accounts = {};
-    for (const [key, role] of [['monitor', 'monitor'], ['a', 'member'], ['b', 'member']]) {
+    for (const [key, role] of [['monitor', 'manager'], ['a', 'sales'], ['b', 'member'], ['enrolment','staff enrollment']]) {
       const email = `authz-${key}-${stamp}@example.com`;
       const created = await call(developer, 'POST', '/api/users', { name: `Authz ${key}`, email, password, role });
       check(`developer creates the ${role} account ${key}`, created.status === 201, `${created.status} ${created.text.slice(0, 80)}`);
@@ -94,9 +113,31 @@ async function main() {
     const monitor = await signIn(accounts.monitor.email, password);
     const memberA = await signIn(accounts.a.email, password);
     const memberB = await signIn(accounts.b.email, password);
+    const enrolment = await signIn(accounts.enrolment.email,password);
+    check('Staff Enrollment remains an own-scope enrolment role',enrolment.status===200 && enrolment.user.role==='enrolment');
     check('monitor and both members sign in', monitor.status === 200 && memberA.status === 200 && memberB.status === 200, `${monitor.status},${memberA.status},${memberB.status}`);
     const idA = memberA.user?.id;
     const idB = memberB.user?.id;
+    const bootstrapOwn=(await call(memberA,'GET','/api/bootstrap')).json;
+    check('staff bootstrap exposes only the signed-in account',bootstrapOwn.owners.length===1 && bootstrapOwn.owners[0].id===idA && !JSON.stringify(bootstrapOwn).includes('password_hash'));
+    const enrolmentBootstrap=(await call(enrolment,'GET','/api/bootstrap')).json;
+    check('enrolment approval capability does not grant team scope',enrolmentBootstrap.permissions.review===false && enrolmentBootstrap.permissions.enrolment===true && enrolmentBootstrap.owners.length===1);
+    const browserSession=await signIn(accounts.a.email.toUpperCase(),password);
+    check('login accepts email casing and returns the stored sales role',browserSession.status===200 && browserSession.user?.role==='sales');
+    expectStatus('wrong password does not replace the current account',await call(browserSession,'POST','/api/login',{email:accounts.monitor.email,password:'incorrect-fixture-password'}),401);
+    expectStatus('current account survives a failed switch',await call(browserSession,'GET','/api/bootstrap'),200);
+    const switchedSession=await call(browserSession,'POST','/api/login',{email:accounts.enrolment.email,password,role:'manager',permissions:{admin:true}});
+    check('account switch uses the stored role despite forged login capabilities',switchedSession.status===200 && switchedSession.json?.user?.role==='enrolment');
+    expectStatus('successful account switch revokes the previous browser session',await call(browserSession,'GET','/api/bootstrap'),401);
+    expectStatus('successful switch establishes the new account session',await call(switchedSession,'GET','/api/bootstrap'),200);
+    expectStatus('switching accounts preserves other browser sessions',await call(memberA,'GET','/api/bootstrap'),200);
+    await call(switchedSession,'POST','/api/logout',{});
+    for(const session of [memberA,enrolment,monitor]) expectStatus('whole workspace snapshot is developer-only',await call(session,'GET','/api/workspace/full'),403);
+    const full=(await call(developer,'GET','/api/workspace/full')).json;
+    check('even developer snapshots never contain password hashes',!JSON.stringify(full).includes('password_hash'));
+    for(const session of [memberA,enrolment]) for(const route of ['/api/events','/api/events/unknown/people','/api/zoom/overview','/api/users','/api/future-unscoped-feature']) {
+      expectStatus('staff cannot enter team-wide or unclassified routes',await call(session,'GET',route),403);
+    }
 
     // ---- records: each member creates their own
     const programmeId = (await call(developer, 'GET', '/api/bootstrap')).json?.programmes?.[0]?.id;
@@ -109,6 +150,24 @@ async function main() {
     const leadSpare = spare.json?.id || spare.json?.lead?.id;
     check('each member creates a lead', createdA.status === 201 && createdB.status === 201 && Boolean(leadA) && Boolean(leadB), `${createdA.status},${createdB.status} ${createdB.text.slice(0, 80)}`);
     check('a lead created by a member belongs to that member', String(createdA.json?.lead?.owner_id) === String(idA), `${createdA.json?.lead?.owner_id} vs ${idA}`);
+
+    const referral = { leadId: leadA, referralReason: 'Learner prefers private route', suggestedProgramme: 'Leadership Essentials' };
+    const commercial = await call(memberA, 'POST', '/api/commercial-opportunities', referral);
+    expectStatus('member creates a commercial referral for their own lead', commercial, 201);
+    expectStatus('member cannot refer another owner lead', await call(memberB, 'POST', '/api/commercial-opportunities', referral), 403);
+    const commercialId = commercial.json?.record?.id;
+    expectStatus('member cannot edit another owner opportunity', await call(memberB, 'PATCH', `/api/commercial-opportunities/${commercialId}`, { stage: 'Accepted' }), 403);
+    expectStatus('commercial invalid stage is rejected', await call(memberA, 'PATCH', `/api/commercial-opportunities/${commercialId}`, { stage: 'Invented' }), 400);
+    expectStatus('own commercial edit persists', await call(memberA, 'PATCH', `/api/commercial-opportunities/${commercialId}`, { stage: 'Quote Sent' }), 200);
+    const ownBusiness = await call(memberA, 'GET', '/api/business');
+    check('business list includes own commercial record', ownBusiness.json?.commercialOpportunities?.some(item => item.id === commercialId));
+    const otherBusiness = await call(memberB, 'GET', '/api/business');
+    check('business list excludes another member commercial record', !otherBusiness.json?.commercialOpportunities?.some(item => item.id === commercialId));
+    check('business list excludes another member lead', !otherBusiness.json?.leads?.some(item => item.id === leadA));
+    expectStatus('members cannot create employer records', await call(memberA, 'POST', '/api/employers', { name: 'Restricted Ltd' }), 403);
+    expectStatus('team staff can create employer records', await call(monitor, 'POST', '/api/employers', { name: `Employer ${stamp}`, email: 'contact@example.test' }), 201);
+    expectStatus('members cannot record employer agreements', await call(memberA, 'POST', '/api/employer-agreements', { employerName: 'Test Ltd', leadId: leadA }), 403);
+    expectStatus('members cannot record DAS confirmations', await call(memberA, 'POST', '/api/das-records', { employerName: 'Test Ltd', leadId: leadA }), 403);
 
     const due = new Date(Date.now() + 86400000).toISOString();
     const taskA = await call(memberA, 'POST', '/api/tasks', { lead_id: leadA, title: `authz task a ${stamp}`, kind: 'Call', due_at: due });
@@ -137,7 +196,7 @@ async function main() {
     const requirementId = (applicationB.json?.application?.requirements || applicationB.json?.requirements || applicationRow?.requirements || [])[0]?.id;
     let evidenceId = '';
     if (requirementId) {
-      const uploaded = await call(memberB, 'POST', `/api/applications/${applicationIdB}/evidence`, { requirement_id: requirementId, filename: 'proof.pdf', content_base64: Buffer.from('authz test file').toString('base64') });
+      const uploaded = await call(memberB, 'POST', `/api/applications/${applicationIdB}/evidence`, { requirement_id: requirementId, filename: 'proof.pdf', content_base64: Buffer.from('%PDF-1.4 authz test file').toString('base64') });
       check('member B uploads evidence to their own application', [200, 201].includes(uploaded.status), `${uploaded.status} ${uploaded.text.slice(0, 90)}`);
       // Evidence ids start with ER-; the upload answer or the lead's detail carries the new one.
       const places = [uploaded.text, (await call(developer, 'GET', `/api/leads/${leadB}`)).text, (await call(developer, 'GET', '/api/applications?limit=50')).text];
@@ -243,6 +302,46 @@ async function main() {
     check('member A document query does not leak member B files', !(docsAForB.json?.items || docsAForB.json?.documents || []).some(item => String(item.lead_id) === String(leadB)), docsAForB.text.slice(0, 180));
     if (databaseUrl) expectStatus('member A cannot delete an application', await call(memberA, 'DELETE', `/api/applications/${applicationIdB}`, {}), 403);
     notForbidden('the monitor decides member B\'s application', await call(monitor, 'POST', `/api/applications/${applicationIdB}/review`, { status: 'Eligible' }));
+
+    const enrolledLead=await call(developer,'POST','/api/leads',leadBody('enrolment',{owner_id:enrolment.user.id}));
+    const enrolmentLeadId=enrolledLead.json?.id || enrolledLead.json?.lead?.id;
+    const ownApp=await call(enrolment,'POST','/api/applications',{lead_id:enrolmentLeadId,programme_id:programmeId});
+    const ownAppId=ownApp.json?.application?.id;
+    check('enrolment can prepare an owned application',ownApp.status===201 && Boolean(ownAppId));
+    expectStatus('enrolment cannot approve another staff application',await call(enrolment,'POST',`/api/applications/${applicationIdB}/review`,{status:'Eligible'}),403);
+    expectStatus('enrolment cannot verify another staff contract',await call(enrolment,'POST',`/api/applications/${applicationIdB}/contract`,{signatory:'x'}),403);
+    expectStatus('enrolment cannot enrol another staff learner',await call(enrolment,'POST',`/api/applications/${applicationIdB}/enrol`,{external_reference:'x'}),403);
+    expectStatus('enrolment cannot review another staff evidence',await call(enrolment,'POST',`/api/evidence/${evidenceId}/review`,{status:'Verified'}),403);
+    expectStatus('enrolment can approve their own application',await call(enrolment,'POST',`/api/applications/${ownAppId}/review`,{status:'Eligible'}),200);
+    expectStatus('enrolment can verify their own contract',await call(enrolment,'POST',`/api/applications/${ownAppId}/contract`,{signatory:'Recorded enrolment reviewer',signed_at:new Date().toISOString(),consistency_confirmed:true}),200);
+    expectStatus('enrolment can enrol their own learner',await call(enrolment,'POST',`/api/applications/${ownAppId}/enrol`,{external_reference:'fixture-only'}),200);
+    expectStatus('sales cannot approve even their own assigned application',await call(memberA,'POST',`/api/applications/${ownAppId}/review`,{status:'Eligible'}),403);
+    expectStatus('enrolment cannot create sales leads',await call(enrolment,'POST','/api/leads',leadBody('enrolment-creation')),403);
+    expectStatus('sales cannot bypass approval by creating an already enrolled learner',await call(memberA,'POST','/api/applications',{lead_id:leadA,programme_id:programmeId,already_enrolled:true}),403);
+    expectStatus('sales cannot bypass approval through the journey stage',await call(memberA,'POST',`/api/leads/${leadA}/journey-stage`,{stage:'Enrolled',reason:'forged approval'}),403);
+    const forged=await fetch(`${base}/api/leads/${leadB}`,{headers:{Cookie:memberA.cookie,'X-User-Id':idB,'X-Role':'manager','X-Owner-Id':idB}});
+    expectStatus('identity and role headers cannot impersonate another user',{status:forged.status,text:''},403);
+    const logout=await call(enrolment,'POST','/api/logout',{});
+    expectStatus('staff can sign out',logout,200);
+    expectStatus('the signed-out cookie cannot be replayed',await call(enrolment,'GET','/api/bootstrap'),401);
+
+    // ---- human business routing follows the same server-side record ownership
+    expectStatus('sales cannot inspect another owner business route',await call(memberA,'GET',`/api/leads/${leadB}/business-route`),403);
+    expectStatus('sales cannot confirm another owner business route',await call(memberA,'POST',`/api/leads/${leadB}/business-route`,{destination:'employers'}),403);
+    expectStatus('signed-out users cannot read routing',await call(null,'GET',`/api/leads/${leadA}/business-route`),401);
+    expectStatus('signed-out users cannot confirm routing',await call(null,'POST',`/api/leads/${leadA}/business-route`,{destination:'commercial'}),401);
+    const manualRoute=await call(memberA,'POST',`/api/leads/${leadA}/business-route`,{destination:'commercial'});
+    expectStatus('sales can confirm their own business route',manualRoute,200);
+    check('reviewer is the authenticated user',manualRoute.json?.route?.reviewed_by===idA && manualRoute.json?.route?.source==='manual');
+    const retried=await call(memberA,'POST',`/api/leads/${leadA}/business-route`,{destination:'commercial'});
+    check('retry preserves the original review timestamp',retried.status===200 && retried.json?.route?.reviewed_at===manualRoute.json?.route?.reviewed_at);
+    expectStatus('forging a business reviewer is rejected',await call(memberA,'POST',`/api/leads/${leadA}/business-route`,{destination:'employers',reviewed_by:idB}),400);
+    const routedPage=await call(memberA,'GET','/api/business/candidates?section=commercial&mode=matched');
+    check('confirmed queue contains the owned human-routed lead',routedPage.status===200 && routedPage.json?.items?.some(row=>row.id===leadA));
+    const otherQueue=await call(memberB,'GET',`/api/business/candidates?section=commercial&mode=matched&owner_id=${idA}`);
+    check('forged owner filters cannot expose confirmed leads',otherQueue.status===200 && !otherQueue.json?.items?.some(row=>row.id===leadA));
+    expectStatus('manager can review a team business route',await call(monitor,'GET',`/api/leads/${leadB}/business-route`),200);
+    expectStatus('manager can confirm a team business route',await call(monitor,'POST',`/api/leads/${leadB}/business-route`,{destination:'employers'}),200);
 
     // ---- saved views are personal saved filters, not shared records
     const savedView = await call(memberA, 'POST', '/api/saved-views', { entity_type: 'leads', name: `Authz view ${stamp}`, filters: { search: 'authz', stage: 'All' }, is_default: true });

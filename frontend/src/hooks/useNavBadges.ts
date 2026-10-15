@@ -15,9 +15,6 @@ export function useNavBadges(): Record<string, number> {
     const openTasks = state.tasks.filter((t) => t.status === "open" && canSeeOwner(t.ownerId));
     const applications = state.applications.filter((a) => canSeeOwner(a.ownerId));
 
-    const futureIntakes = state.futureIntakes.filter((f) =>
-      canSeeOwner(state.leads.find((l) => l.id === f.leadId)?.ownerId ?? f.salesOwnerId),
-    );
     const commercial = state.commercialOpportunities.filter((c) =>
       canSeeOwner(state.leads.find((l) => l.id === c.leadId)?.ownerId ?? c.commercialOwnerId),
     );
@@ -35,8 +32,7 @@ export function useNavBadges(): Record<string, number> {
         (a) => a.status === "Submitted" || a.status === "Under review",
       ).length,
       events: state.events.filter((e) => e.registrations.some((r) => r.outcome === "pending")).length,
-      "future-intake": futureIntakes.filter((f) => new Date(f.nextFollowUpAt).getTime() < now).length,
       commercial: commercial.filter((c) => OPEN_COMMERCIAL_STAGES.includes(c.stage)).length,
     };
-  }, [state.leads, state.threads, state.tasks, state.applications, state.events, state.futureIntakes, state.commercialOpportunities, canSeeOwner]);
+  }, [state.leads, state.threads, state.tasks, state.applications, state.events, state.commercialOpportunities, canSeeOwner]);
 }

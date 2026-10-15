@@ -20,8 +20,6 @@ export interface LeadFilterState {
   priority: string;
   /** Only leads whose OWN recorded original acquisition provider is Apollo.io. */
   apolloOnly: boolean;
-  /** Only leads with a linked Eventbrite campaign invitation (recipient activity). */
-  eventbriteInvited: boolean;
   /** Acquisition-date range (uses the lead's ORIGINAL acquisition date). */
   acquisitionFrom: string;
   acquisitionTo: string;
@@ -35,7 +33,6 @@ export const DEFAULT_LEAD_FILTERS: LeadFilterState = {
   source: "all",
   priority: "all",
   apolloOnly: false,
-  eventbriteInvited: false,
   acquisitionFrom: "",
   acquisitionTo: "",
 };
@@ -57,7 +54,6 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
     filters.source !== "all",
     filters.priority !== "all",
     filters.apolloOnly,
-    filters.eventbriteInvited,
     Boolean(filters.acquisitionFrom),
     Boolean(filters.acquisitionTo),
   ].filter(Boolean).length;
@@ -91,20 +87,6 @@ export default function LeadFilters({ filters, onChange }: LeadFiltersProps) {
           title="Leads whose own recorded original acquisition provider is Apollo.io — not Eventbrite recipients or Zoho exports"
         >
           <i className="ri-radar-line"></i> Apollo.io — Original Source
-        </button>
-        <button
-          type="button"
-          aria-pressed={filters.eventbriteInvited}
-          onClick={() => update({ eventbriteInvited: !filters.eventbriteInvited })}
-          className={cn(
-            "inline-flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[12px] font-semibold transition-colors",
-            filters.eventbriteInvited
-              ? "border-accent-400 bg-accent-500 text-background-50"
-              : "border-background-300 bg-background-50 text-foreground-600 hover:bg-background-100",
-          )}
-          title="Leads with a linked Eventbrite campaign invitation — filtered by recipient activity, not by original source"
-        >
-          <i className="ri-mail-send-line"></i> Invited through Eventbrite
         </button>
       </div>
 

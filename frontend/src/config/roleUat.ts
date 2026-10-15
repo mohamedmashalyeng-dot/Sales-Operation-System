@@ -30,7 +30,7 @@ export const ROLE_UAT: RoleUatGroup[] = [
   {
     roleId: "sales",
     roleName: "Staff Sales",
-    summary: "Owns assigned leads, sales calls, follow-ups and campaigns.",
+    summary: "Owns assigned leads, sales calls and follow-ups.",
     icon: "ri-user-star-line",
     items: [
       { id: "sales-leads", label: "Assigned Lead access", expect: "permitted", detail: "Only leads owned by the acting sales user are listed.", route: "/leads" },
@@ -38,7 +38,7 @@ export const ROLE_UAT: RoleUatGroup[] = [
       { id: "sales-recording", label: "Call evidence access", expect: "permitted", detail: "Call evidence appears only when the record flags media available; transcript only when flagged.", route: "/leads" },
       { id: "sales-notes", label: "Sales notes", expect: "permitted", detail: "Adds and saves a note on an assigned lead.", route: "/leads" },
       { id: "sales-followup", label: "Follow-up creation", expect: "permitted", detail: "Creates a Planner follow-up task.", route: "/planner" },
-      { id: "sales-apollo", label: "Apollo filters", expect: "permitted", detail: "Apollo.io original-source and Eventbrite-invited filters work on Leads.", route: "/leads" },
+      { id: "sales-apollo", label: "Apollo filters", expect: "permitted", detail: "Apollo.io source filters work on Leads.", route: "/leads" },
       { id: "sales-enrolment", label: "Restricted enrolment actions", expect: "restricted", detail: "Cannot record a verified funding decision or edit restricted enrolment stages.", route: "/leads" },
     ],
   },
@@ -52,7 +52,6 @@ export const ROLE_UAT: RoleUatGroup[] = [
       { id: "enrol-elig", label: "Eligibility review", expect: "permitted", detail: "Can record a verified funding decision on a lead.", route: "/leads" },
       { id: "enrol-agreement", label: "Employer Agreement", expect: "permitted", detail: "Manages employer agreement status explicitly.", route: "/employers" },
       { id: "enrol-das", label: "DAS tracking", expect: "permitted", detail: "Manages Apprenticeship Service provider-addition status, separate from enrolment.", route: "/employers" },
-      { id: "enrol-intake", label: "Future Intake", expect: "permitted", detail: "Moves prospects to a future intake and schedules follow-ups.", route: "/future-intake" },
       { id: "enrol-sales", label: "Restricted sales actions", expect: "restricted", detail: "Cannot log sales calls or create leads.", route: "/leads" },
     ],
   },
@@ -62,9 +61,7 @@ export const ROLE_UAT: RoleUatGroup[] = [
     summary: "Team-wide visibility across sales, enrolment and reporting.",
     icon: "ri-team-line",
     items: [
-      { id: "mgr-leads", label: "Team-wide leads & reports", expect: "permitted", detail: "Sees every lead and team-wide reporting figures.", route: "/sources" },
-      { id: "mgr-attribution", label: "Attribution analytics", expect: "permitted", detail: "Sources & Attribution shows team-wide figures and cohort drill-down.", route: "/sources" },
-      { id: "mgr-campaigns", label: "Campaign effectiveness", expect: "permitted", detail: "Campaigns and their audiences are visible and manageable.", route: "/campaigns" },
+      { id: "mgr-leads", label: "Team-wide leads & reports", expect: "permitted", detail: "Sees every lead and team-wide reporting figures.", route: "/apprenticeship-reports" },
       { id: "mgr-workload", label: "Sales & Enrolment workload", expect: "permitted", detail: "Team workload is visible on Today and the Audit trail.", route: "/" },
       { id: "mgr-audit", label: "Audit access", expect: "permitted", detail: "The audit trail is readable (where configured).", route: "/audit" },
       { id: "mgr-admin", label: "Admin-only controls", expect: "restricted", detail: "User and workspace-management controls belong to Admin.", route: "/admin" },

@@ -7,6 +7,7 @@ import Breadcrumbs from "@/components/feature/Breadcrumbs";
 import RoleSwitcher from "@/components/feature/RoleSwitcher";
 import { IntegrationDot } from "@/components/feature/DemoBanner";
 import { buildIntegrationStatuses, integrationSummaryText } from "@/utils/integrations";
+import { useToast } from "@/components/base/Toast";
 
 interface TopbarProps {
   onOpenSearch: () => void;
@@ -19,7 +20,8 @@ export default function Topbar({
 }: TopbarProps) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { currentUser, role, state, backendLoadedAt, integrationOverview } = useWorkspace();
+  const { currentUser, role, state, backendLoadedAt, integrationOverview, signOutBackend } = useWorkspace();
+  const { toast } = useToast();
   const integrations = buildIntegrationStatuses(state, backendLoadedAt, integrationOverview);
   const integrationSummary = integrationSummaryText(integrations);
 
@@ -171,13 +173,8 @@ export default function Topbar({
               onSelect: () => navigate("/settings"),
             },
             { key: "shortcuts", label: "Keyboard shortcuts", icon: "ri-command-line" },
-            {
-              key: "switch",
-              label: "Switch role",
-              icon: "ri-shield-keyhole-line",
-              onSelect: () => navigate("/settings"),
-            },
-            { key: "signout", label: "Sign out", icon: "ri-logout-box-line", tone: "danger" },
+            { key: "switchaccount", label: "Switch account", icon: "ri-user-shared-line", onSelect: () => { void signOutBackend().catch(error => toast({ title: "Could not switch account", message: error.message, tone: "error" })); } },
+            { key: "signout", label: "Sign out", icon: "ri-logout-box-line", tone: "danger", onSelect: () => { void signOutBackend().catch(error => toast({ title: "Sign out failed", message: error.message, tone: "error" })); } },
           ]}
         />
       </div>

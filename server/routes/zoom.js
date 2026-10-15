@@ -11,6 +11,16 @@ const NOT_HANDLED = require('./not-handled');
 // Zoom routes that read and write the database directly.
 async function zoomRoutes(ctx) {
   const { route, method, res, trace, body, req, url } = ctx;
+  if (route === '/api/zoom/overview' && method === 'GET') {
+    Authorization.requireTeam(await Auth.currentSessionUser(req, trace));
+    return Http.sendJson(res, await Zoom.loadZoomOverviewDb({ now: url.searchParams.get('now'),
+      day_start: url.searchParams.get('day_start'), day_end: url.searchParams.get('day_end') }, trace), 200, {}, trace);
+  }
+  const meeting = route.match(/^\/api\/zoom\/meetings\/([^/]+)$/);
+  if (meeting && method === 'GET') {
+    Authorization.requireTeam(await Auth.currentSessionUser(req));
+    return Http.sendJson(res, await Zoom.loadZoomMeetingDetailDb(decodeURIComponent(meeting[1]), { offset: url.searchParams.get('offset') }));
+  }
   if (route === '/api/zoom/events' && method === 'GET') {
     const user = await Auth.currentSessionUser(req, trace);
     Authorization.requireTeam(user);
@@ -39,7 +49,14 @@ async function zoomRoutes(ctx) {
   if (route === '/api/zoom/calls' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);
     Authorization.requireTeam(user);
-    return Http.sendJson(res, await Zoom.loadZoomCallPageDb(url.searchParams.get('limit'), url.searchParams.get('offset')));
+    return Http.sendJson(res, await Zoom.loadZoomCallPageDb({
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      direction: url.searchParams.get('direction'),
+      status: url.searchParams.get('status'),
+      match: url.searchParams.get('match'),
+      search: url.searchParams.get('search')
+    }));
   }
   if (route === '/api/zoom/numbers' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);
@@ -105,22 +122,14 @@ async function zoomWorkspaceRoutes(ctx) {
   }
   if (route === '/api/zoom/calls' && method === 'GET') {
     Authorization.requireTeam(user);
-    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit') || 50), 250));
-    const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
-    const allCalls = (db.zoom?.calls || [])
-      .map(call => Zoom.hydrateZoomStoredCall(db, call))
-      .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
-    const calls = allCalls.slice(offset, offset + limit);
-    return Http.sendJson(res, {
-      calls,
-      total: allCalls.length,
-      offset,
-      limit,
-      loaded: offset + calls.length,
-      has_more: offset + calls.length < allCalls.length,
-      next_offset: offset + calls.length,
-      last_sync_at: db.zoom?.last_call_sync_at || null
-    });
+    return Http.sendJson(res, await Zoom.loadZoomCallPageDb({
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      direction: url.searchParams.get('direction'),
+      status: url.searchParams.get('status'),
+      match: url.searchParams.get('match'),
+      search: url.searchParams.get('search')
+    }));
   }
   if (route === '/api/integrations/zoom/calls/sync' && method === 'POST') {
     Authorization.requireTeam(user);

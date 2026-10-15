@@ -26,7 +26,10 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_FILE = path.join(DATA_DIR, 'pathway-db.json');
-const DATABASE_URL = normalizePostgresConnectionString(process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.MONGODB_URI || process.env.MONGO_URI || '');
+const USE_LOCAL_JSON_DB = /^(1|true|yes|on)$/i.test(String(process.env.USE_LOCAL_JSON_DB || ''));
+const DATABASE_URL = USE_LOCAL_JSON_DB
+  ? ''
+  : normalizePostgresConnectionString(process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.MONGODB_URI || process.env.MONGO_URI || '');
 const DATABASE_NAME = process.env.DATABASE_NAME || process.env.MONGODB_DB || 'pathway';
 const MONGO_STATE_COLLECTION = process.env.MONGO_STATE_COLLECTION || 'app_state';
 const POSTGRES_STATE_TABLE = process.env.POSTGRES_STATE_TABLE || 'app_state';
@@ -59,7 +62,7 @@ const EMAIL_LIST_STATEMENT_TIMEOUT_MS = Math.max(1000, Math.min(Number(process.e
 const DEFAULT_DEVELOPER_EMAIL = 'mohamedmashalyeng@gmail.com';
 const LEGACY_DEVELOPER_EMAILS = ['alteam.kbc@gmail.com'];
 const AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS = String(process.env.AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS ?? process.env.AUTO_CREATE_APPLICATIONS_FOR_LEADS ?? 'true').toLowerCase() !== 'false';
-const ENROLLED_LEAD_APPLICATION_BACKFILL_ENABLED = AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && String(process.env.ENROLLED_LEAD_APPLICATION_BACKFILL ?? process.env.LEAD_APPLICATION_BACKFILL ?? 'true').toLowerCase() !== 'false';
+const ENROLLED_LEAD_APPLICATION_BACKFILL_ENABLED = AUTO_CREATE_APPLICATIONS_FOR_ENROLLED_LEADS && String(process.env.ENROLLED_LEAD_APPLICATION_BACKFILL ?? process.env.LEAD_APPLICATION_BACKFILL ?? 'false').toLowerCase() === 'true';
 const ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT = Math.max(1, Math.min(Number(process.env.ENROLLED_LEAD_APPLICATION_BACKFILL_LIMIT || process.env.LEAD_APPLICATION_BACKFILL_LIMIT || 10000), 50000));
 const BACKGROUND_JOBS_ENABLED = String(process.env.BACKGROUND_JOBS_ENABLED || 'false').toLowerCase() === 'true';
 const GMAIL_IMPORT_ENABLED = String(process.env.GMAIL_IMPORT || 'true').toLowerCase() !== 'false';
@@ -168,6 +171,10 @@ function loadEnv() {
     'ZOHO_ACCOUNTS_URL',
     'ZOHO_API_BASE_URL',
     'ZOHO_SCOPES',
+    'OPENAI_API_KEY',
+    'OPENAI_MODEL',
+    'AI_MODEL',
+    'CALL_EVALUATION_WEBHOOK_SECRET',
     'INITIAL_ADMIN_EMAIL',
     'INITIAL_ADMIN_PASSWORD',
     'INITIAL_ADMIN_NAME',
@@ -194,6 +201,7 @@ exports.PORT = PORT;
 exports.HOST = HOST;
 exports.DATA_DIR = DATA_DIR;
 exports.DB_FILE = DB_FILE;
+exports.USE_LOCAL_JSON_DB = USE_LOCAL_JSON_DB;
 exports.DATABASE_URL = DATABASE_URL;
 exports.DATABASE_NAME = DATABASE_NAME;
 exports.MONGO_STATE_COLLECTION = MONGO_STATE_COLLECTION;

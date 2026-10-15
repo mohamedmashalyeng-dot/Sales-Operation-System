@@ -1,4 +1,6 @@
 import Badge from "@/components/base/Badge";
+import { Link } from "react-router-dom";
+import { openCallReview } from "@/store/callJourney";
 import EmptyState from "@/components/base/EmptyState";
 import Menu from "@/components/base/Menu";
 import { useWorkspace } from "@/store/WorkspaceProvider";
@@ -8,8 +10,8 @@ import { formatDateTime } from "@/utils/format";
 
 interface TaskListProps {
   tasks: Task[];
-  onEdit: (task: Task) => void;
-  onDelete: (task: Task) => void;
+  onEdit?: (task: Task) => void;
+  onDelete?: (task: Task) => void;
   emptyMessage?: string;
 }
 
@@ -80,6 +82,11 @@ export default function TaskList({ tasks, onEdit, onDelete, emptyMessage }: Task
                   </span>
                 ) : null}
               </div>
+              {task.relatedCallId && task.sourceEventId ? <div className="mt-2 flex flex-wrap gap-3 text-xs font-semibold text-primary-700">
+                <Link className="hover:underline" to={`/zoom/calls/${encodeURIComponent(task.relatedCallId)}`}><i className="ri-phone-line" /> View Zoom call</Link>
+                <button className="hover:underline" type="button" onClick={() => openCallReview(task.sourceEventId!)}>View approved review</button>
+                {task.relatedLeadId ? <Link className="hover:underline" to={`/leads/${encodeURIComponent(task.relatedLeadId)}`}>Open lead</Link> : null}
+              </div> : null}
             </div>
 
             <Badge tone={PRIORITY_TONES[task.priority]}>{task.priority}</Badge>
@@ -91,20 +98,20 @@ export default function TaskList({ tasks, onEdit, onDelete, emptyMessage }: Task
                 </span>
               }
               items={[
-                { key: "edit", label: "Edit task", icon: "ri-pencil-line", onSelect: () => onEdit(task) },
+                ...(onEdit ? [{ key: "edit", label: "Edit task", icon: "ri-pencil-line", onSelect: () => onEdit(task) }] : []),
                 {
                   key: "toggle",
                   label: done ? "Reopen task" : "Mark complete",
                   icon: done ? "ri-refresh-line" : "ri-check-line",
                   onSelect: () => (done ? reopenTask(task.id) : completeTask(task.id)),
                 },
-                {
+                ...(onDelete ? [{
                   key: "delete",
                   label: "Delete task",
                   icon: "ri-delete-bin-line",
-                  tone: "danger",
+                  tone: "danger" as const,
                   onSelect: () => onDelete(task),
-                },
+                }] : []),
               ]}
             />
           </li>

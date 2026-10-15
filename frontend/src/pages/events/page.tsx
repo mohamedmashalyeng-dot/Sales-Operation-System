@@ -1,23 +1,19 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
 import { Card, CardBody, CardHeader } from "@/components/base/Card";
 import EmptyState from "@/components/base/EmptyState";
 import MetricCard from "@/components/base/MetricCard";
-import Modal from "@/components/base/Modal";
 import PaginationFooter from "@/components/base/PaginationFooter";
 import { useToast } from "@/components/base/Toast";
-import EventFilters from "@/pages/events/components/EventFilters";
+import EventsList from "@/pages/events/components/EventsList";
 import EventTable from "@/pages/events/components/EventTable";
 import ImportModal from "@/pages/events/components/ImportModal";
-import RegistrationTable from "@/pages/events/components/RegistrationTable";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import type { CollegeEvent, EventRegistration, RegOutcome } from "@/store/types";
+import type { CollegeEvent, RegOutcome } from "@/store/types";
 import { formatDateTime } from "@/utils/format";
-import { fromInputDateTime } from "@/utils/crm";
-import { eventSourceOptions } from "@/utils/filterOptions";
 
 type EventsView = "dashboard" | "events" | "people" | "callbacks" | "reports" | "marketing";
 
@@ -41,42 +37,16 @@ function rate(part: number, whole: number): string {
 export default function EventsPage() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { state, setRegistrationOutcome, scheduleCallback } = useWorkspace();
+  const { state, setRegistrationOutcome } = useWorkspace();
   const { can } = usePermissions();
 
-  const [view, setView] = useState<EventsView>("events");
-  const [dateFilter, setDateFilter] = useState("all-time");
-  const [source, setSource] = useState("all");
-  const [search, setSearch] = useState("");
-  const [eventsPage, setEventsPage] = useState(1);
-  const [peoplePage, setPeoplePage] = useState(1);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedView = searchParams.get("view");
+  const view: EventsView = VIEWS.some(item => item.key === requestedView) ? requestedView as EventsView : "events";
   const [callbacksPage, setCallbacksPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
   const [importOpen, setImportOpen] = useState(false);
-  const [callbackTarget, setCallbackTarget] = useState<{ eventId: string; reg: EventRegistration } | null>(
-    null,
-  );
-  const [callbackAt, setCallbackAt] = useState("");
-
   const canManage = can("events.manage");
-  const sourceOptions = useMemo(() => eventSourceOptions(state), [state]);
-
-  const allowed = useMemo(() => {
-    const now = Date.now();
-    const q = search.trim().toLowerCase();
-    return state.events.filter((event) => {
-      const start = new Date(event.startAt).getTime();
-      if (dateFilter === "next-7" && !(start >= now && start <= now + 7 * 86400000)) return false;
-      if (dateFilter === "next-30" && !(start >= now && start <= now + 30 * 86400000)) return false;
-      if (dateFilter === "next-90" && !(start >= now && start <= now + 90 * 86400000)) return false;
-      if (dateFilter === "all-upcoming" && start < now) return false;
-      if (dateFilter === "past" && start >= now) return false;
-      if (source !== "all" && event.source !== source) return false;
-      if (q && !`${event.name} ${event.location}`.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [state.events, dateFilter, source, search]);
-
   const allRegs = state.events.flatMap((e) => e.registrations);
   const upcoming = state.events.filter((e) => new Date(e.startAt).getTime() >= Date.now());
   const confirmed = allRegs.filter((r) => ["confirmed", "attended"].includes(r.outcome)).length;
@@ -86,15 +56,6 @@ export default function EventsPage() {
   const noShow = allRegs.filter((r) => r.outcome === "no-show").length;
   const callbacksDue = state.events.flatMap((e) =>
     e.registrations.filter((r) => r.callbackAt && r.outcome === "pending").map((r) => ({ e, r })),
-  );
-  const eventsPageCount = Math.max(1, Math.ceil(allowed.length / PER_PAGE));
-  const eventsCurrentPage = Math.min(eventsPage, eventsPageCount);
-  const pagedEvents = allowed.slice((eventsCurrentPage - 1) * PER_PAGE, eventsCurrentPage * PER_PAGE);
-  const peoplePageCount = Math.max(1, Math.ceil(state.events.length / EVENT_CARD_PER_PAGE));
-  const peopleCurrentPage = Math.min(peoplePage, peoplePageCount);
-  const pagedPeopleEvents = state.events.slice(
-    (peopleCurrentPage - 1) * EVENT_CARD_PER_PAGE,
-    peopleCurrentPage * EVENT_CARD_PER_PAGE,
   );
   const callbacksPageCount = Math.max(1, Math.ceil(callbacksDue.length / PER_PAGE));
   const callbacksCurrentPage = Math.min(callbacksPage, callbacksPageCount);
@@ -131,22 +92,6 @@ export default function EventsPage() {
     toast({ title: `Registration ${outcome}`, tone: "success" });
   };
 
-  const openCallback = (eventId: string, reg: EventRegistration) => {
-    setCallbackTarget({ eventId, reg });
-    setCallbackAt(new Date(Date.now() + 86400000).toISOString().slice(0, 16));
-  };
-
-  const saveCallback = () => {
-    if (!callbackTarget || !callbackAt) return;
-    scheduleCallback(callbackTarget.eventId, callbackTarget.reg.id, fromInputDateTime(callbackAt));
-    toast({
-      title: "Callback scheduled",
-      message: "A follow-up task was created in the Planner.",
-      tone: "success",
-    });
-    setCallbackTarget(null);
-  };
-
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-5 px-4 py-5 md:px-6 md:py-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -156,10 +101,13 @@ export default function EventsPage() {
           </p>
           <h1 className="mt-1 font-heading text-2xl font-extrabold text-foreground-950">Events</h1>
           <p className="mt-1 text-[13px] text-foreground-500">
-            {upcoming.length} upcoming events · {allRegs.length} registrations in the shared dataset
+            Browse synced events and open an event to view its registrations and attendance.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {can("zoom.view") ? <Button variant="outline" leftIcon={<i className="ri-vidicon-line" />} onClick={() => navigate("/zoom/meetings")}>
+            Zoom meetings
+          </Button> : null}
           {can("events.import") ? (
             <Button
               variant="outline"
@@ -187,7 +135,7 @@ export default function EventsPage() {
             <button
               key={v.key}
               type="button"
-              onClick={() => setView(v.key)}
+              onClick={() => setSearchParams({ view: v.key })}
               className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-semibold transition-colors ${
                 view === v.key
                   ? "bg-background-50 text-foreground-900 shadow-kbc-sm"
@@ -200,6 +148,8 @@ export default function EventsPage() {
           ))}
         </div>
       </div>
+
+      {view !== "events" && view !== "people" ? <p className="text-xs text-foreground-500">These views show the events currently loaded in this session. Open Events to browse all records and their full details.</p> : null}
 
       {view === "dashboard" ? (
         <div className="space-y-5">
@@ -226,104 +176,9 @@ export default function EventsPage() {
         </div>
       ) : null}
 
-      {view === "events" ? (
-        <div className="space-y-4">
-          <EventFilters
-            dateFilter={dateFilter}
-            onDateFilter={(value) => {
-              setDateFilter(value);
-              setEventsPage(1);
-            }}
-            source={source}
-            onSource={(value) => {
-              setSource(value);
-              setEventsPage(1);
-            }}
-            sourceOptions={sourceOptions}
-            search={search}
-            onSearch={(value) => {
-              setSearch(value);
-              setEventsPage(1);
-            }}
-          />
-          <Card>
-            <CardHeader
-              icon="ri-list-check-2"
-              title="Events list"
-              subtitle={`${allowed.length} match the current filters`}
-            />
-            <PaginationFooter
-              position="top"
-              currentPage={eventsCurrentPage}
-              pageCount={eventsPageCount}
-              total={allowed.length}
-              itemLabel="events"
-              onPageChange={setEventsPage}
-            />
-            <EventTable
-              events={pagedEvents}
-              emptyMessage={state.events.length === 0 ? "No events yet" : "No events match your filters"}
-              onOpen={(id) => navigate(`/events/${id}`)}
-            />
-            <PaginationFooter
-              currentPage={eventsCurrentPage}
-              pageCount={eventsPageCount}
-              total={allowed.length}
-              itemLabel="events"
-              onPageChange={setEventsPage}
-            />
-          </Card>
-        </div>
-      ) : null}
+      {view === "events" ? <EventsList /> : null}
 
-      {view === "people" ? (
-        <div className="space-y-5">
-          {state.events.length === 0 ? (
-            <Card>
-              <EmptyState
-                icon="ri-user-search-line"
-                title="No event people yet"
-                message="Registrations will appear here after events are imported or synced."
-              />
-            </Card>
-          ) : (
-            pagedPeopleEvents.map((event) => (
-            <Card key={event.id}>
-              <CardHeader
-                icon="ri-group-line"
-                title={event.name}
-                subtitle={`${event.registrations.length} registrations · ${formatDateTime(event.startAt)}`}
-              />
-                <RegistrationTable
-                  registrations={event.registrations}
-                  canManage={canManage}
-                  onOutcome={(regId, outcome) => handleOutcome(event.id, regId, outcome)}
-                  onCallback={(reg) => openCallback(event.id, reg)}
-                />
-            </Card>
-            ))
-          )}
-          {peoplePageCount > 1 ? (
-            <Card>
-              <PaginationFooter
-                position="top"
-                currentPage={peopleCurrentPage}
-                pageCount={peoplePageCount}
-                total={state.events.length}
-                itemLabel="events"
-                onPageChange={setPeoplePage}
-              />
-              <PaginationFooter
-                currentPage={peopleCurrentPage}
-                pageCount={peoplePageCount}
-                total={state.events.length}
-                itemLabel="events"
-                onPageChange={setPeoplePage}
-              />
-            </Card>
-          ) : null}
-        </div>
-      ) : null}
+      {view === "people" ? <EventsList key="people" people /> : null}
 
       {view === "callbacks" ? (
         <Card>
@@ -447,38 +302,7 @@ export default function EventsPage() {
 
       <ImportModal open={importOpen} onClose={() => setImportOpen(false)} />
 
-      <Modal
-        open={Boolean(callbackTarget)}
-        onClose={() => setCallbackTarget(null)}
-        size="sm"
-        title="Schedule a callback"
-        description={callbackTarget ? `${callbackTarget.reg.name}` : ""}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setCallbackTarget(null)}>
-              Cancel
-            </Button>
-            <Button leftIcon={<i className="ri-calendar-check-line"></i>} onClick={saveCallback}>
-              Schedule callback
-            </Button>
-          </>
-        }
-      >
-        <div>
-          <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-foreground-500">
-            Callback date &amp; time
-          </label>
-          <input
-            type="datetime-local"
-            value={callbackAt}
-            onChange={(e) => setCallbackAt(e.target.value)}
-            className="h-9 w-full rounded-md border border-background-300 bg-background-50 px-3 text-sm text-foreground-900 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-200"
-          />
-          <p className="mt-2 text-[11px] text-foreground-500">
-            This creates a follow-up task in the Planner, not a real reminder.
-          </p>
-        </div>
-      </Modal>
+
     </div>
   );
 }

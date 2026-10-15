@@ -44,6 +44,7 @@ export const LEAD_STAGES = [
 export const PRIORITIES = ["High", "Medium", "Low"] as const;
 
 export const TASK_SOURCES = [
+  "Call analysis",
   "Zoho CRM",
   "Gmail / Inbox",
   "Events",

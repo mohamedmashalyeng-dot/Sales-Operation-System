@@ -10,6 +10,8 @@ const Audit = require('./audit');
 const Automations = require('./automations');
 const Applications = require('./applications');
 const Monitoring = require('./monitoring');
+const CallTaskOrigin = require('./call-task-origin');
+const CallNextAction = require('./call-next-action');
 
 function importTaskRows(db) {
   return (db.tasks || []).map(item => ({
@@ -56,6 +58,9 @@ async function loadTaskPage(options = {}, trace = null) {
   const search = String(options.search || '').trim().slice(0, 200);
   const ownerId = String(options.owner_id || '').trim();
   const leadId = String(options.lead_id || '').trim();
+  const source = String(options.source || '').trim();
+  if (source && source !== 'zoom_calls') throw Http.statusError(400, 'Unsupported task source.');
+  const zoomOnly = source === 'zoom_calls';
   const dueBefore = parseOptionalIsoDate(options.due_before, 'due_before');
   const dueAfter = parseOptionalIsoDate(options.due_after, 'due_after');
   const bounds = Monitoring.parseDayBounds(options);
@@ -63,9 +68,11 @@ async function loadTaskPage(options = {}, trace = null) {
   if (bucket && !bounds.provided) throw Http.statusError(400, 'A task bucket needs today_start and tomorrow_start.');
   const { todayStart, tomorrowStart } = bounds.provided ? bounds : {};
   await Perf.perfPhase(trace, 'tasks_storage', () => Storage.ensureStorage());
+  if (zoomOnly) await require('./call-journey-store').ensure();
   if (!State.postgresPool || !Storage.usesPostgresStorage()) {
     const db = await Storage.loadDb();
     const rows = (db.tasks || [])
+      .filter(task => !zoomOnly || CallTaskOrigin.isApprovedCallTask(task, db.meta?.callResults || []))
       .filter(task => status === 'all' || (status === 'open' ? task.status === 'Open' : task.status === 'Done'))
       .filter(task => !ownerId || String(task.owner_id || '') === ownerId)
       .filter(task => !leadId || String(task.lead_id || '') === leadId)
@@ -77,9 +84,10 @@ async function loadTaskPage(options = {}, trace = null) {
         : new Date(b.completed_at || b.due_at || 0) - new Date(a.completed_at || a.due_at || 0));
     const cursorIndex = cursor?.id ? rows.findIndex(item => item.id === cursor.id) + 1 : offset;
     const start = Math.max(0, cursorIndex || 0);
-    const items = rows.slice(start, start + limit);
+    const items = rows.slice(start, start + limit).map(task => ({ ...task, call_verified: zoomOnly }));
     const nextCursor = start + items.length < rows.length ? Util.encodePageCursor({ id: items[items.length - 1]?.id || '' }) : '';
-    return { items, leads: [], counts: null, hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, nextOffset: start + items.length, limit, status };
+    return { items, leads: [], counts: null, source: source || null, call_provenance_version: zoomOnly ? 1 : null,
+      hasMore: Boolean(nextCursor), has_more: Boolean(nextCursor), nextCursor, next_cursor: nextCursor, nextOffset: start + items.length, limit, status };
   }
   const sortSql = status === 'open' ? 't.due_at' : 'coalesce(t.completed_at, t.due_at)';
   const order = status === 'open'
@@ -95,6 +103,7 @@ async function loadTaskPage(options = {}, trace = null) {
   if (bucket === 'upcoming') conditions.push(`(t.due_at >= ${bind(tomorrowStart)}::timestamptz or t.due_at is null)`);
   if (ownerId) conditions.push(`t.owner_id = ${bind(ownerId)}`);
   if (leadId) conditions.push(`t.lead_id = ${bind(leadId)}`);
+  if (zoomOnly) conditions.push(`(${CallTaskOrigin.SQL})`);
   if (dueBefore) conditions.push(`t.due_at < ${bind(dueBefore)}::timestamptz`);
   if (dueAfter) conditions.push(`t.due_at >= ${bind(dueAfter)}::timestamptz`);
   if (search) {
@@ -135,6 +144,9 @@ async function loadTaskPage(options = {}, trace = null) {
          'completed_at', t.completed_at,
          'priority', coalesce(t.priority, t.data->>'priority', ''),
          'owner_id', coalesce(t.owner_id, t.data->>'owner_id', '')
+         ,'source', t.data->>'source', 'call_id', t.data->>'call_id', 'source_event_id', t.data->>'source_event_id',
+         'evaluation_id', t.data->>'evaluation_id', 'source_key', t.data->>'source_key', 'description', t.data->>'description',
+         'call_verified', ${zoomOnly ? 'true' : 'false'}
        ) as task,
          ${sortSql} as sort_at,
          case when l.id is null then null else jsonb_build_object(
@@ -150,7 +162,7 @@ async function loadTaskPage(options = {}, trace = null) {
        limit $${cursor ? listValues.length : listValues.length - 1}${cursor ? '' : ` offset $${listValues.length}`}`,
       listValues
     ),
-    includeCounts && bounds.provided ? loadTaskBucketCounts(State.postgresPool, bounds, trace) : Promise.resolve(null)
+    includeCounts && bounds.provided ? loadTaskBucketCounts(State.postgresPool, bounds, trace, zoomOnly) : Promise.resolve(null)
   ]);
   return Perf.perfPhase(trace, 'mapping', async () => {
     const rows = list.rows.slice(0, limit);
@@ -160,6 +172,8 @@ async function loadTaskPage(options = {}, trace = null) {
     const nextCursor = list.rows.length > limit && last?.task?.id ? Util.encodePageCursor({ sort_at: last.sort_at || null, id: last.task.id }) : '';
     return {
       items: rows.map(row => row.task).filter(Boolean),
+      source: source || null,
+      call_provenance_version: zoomOnly ? 1 : null,
       leads: [...leads.values()],
       counts: counts || null,
       hasMore: Boolean(nextCursor),
@@ -186,7 +200,7 @@ function taskDueBucket(task, now = new Date()) {
   return 'Upcoming';
 }
 
-async function loadTaskBucketCounts(db, bounds, trace = null) {
+async function loadTaskBucketCounts(db, bounds, trace = null, zoomOnly = false) {
   const queryFn = trace && db === State.postgresPool ? (sql, params) => Storage.timedPostgresQuery(trace, 'tasks_counts', sql, params) : (sql, params) => db.query(sql, params);
   const result = await queryFn(
     `select
@@ -195,7 +209,7 @@ async function loadTaskBucketCounts(db, bounds, trace = null) {
        count(*) filter (where status = 'Open' and (due_at >= $2::timestamptz or due_at is null))::int as upcoming,
        count(*) filter (where status = 'Open')::int as open,
        count(*) filter (where status = 'Done')::int as done
-     from app_tasks`,
+     from app_tasks t ${zoomOnly ? `where ${CallTaskOrigin.SQL}` : ''}`,
     [bounds.todayStart, bounds.tomorrowStart]
   );
   return result.rows[0];
@@ -238,7 +252,7 @@ async function createTaskFastDb(body, user) {
   }
 }
 
-async function completeTaskFastDb(id, user) {
+async function completeTaskFastDb(id, user, reopen = false) {
   if (!State.postgresPool) return null;
   await Storage.ensureStorage();
   const client = await State.postgresPool.connect();
@@ -247,14 +261,15 @@ async function completeTaskFastDb(id, user) {
     const result = await client.query(`select data from app_tasks where id = $1 for update`, [id]);
     const task = result.rows[0]?.data;
     if (!task) throw Http.statusError(404, 'Task not found.');
-    task.status = 'Done';
-    task.completed_at = new Date().toISOString();
+    task.status = reopen ? 'Open' : 'Done';
+    task.completed_at = reopen ? null : new Date().toISOString();
     await client.query(
       `update app_tasks set status = $2, completed_at = $3::timestamptz, data = $4::jsonb where id = $1`,
       [task.id, task.status, task.completed_at, Applications.jsonValue(task)]
     );
-    await Audit.appendAuditFast(client, user, 'Task completed', 'lead', task.lead_id, task.title);
-    await Automations.recordAutomationEvent(client, 'task_completed', 'task', task.id, { task, lead_id: task.lead_id });
+    if (task.source === 'call_analysis') await CallNextAction.syncPostgres(client, task.lead_id);
+    await Audit.appendAuditFast(client, user, reopen ? 'Task reopened' : 'Task completed', 'lead', task.lead_id, task.title);
+    if (!reopen) await Automations.recordAutomationEvent(client, 'task_completed', 'task', task.id, { task, lead_id: task.lead_id });
     await client.query('commit');
     State.dbCache = null;
     return { ok: true, task };

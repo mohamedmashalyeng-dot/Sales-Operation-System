@@ -22,7 +22,6 @@ export const NAV_GROUPS: NavGroup[] = [
     title: "Admissions & Sales",
     items: [
       { key: "leads", label: "Leads", path: "/leads", icon: "ri-contacts-book-2-line" },
-      { key: "campaigns", label: "Campaigns", path: "/campaigns", icon: "ri-megaphone-line" },
       {
         key: "applications",
         label: "Applications",
@@ -34,12 +33,6 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Apprenticeships",
     items: [
-      {
-        key: "future-intake",
-        label: "Future Intake",
-        path: "/future-intake",
-        icon: "ri-calendar-schedule-line",
-      },
       {
         key: "commercial",
         label: "Commercial",
@@ -64,12 +57,6 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Reporting",
     items: [
-      {
-        key: "attribution",
-        label: "Sources & Attribution",
-        path: "/sources",
-        icon: "ri-flow-chart",
-      },
       {
         key: "apprenticeship-reports",
         label: "Apprenticeship Reports",

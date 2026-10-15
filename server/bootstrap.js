@@ -73,7 +73,7 @@ function bootstrapCorePayload(db, user, degraded = [], trace = null) {
     user: Auth.publicUser(user),
     permissions,
     demoUser: user.email,
-    owners: (db.users || []).map(Auth.publicUser),
+    owners: (permissions.review || permissions.admin || permissions.developer ? db.users || [] : [user]).map(Auth.publicUser),
     programmes: Programmes.ensureProgrammeCatalog({ programmes: db.programmes || [] }),
     intakes: db.intakes || [],
     stages: db.stages || Workspace.DEFAULT_STAGES.slice(),
@@ -90,6 +90,8 @@ function bootstrapCorePayload(db, user, degraded = [], trace = null) {
     emails: [],
     events: [],
     applications: [],
+    // Business records are loaded through the owner-scoped /api/business endpoint.
+    commercialOpportunities: [],
     audit: [],
     attribution: []
   };
@@ -106,6 +108,7 @@ function bootstrapPayloadQuery() {
        coalesce(meta->'zoom', '{}'::jsonb) - 'calls' - 'numbers' - 'imported_meeting_ids' as zoom,
        coalesce(meta->'zoho', '{}'::jsonb) - 'records' - 'imported_record_ids' as zoho,
        coalesce(meta->'apollo', '{}'::jsonb) - 'imported_person_ids' as apollo,
+       coalesce(meta->'commercialOpportunities', '[]'::jsonb) as commercial_opportunities,
        coalesce((select jsonb_agg(p.data order by p.id) from app_programmes p), '[]'::jsonb) as programmes,
        coalesce((select jsonb_agg(i.data order by i.id) from app_intakes i), '[]'::jsonb) as intakes,
        coalesce((
@@ -155,7 +158,8 @@ async function loadBootstrapPayload(user, timings = {}, trace = null) {
     apollo: row.apollo || {},
     zoho: row.zoho || {},
     zoom: row.zoom || {},
-    meta: { zoho: row.zoho || {}, zoom: row.zoom || {}, apollo: row.apollo || {} }
+    commercialOpportunities: row.commercial_opportunities || [],
+    meta: { zoho: row.zoho || {}, zoom: row.zoom || {}, apollo: row.apollo || {}, commercialOpportunities: row.commercial_opportunities || [] }
   };
   return Perf.perfPhase(trace, 'mapping', async () => bootstrapCorePayload(db, user, degraded, trace));
 }

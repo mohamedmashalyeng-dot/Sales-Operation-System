@@ -1,3 +1,4 @@
+import LoadingState from "@/components/base/LoadingState";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Badge from "@/components/base/Badge";
@@ -15,9 +16,9 @@ import {
 } from "@/config/marketing";
 import { ELIGIBILITY_TONES } from "@/config/eligibility";
 import CallReview from "@/pages/zoom/calls/detail/components/CallReview";
-import TaskFormModal from "@/pages/planner/components/TaskFormModal";
+import FinalCallResult from "@/pages/zoom/calls/detail/components/FinalCallResult";
 import { usePermissions } from "@/hooks/usePermissions";
-import { useWorkspace, type TaskInput } from "@/store/WorkspaceProvider";
+import { useWorkspace } from "@/store/WorkspaceProvider";
 import { formatDateTime } from "@/utils/format";
 import { CALL_STATUS_TONES, formatDuration } from "@/utils/crm";
 
@@ -25,7 +26,7 @@ export default function ZoomCallDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { state, userName, recordCallOutcome, createTask, attachCallFollowUp, addTouchpoint, updateTouchpoint, currentUserId } = useWorkspace();
+  const { state, userName, recordCallOutcome, addTouchpoint, updateTouchpoint, currentUserId, loadCallDetail, backendLoadedAt } = useWorkspace();
   const { can, canSeeOwner } = usePermissions();
 
   const call = state.calls.find((c) => c.id === id);
@@ -33,7 +34,15 @@ export default function ZoomCallDetailPage() {
 
   const [outcome, setOutcome] = useState<CallOutcome | "">("");
   const [notes, setNotes] = useState("");
-  const [taskOpen, setTaskOpen] = useState(false);
+  const [callLoading, setCallLoading] = useState(Boolean(backendLoadedAt));
+  const [callError, setCallError] = useState("");
+  useEffect(() => {
+    if (!id || !backendLoadedAt) return;
+    const controller = new AbortController(); setCallLoading(true); setCallError("");
+    void loadCallDetail(id, controller.signal).catch(cause => { if (!controller.signal.aborted) setCallError(cause.message); })
+      .finally(() => { if (!controller.signal.aborted) setCallLoading(false); });
+    return () => controller.abort();
+  }, [id, backendLoadedAt, loadCallDetail]);
 
   useEffect(() => {
     if (call) {
@@ -61,6 +70,7 @@ export default function ZoomCallDetailPage() {
     );
   }
 
+  if (callLoading && !call) return <LoadingState className="p-6">Loading call details...</LoadingState>;
   if (!call) {
     return (
       <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6">
@@ -68,7 +78,7 @@ export default function ZoomCallDetailPage() {
           <EmptyState
             icon="ri-phone-line"
             title="Call not found"
-            message="This call does not exist in the demonstration dataset."
+            message={callError || "This call is unavailable or you do not have access to it."}
             action={
               <Button variant="outline" onClick={() => navigate("/zoom")}>
                 Back to Zoom
@@ -117,13 +127,6 @@ export default function ZoomCallDetailPage() {
     toast({ title: "Call outcome recorded", message: outcome, tone: "success" });
   };
 
-  const handleTask = (input: TaskInput) => {
-    const task = createTask(input);
-    attachCallFollowUp(call.id, task.id);
-    toast({ title: "Follow-up scheduled", message: "Added to the Planner and linked to this call.", tone: "success" });
-    setTaskOpen(false);
-  };
-
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-5 px-4 py-5 md:px-6 md:py-6">
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-foreground-400">
@@ -166,8 +169,8 @@ export default function ZoomCallDetailPage() {
             </Button>
           ) : null}
           {canEditOutcome ? (
-            <Button leftIcon={<i className="ri-calendar-check-line"></i>} onClick={() => setTaskOpen(true)}>
-              Schedule follow-up
+            <Button leftIcon={<i className="ri-calendar-check-line"></i>} onClick={() => document.getElementById("final-call-actions")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+              Review call actions
             </Button>
           ) : null}
         </div>
@@ -183,6 +186,7 @@ export default function ZoomCallDetailPage() {
               subtitle="Review the conversation — availability is shown honestly"
             />
             <CardBody>
+              <div id="final-call-actions" className="scroll-mt-24"><FinalCallResult callId={call.id} /></div>
               <CallReview call={call} canReviewMedia={canReviewMedia} />
             </CardBody>
           </Card>
@@ -239,10 +243,6 @@ export default function ZoomCallDetailPage() {
                     {lead.eligibility?.decision ?? "Not decided"}
                   </Badge>
                 </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] text-foreground-500">Intake planning</span>
-                  <Badge tone="neutral">{lead.intakePlanning ?? "Unassigned"}</Badge>
-                </div>
               </CardBody>
             </Card>
           ) : null}
@@ -261,12 +261,9 @@ export default function ZoomCallDetailPage() {
                 label="Outcome"
                 value={outcome}
                 onChange={(v) => setOutcome(v as CallOutcome)}
-                options={[{ value: "", label: "Select an outcome…" }, ...CALL_OUTCOMES.map((o) => ({ value: o, label: o, icon: CALL_OUTCOME_ICONS[o] }))]}
+                options={[{ value: "", label: "Select an outcome…" }, ...CALL_OUTCOMES.filter(value => value !== "Wants Future Intake").map((o) => ({ value: o, label: o, icon: CALL_OUTCOME_ICONS[o] }))]}
               />
-              <p className="text-[11px] leading-snug text-foreground-500">
-                “Needs Follow-up” and “Wants Future Intake” are recorded here — scheduling a Planner follow-up
-                creates a linked task, it does not change the lead’s sales stage.
-              </p>
+              <p className="text-[11px] leading-snug text-foreground-500">Record the call outcome here. Review and approve its suggested actions to add tasks to Planner.</p>
               <Button fullWidth onClick={saveOutcome} disabled={!outcome || !canEditOutcome} leftIcon={<i className="ri-save-line"></i>}>
                 Save outcome
               </Button>
@@ -287,13 +284,7 @@ export default function ZoomCallDetailPage() {
         </div>
       </div>
 
-      <TaskFormModal
-        open={taskOpen}
-        task={null}
-        defaults={{ relatedLeadId: call.leadId, source: "Zoom", ownerId: currentUserId }}
-        onClose={() => setTaskOpen(false)}
-        onSubmit={handleTask}
-      />
+
     </div>
   );
 }

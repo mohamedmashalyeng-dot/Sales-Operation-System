@@ -22,7 +22,6 @@ const MATRIX: { label: string; cap: Capability }[] = [
   { label: "Delete leads", cap: "leads.delete" },
   { label: "Applications approvals", cap: "applications.approve" },
   { label: "Event reports", cap: "events.reports" },
-  { label: "Attribution corrections", cap: "attribution.correct" },
   { label: "Admin console", cap: "admin.view" },
   { label: "Manage users", cap: "admin.manageUsers" },
   { label: "Workspace settings", cap: "settings.manageWorkspace" },

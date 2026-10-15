@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import LoadingState from "@/components/base/LoadingState";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
 import { Card, CardBody, CardHeader } from "@/components/base/Card";
@@ -7,17 +8,20 @@ import Checkbox from "@/components/base/Checkbox";
 import Drawer from "@/components/base/Drawer";
 import EmptyState from "@/components/base/EmptyState";
 import MetricCard from "@/components/base/MetricCard";
-import Modal from "@/components/base/Modal";
 import PaginationFooter from "@/components/base/PaginationFooter";
 import SearchInput from "@/components/base/SearchInput";
 import Select from "@/components/base/Select";
 import { useToast } from "@/components/base/Toast";
 import CallTable from "@/pages/zoom/components/CallTable";
 import MeetingTable from "@/pages/zoom/components/MeetingTable";
+import MeetingDetails from "@/pages/zoom/components/MeetingDetails";
+import ZoomMeetingsList from "@/pages/zoom/components/ZoomMeetingsList";
+import useZoomOverview from "./useZoomOverview";
 import { usePermissions } from "@/hooks/usePermissions";
+import { mapBackendCall } from "@/store/backendSync";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { Call, Meeting } from "@/store/types";
-import { CALL_STATUS_TONES, formatDuration, fromInputDateTime } from "@/utils/crm";
+import { CALL_STATUS_TONES, formatDuration } from "@/utils/crm";
 import { formatDateTime, relativeTime } from "@/utils/format";
 import { buildIntegrationStatuses } from "@/utils/integrations";
 
@@ -32,37 +36,65 @@ const VIEWS: { key: ZoomView; label: string; icon: string }[] = [
 ];
 
 const PER_PAGE = 50;
+const CALL_REQUEST_TIMEOUT_MS = 45000;
+
+type BackendCallPage = {
+  calls?: Record<string, any>[];
+  items?: Record<string, any>[];
+  total?: number | null;
+  has_more?: boolean;
+  next_offset?: number;
+  error?: string;
+  message?: string;
+};
 
 export default function ZoomPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { id: meetingId } = useParams();
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
   const {
     state,
     userName,
     completeTask,
-    scheduleCallbackTask,
-    currentUserId,
+    refreshPlannerTasks,
     backendLoadedAt,
     integrationOverview,
     refreshBackendWorkspace,
   } = useWorkspace();
   const { can, canSeeOwner } = usePermissions();
+  const overview = useZoomOverview(can("zoom.view"));
 
   const [view, setView] = useState<ZoomView>("overview");
+  useEffect(() => {
+    const selected = meetingId || location.pathname.endsWith('/meetings') ? 'meetings'
+      : location.pathname.endsWith('/calls') ? 'calls' : searchParams.get('view') || 'overview';
+    if (VIEWS.some(item => item.key === selected)) setView(selected as ZoomView);
+  }, [location.pathname, meetingId, searchParams]);
+  useEffect(() => {
+    if (backendLoadedAt && view === 'followups') void refreshPlannerTasks().catch(error => toast({ title: 'Unable to load call follow-ups', message: error.message, tone: 'error' }));
+  }, [backendLoadedAt, view, refreshPlannerTasks]);
   const [refreshing, setRefreshing] = useState(false);
+  const [syncingCalls, setSyncingCalls] = useState(false);
   const [search, setSearch] = useState("");
   const [scope, setScope] = useState("upcoming");
   const [direction, setDirection] = useState("all");
   const [callStatus, setCallStatus] = useState("all");
   const [matchFilter, setMatchFilter] = useState("all");
-  const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const openMeeting = (meeting: Meeting) => navigate(`/zoom/meetings/${encodeURIComponent(meeting.id)}`);
   const [call, setCall] = useState<Call | null>(null);
-  const [callbackTarget, setCallbackTarget] = useState<Call | null>(null);
-  const [callbackAt, setCallbackAt] = useState("");
   const [meetingsPage, setMeetingsPage] = useState(1);
   const [callsPage, setCallsPage] = useState(1);
   const [numbersPage, setNumbersPage] = useState(1);
   const [followupsPage, setFollowupsPage] = useState(1);
+  const [backendCallPages, setBackendCallPages] = useState<Record<number, Call[]>>({});
+  const [backendCallTotal, setBackendCallTotal] = useState<number | null>(null);
+  const [backendCallHasMore, setBackendCallHasMore] = useState(false);
+  const [backendCallLoading, setBackendCallLoading] = useState(false);
+  const [backendCallError, setBackendCallError] = useState<string | null>(null);
+  const loadedCallPageKeys = useRef(new Set<string>());
+  const callRequestRef = useRef<{ key: string; controller: AbortController } | null>(null);
 
   const leadLabel = (leadId?: string) => {
     if (!leadId) return undefined;
@@ -70,6 +102,86 @@ export default function ZoomPage() {
     if (!lead) return undefined;
     return { name: `${lead.name}`, known: true };
   };
+
+  const resetBackendCallPages = useCallback(() => {
+    loadedCallPageKeys.current.clear();
+    callRequestRef.current?.controller.abort();
+    callRequestRef.current = null;
+    setBackendCallPages({});
+    setBackendCallTotal(null);
+    setBackendCallHasMore(false);
+    setBackendCallError(null);
+  }, []);
+
+  const loadCallPage = useCallback(
+    async (pageNumber: number, force = false) => {
+      if (!backendLoadedAt) return;
+      const offset = (pageNumber - 1) * PER_PAGE;
+      const key = JSON.stringify({ pageNumber, offset, direction, callStatus, matchFilter, search: search.trim() });
+      if (!force && loadedCallPageKeys.current.has(key)) return;
+      if (callRequestRef.current?.key === key) return;
+      callRequestRef.current?.controller.abort();
+      const controller = new AbortController();
+      let timedOut = false;
+      const timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, CALL_REQUEST_TIMEOUT_MS);
+      callRequestRef.current = { key, controller };
+      setBackendCallLoading(true);
+      setBackendCallError(null);
+      try {
+        const params = new URLSearchParams({
+          limit: String(PER_PAGE),
+          offset: String(offset),
+        });
+        if (direction !== "all") params.set("direction", direction);
+        if (callStatus !== "all") params.set("status", callStatus);
+        if (matchFilter !== "all") params.set("match", matchFilter);
+        const query = search.trim();
+        if (query) params.set("search", query);
+        const response = await fetch(`/api/zoom/calls?${params.toString()}`, {
+          method: "GET",
+          credentials: "include",
+          headers: { Accept: "application/json" },
+          signal: controller.signal,
+        });
+        const payload = (await response.json().catch(() => ({}))) as BackendCallPage;
+        if (!response.ok) throw new Error(payload.error || payload.message || "Could not load Zoom calls.");
+        const rows = Array.isArray(payload.calls) ? payload.calls : Array.isArray(payload.items) ? payload.items : [];
+        loadedCallPageKeys.current.add(key);
+        setBackendCallPages((prev) => ({ ...prev, [pageNumber]: rows.map((item) => mapBackendCall(item, state.users)) }));
+        setBackendCallHasMore(Boolean(payload.has_more));
+        if (typeof payload.total === "number") setBackendCallTotal(payload.total);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setBackendCallError(error instanceof Error ? error.message : "Could not load Zoom calls.");
+        } else if (timedOut && callRequestRef.current?.key === key) {
+          setBackendCallError("Zoom calls are taking too long to respond. Try again in a moment.");
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        if (callRequestRef.current?.key === key) callRequestRef.current = null;
+        setBackendCallLoading(false);
+      }
+    },
+    [backendLoadedAt, callStatus, direction, matchFilter, search, state.users],
+  );
+
+  useEffect(() => {
+    resetBackendCallPages();
+    setCallsPage(1);
+  }, [backendLoadedAt, callStatus, direction, matchFilter, resetBackendCallPages, search]);
+
+  useEffect(() => {
+    if (!backendLoadedAt || view !== 'calls') return;
+    const pageToLoad = view === "calls" ? callsPage : 1;
+    void loadCallPage(pageToLoad);
+    return () => {
+      callRequestRef.current?.controller.abort();
+      callRequestRef.current = null;
+    };
+  }, [backendLoadedAt, callsPage, loadCallPage, view]);
 
   const meetings = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -89,7 +201,7 @@ export default function ZoomPage() {
       );
   }, [state.meetings, scope, search]);
 
-  const calls = useMemo(() => {
+  const filteredCalls = useMemo(() => {
     const q = search.trim().toLowerCase();
     return state.calls
       .filter((c) => {
@@ -136,22 +248,21 @@ export default function ZoomPage() {
     return Array.from(map.values()).sort((a, b) => b.calls - a.calls);
   }, [state.calls]);
 
-  const todayMeetings = state.meetings.filter(
-    (m) => new Date(m.startAt).toDateString() === new Date().toDateString(),
-  );
-  const upcomingMeetings = state.meetings.filter(
-    (m) => new Date(m.startAt).getTime() >= Date.now(),
-  );
-  const missedCalls = state.calls.filter((c) => c.status === "no-answer" || c.status === "voicemail");
   const zoomTasks = state.tasks.filter(
-    (t) => t.status === "open" && canSeeOwner(t.ownerId) && (t.source === "Zoom" || t.source === "Events"),
+    (t) => t.status === "open" && canSeeOwner(t.ownerId) && t.callVerified && t.relatedCallId,
   );
   const meetingsPageCount = Math.max(1, Math.ceil(meetings.length / PER_PAGE));
   const meetingsCurrentPage = Math.min(meetingsPage, meetingsPageCount);
   const pagedMeetings = meetings.slice((meetingsCurrentPage - 1) * PER_PAGE, meetingsCurrentPage * PER_PAGE);
-  const callsPageCount = Math.max(1, Math.ceil(calls.length / PER_PAGE));
+  const backendCallFallbackTotal = backendCallHasMore
+    ? callsPage * PER_PAGE + 1
+    : (callsPage - 1) * PER_PAGE + (backendCallPages[callsPage]?.length ?? 0);
+  const callTotal = backendLoadedAt ? backendCallTotal ?? backendCallFallbackTotal : filteredCalls.length;
+  const callsPageCount = Math.max(1, Math.ceil(callTotal / PER_PAGE));
   const callsCurrentPage = Math.min(callsPage, callsPageCount);
-  const pagedCalls = calls.slice((callsCurrentPage - 1) * PER_PAGE, callsCurrentPage * PER_PAGE);
+  const pagedCalls = backendLoadedAt
+    ? backendCallPages[callsCurrentPage] ?? []
+    : filteredCalls.slice((callsCurrentPage - 1) * PER_PAGE, callsCurrentPage * PER_PAGE);
   const numbersPageCount = Math.max(1, Math.ceil(numbers.length / PER_PAGE));
   const numbersCurrentPage = Math.min(numbersPage, numbersPageCount);
   const pagedNumbers = numbers.slice((numbersCurrentPage - 1) * PER_PAGE, numbersCurrentPage * PER_PAGE);
@@ -161,12 +272,9 @@ export default function ZoomPage() {
   const zoomStatus = buildIntegrationStatuses(state, backendLoadedAt, integrationOverview).find(
     (integration) => integration.key === "zoom",
   );
-  const loadedZoomRecords = state.meetings.length + state.calls.length;
-  const zoomSubtitle = backendLoadedAt
-    ? loadedZoomRecords > 0
-      ? `${state.meetings.length} meetings and ${state.calls.length} calls loaded from the backend`
-      : "Zoom backend loaded, but no meeting or call records were returned"
-    : "Zoom workspace is using local demonstration records";
+  const summary = !overview.loading && !overview.error ? overview.data : null;
+  const zoomSubtitle = overview.loading ? "Loading Zoom totals..." : overview.error ? "Zoom totals could not be loaded"
+    : `${summary?.metrics.total_meetings ?? 0} meetings and ${summary?.metrics.calls_logged ?? 0} calls recorded in the backend`;
   const zoomBadgeTone =
     zoomStatus?.status === "connected" ? "success" : zoomStatus?.status === "attention" ? "warning" : "neutral";
 
@@ -174,6 +282,9 @@ export default function ZoomPage() {
     setRefreshing(true);
     try {
       const ok = await refreshBackendWorkspace();
+      resetBackendCallPages();
+      setCallsPage(1);
+      if (ok && view === "calls") await loadCallPage(1, true);
       toast({
         title: ok ? "Zoom data refreshed" : "Zoom data not refreshed",
         message: ok ? "Meetings and calls were reloaded from the backend." : "Sign in or check the backend connection.",
@@ -187,6 +298,37 @@ export default function ZoomPage() {
       });
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const syncZoomCalls = async () => {
+    setSyncingCalls(true);
+    try {
+      const response = await fetch("/api/integrations/zoom/calls/sync", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({}),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || payload?.message || "Zoom calls sync failed.");
+      await refreshBackendWorkspace();
+      resetBackendCallPages();
+      setCallsPage(1);
+      if (view === "calls") await loadCallPage(1, true);
+      toast({
+        title: "Zoom calls synced",
+        message: `${Number(payload.imported_calls || 0)} created, ${Number(payload.updated_calls || 0)} updated, ${Number(payload.scanned || 0)} scanned.`,
+        tone: "success",
+      });
+    } catch (error) {
+      toast({
+        title: "Zoom calls sync failed",
+        message: error instanceof Error ? error.message : "Could not pull Zoom Phone calls.",
+        tone: "error",
+      });
+    } finally {
+      setSyncingCalls(false);
     }
   };
 
@@ -209,29 +351,7 @@ export default function ZoomPage() {
     );
   }
 
-  const openCallback = (target: Call) => {
-    setCallbackTarget(target);
-    setCallbackAt(new Date(Date.now() + 86400000).toISOString().slice(0, 16));
-  };
-
-  const saveCallback = () => {
-    if (!callbackTarget || !callbackAt) return;
-    scheduleCallbackTask({
-      title: `Call back ${callbackTarget.caller}`,
-      description: `Callback requested from the Zoom call log (${callbackTarget.phoneNumber}).`,
-      ownerId: currentUserId,
-      priority: "Medium",
-      dueAt: fromInputDateTime(callbackAt),
-      source: "Zoom",
-      relatedLeadId: callbackTarget.leadId,
-    });
-    toast({
-      title: "Callback scheduled",
-      message: "A Zoom follow-up task was added to the Planner.",
-      tone: "success",
-    });
-    setCallbackTarget(null);
-  };
+  const openCallback = (target: Call) => { navigate(`/zoom/calls/${encodeURIComponent(target.id)}`); };
 
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-5 px-4 py-5 md:px-6 md:py-6">
@@ -253,15 +373,26 @@ export default function ZoomPage() {
             {zoomStatus?.badge ?? "Backend status unknown"}
           </Badge>
           {backendLoadedAt ? (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<i className={refreshing ? "ri-loader-4-line" : "ri-refresh-line"}></i>}
-              onClick={reloadZoom}
-              disabled={refreshing}
-            >
-              {refreshing ? "Refreshing..." : "Refresh"}
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                leftIcon={<i className={syncingCalls ? "ri-loader-4-line" : "ri-phone-line"}></i>}
+                onClick={syncZoomCalls}
+                loading={syncingCalls} disabled={syncingCalls || refreshing}
+              >
+                {syncingCalls ? "Syncing..." : "Sync calls"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                leftIcon={<i className={refreshing ? "ri-loader-4-line" : "ri-refresh-line"}></i>}
+                onClick={reloadZoom}
+                loading={refreshing} disabled={refreshing || syncingCalls}
+              >
+                {refreshing ? "Refreshing..." : "Refresh"}
+              </Button>
+            </>
           ) : null}
         </div>
       </div>
@@ -272,7 +403,7 @@ export default function ZoomPage() {
             <button
               key={v.key}
               type="button"
-              onClick={() => setView(v.key)}
+              onClick={() => navigate(v.key === 'meetings' ? '/zoom/meetings' : v.key === 'calls' ? '/zoom/calls' : `/zoom?view=${v.key}`)}
               className={`flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-semibold transition-colors ${
                 view === v.key
                   ? "bg-background-50 text-foreground-900 shadow-kbc-sm"
@@ -286,23 +417,26 @@ export default function ZoomPage() {
         </div>
       </div>
 
+      {overview.error ? <div role="alert" className="rounded-md bg-red-50 p-4 text-sm text-red-700">Unable to load Zoom overview: {overview.error}
+        <Button className="ml-3" size="sm" variant="outline" onClick={overview.retry}>Retry overview</Button></div> : null}
+
       {view === "overview" ? (
         <div className="space-y-5">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <MetricCard label="Upcoming meetings" value={upcomingMeetings.length} icon="ri-vidicon-line" tone="primary" />
-            <MetricCard label="Meetings today" value={todayMeetings.length} icon="ri-calendar-check-line" tone="accent" />
-            <MetricCard label="Calls logged" value={state.calls.length} icon="ri-phone-line" tone="secondary" />
-            <MetricCard label="Missed calls" value={missedCalls.length} icon="ri-phone-fill" tone="danger" />
+            <div data-testid="zoom-upcoming-count"><MetricCard label="Upcoming meetings" value={summary?.metrics.upcoming_meetings ?? "—"} icon="ri-vidicon-line" tone="primary" /></div>
+            <div data-testid="zoom-today-count"><MetricCard label="Meetings today" value={summary?.metrics.meetings_today ?? "—"} icon="ri-calendar-check-line" tone="accent" /></div>
+            <div data-testid="zoom-calls-count"><MetricCard label="Calls logged" value={summary?.metrics.calls_logged ?? "—"} icon="ri-phone-line" tone="secondary" /></div>
+            <div data-testid="zoom-missed-count"><MetricCard label="Missed calls" value={summary?.metrics.missed_calls ?? "—"} icon="ri-phone-fill" tone="danger" /></div>
           </div>
           <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
             <Card>
               <CardHeader icon="ri-vidicon-line" title="Next meetings" subtitle="Upcoming Zoom meetings" />
-              {upcomingMeetings.length === 0 ? (
+              {overview.loading ? <LoadingState className="p-5 text-sm">Loading upcoming meetings...</LoadingState> : !summary ? <p className="p-5 text-sm">Upcoming meetings are unavailable.</p> : summary.nextMeetings.length === 0 ? (
                 <EmptyState icon="ri-vidicon-line" title="No upcoming meetings" />
               ) : (
                 <MeetingTable
-                  meetings={upcomingMeetings.slice(0, 4)}
-                  onOpen={setMeeting}
+                  meetings={summary.nextMeetings}
+                  onOpen={openMeeting}
                   hostName={userName}
                   eventName={(id) => state.events.find((e) => e.id === id)?.name}
                 />
@@ -310,82 +444,18 @@ export default function ZoomPage() {
             </Card>
             <Card>
               <CardHeader icon="ri-phone-line" iconTone="accent" title="Recent calls" subtitle="Latest inbound and outbound calls" />
-              <CallTable
-                calls={state.calls.slice(0, 5)}
+              {overview.loading ? <LoadingState className="p-5 text-sm">Loading recent calls...</LoadingState> : !summary ? <p className="p-5 text-sm">Recent calls are unavailable.</p> : summary.recentCalls.length === 0 ? <EmptyState icon="ri-phone-line" title="No calls recorded" /> : <CallTable
+                calls={summary.recentCalls}
                 onOpen={setCall}
                 onCallback={openCallback}
                 leadLabel={leadLabel}
-              />
+              />}
             </Card>
           </div>
         </div>
       ) : null}
 
-      {view === "meetings" ? (
-        <div className="space-y-4">
-          <div className="rounded-lg border border-background-200 bg-background-50 p-3 md:p-4">
-            <div className="flex flex-wrap items-end gap-2.5">
-              <Select
-                label="Show"
-                size="sm"
-                className="w-full sm:w-[10rem]"
-                value={scope}
-                onChange={(value) => {
-                  setScope(value);
-                  setMeetingsPage(1);
-                }}
-                options={[
-                  { value: "upcoming", label: "Upcoming" },
-                  { value: "past", label: "Past" },
-                  { value: "all", label: "All meetings" },
-                ]}
-              />
-              <div className="flex-1 basis-full lg:basis-auto lg:min-w-[14rem]">
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-foreground-500">
-                  Search
-                </label>
-                <SearchInput
-                  value={search}
-                  onChange={(value) => {
-                    setSearch(value);
-                    setMeetingsPage(1);
-                    setCallsPage(1);
-                  }}
-                  placeholder="Search meetings…"
-                />
-              </div>
-            </div>
-          </div>
-          <Card>
-            <CardHeader icon="ri-calendar-line" title="Meetings" subtitle={`${meetings.length} meetings`} />
-            <PaginationFooter
-              position="top"
-              currentPage={meetingsCurrentPage}
-              pageCount={meetingsPageCount}
-              total={meetings.length}
-              itemLabel="meetings"
-              onPageChange={setMeetingsPage}
-            />
-            {meetings.length === 0 ? (
-              <EmptyState icon="ri-vidicon-line" title="No meetings match" />
-            ) : (
-              <MeetingTable
-                meetings={pagedMeetings}
-                onOpen={setMeeting}
-                hostName={userName}
-                eventName={(id) => state.events.find((e) => e.id === id)?.name}
-              />
-            )}
-            <PaginationFooter
-              currentPage={meetingsCurrentPage}
-              pageCount={meetingsPageCount}
-              total={meetings.length}
-              itemLabel="meetings"
-              onPageChange={setMeetingsPage}
-            />
-          </Card>
-        </div>
-      ) : null}
+      {view === "meetings" ? <ZoomMeetingsList onOpen={openMeeting} /> : null}
 
       {view === "calls" ? (
         <div className="space-y-4">
@@ -456,24 +526,30 @@ export default function ZoomPage() {
             </div>
           </div>
           <Card>
-            <CardHeader icon="ri-phone-line" iconTone="accent" title="Call log" subtitle={`${calls.length} calls`} />
+            <CardHeader icon="ri-phone-line" iconTone="accent" title="Call log" subtitle={`${callTotal} calls`} />
             <PaginationFooter
               position="top"
               currentPage={callsCurrentPage}
               pageCount={callsPageCount}
-              total={calls.length}
+              total={callTotal}
               itemLabel="calls"
               onPageChange={setCallsPage}
             />
-            {calls.length === 0 ? (
-              <EmptyState icon="ri-phone-line" title="No calls match" />
+            {backendCallError ? (
+              <EmptyState icon="ri-error-warning-line" title="Calls could not load" message={backendCallError} />
+            ) : pagedCalls.length === 0 ? (
+              <EmptyState
+                icon={backendCallLoading ? "ri-loader-4-line" : "ri-phone-line"}
+                title={backendCallLoading ? "Loading calls" : "No calls match"}
+                message={backendCallLoading ? "Pulling this call page from the backend." : undefined}
+              />
             ) : (
               <CallTable calls={pagedCalls} onOpen={setCall} onCallback={openCallback} leadLabel={leadLabel} />
             )}
             <PaginationFooter
               currentPage={callsCurrentPage}
               pageCount={callsPageCount}
-              total={calls.length}
+              total={callTotal}
               itemLabel="calls"
               onPageChange={setCallsPage}
             />
@@ -542,7 +618,7 @@ export default function ZoomPage() {
           <CardHeader
             icon="ri-checkbox-multiple-line"
             title="Zoom follow-ups"
-            subtitle="Tasks created from calls and meetings appear here and in the Planner"
+            subtitle="Approved follow-up tasks from Zoom call results"
           />
           <PaginationFooter
             position="top"
@@ -556,7 +632,7 @@ export default function ZoomPage() {
             <EmptyState
               icon="ri-checkbox-circle-line"
               title="No follow-ups"
-              message="Schedule a callback from a call to create one."
+              message="Review a final call result and approve its suggested follow-up tasks."
             />
           ) : (
             <CardBody className="space-y-2.5">
@@ -597,42 +673,7 @@ export default function ZoomPage() {
         </Card>
       ) : null}
 
-      <Drawer
-        open={Boolean(meeting)}
-        onClose={() => setMeeting(null)}
-        title={meeting?.topic ?? "Meeting"}
-        subtitle={meeting ? `Zoom ID ${meeting.id}` : ""}
-      >
-        {meeting ? (
-          <div className="space-y-4">
-            <DetailRow label="Host" value={userName(meeting.hostId)} />
-            <DetailRow label="Account" value={meeting.account} />
-            <DetailRow label="Start" value={formatDateTime(meeting.startAt)} />
-            <DetailRow label="Duration" value={`${meeting.durationMins} minutes`} />
-            <DetailRow label="Participants" value={String(meeting.participants)} />
-            <DetailRow label="Status" value={meeting.status} />
-            {meeting.relatedEventId ? (
-              <DetailRow
-                label="Related event"
-                value={state.events.find((e) => e.id === meeting.relatedEventId)?.name ?? "—"}
-              />
-            ) : null}
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-wide text-foreground-400">
-                Join link
-              </p>
-              <p className="mt-0.5 break-all text-[12.5px] text-foreground-600">
-                {meeting.joinUrl ?? "No join link available."}
-              </p>
-              {meeting.joinUrl ? (
-                <Badge tone="warning" className="mt-2">
-                  Demonstration link only
-                </Badge>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-      </Drawer>
+      {meetingId ? <MeetingDetails key={meetingId} id={meetingId} onClose={() => navigate('/zoom?view=meetings', { replace: true })} /> : null}
 
       <Drawer
         open={Boolean(call)}
@@ -686,43 +727,14 @@ export default function ZoomPage() {
                   openCallback(call);
                 }}
               >
-                Schedule callback
+                Review call actions
               </Button>
             ) : null}
           </div>
         ) : null}
       </Drawer>
 
-      <Modal
-        open={Boolean(callbackTarget)}
-        onClose={() => setCallbackTarget(null)}
-        size="sm"
-        title="Schedule a callback"
-        description={callbackTarget ? `${callbackTarget.caller} · ${callbackTarget.phoneNumber}` : ""}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setCallbackTarget(null)}>
-              Cancel
-            </Button>
-            <Button leftIcon={<i className="ri-calendar-check-line"></i>} onClick={saveCallback}>
-              Schedule callback
-            </Button>
-          </>
-        }
-      >
-        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-foreground-500">
-          Callback date &amp; time
-        </label>
-        <input
-          type="datetime-local"
-          value={callbackAt}
-          onChange={(e) => setCallbackAt(e.target.value)}
-          className="h-9 w-full rounded-md border border-background-300 bg-background-50 px-3 text-sm text-foreground-900 focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-200"
-        />
-        <p className="mt-2 text-[11px] text-foreground-500">
-          Creates a Zoom follow-up task in the Planner. No real call is scheduled.
-        </p>
-      </Modal>
+
     </div>
   );
 }

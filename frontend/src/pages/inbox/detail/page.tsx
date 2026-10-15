@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import Avatar from "@/components/base/Avatar";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
 import { Card, CardBody, CardHeader } from "@/components/base/Card";
@@ -11,12 +10,14 @@ import { useToast } from "@/components/base/Toast";
 import { labelById } from "@/config/crm";
 import { usePermissions } from "@/hooks/usePermissions";
 import LabelMultiSelect from "@/pages/inbox/components/LabelMultiSelect";
+import EmailMessageCard from "@/pages/inbox/components/EmailMessageCard";
 import TaskFormModal from "@/pages/planner/components/TaskFormModal";
 import { mapBackendEmailThread } from "@/store/backendSync";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { EmailMessage, EmailThread } from "@/store/types";
 import { durationLabel, isAwaitingReply, isOverdue, responseDeadlineTone } from "@/utils/inbox";
 import { formatDateTime, relativeTime } from "@/utils/format";
+import { separateEmailContent } from "@/utils/emailContent";
 
 type BackendEmailRecord = Record<string, unknown>;
 const EMAIL_DETAIL_TIMEOUT_MS = 10000;
@@ -55,7 +56,7 @@ function isoDate(...values: unknown[]): string {
     const time = new Date(raw).getTime();
     if (Number.isFinite(time)) return new Date(time).toISOString();
   }
-  return new Date().toISOString();
+  return "";
 }
 
 function messageFromBackendEmail(
@@ -64,27 +65,26 @@ function messageFromBackendEmail(
     id: string;
     senderName: string;
     senderEmail: string;
-    ownerName: string;
-    ownerEmail: string;
-    receivedAt: string;
-    preview: string;
   },
 ): EmailMessage {
   const outbound = text(record.direction).toLowerCase() === "outbound";
+  const recipient = text(record.to_email, record.email, fallback.senderEmail);
+  const sender = text(record.from_email, text(record.from).toLowerCase() !== recipient.toLowerCase() ? record.from : "");
   return {
     id: text(record.id, record.gmail_message_id, `${fallback.id}-message`),
+    subject: text(record.subject),
     direction: outbound ? "outbound" : "inbound",
     fromName: outbound
-      ? text(record.from_name, record.owner, fallback.ownerName, "You")
+      ? text(record.from_name, record.owner, "Sender not recorded")
       : text(record.from_name, record.senderName, record.sender_name, fallback.senderName),
     fromEmail: outbound
-      ? text(record.from, record.from_email, fallback.ownerEmail)
+      ? sender
       : text(record.from, record.from_email, record.email, fallback.senderEmail),
     toEmail: outbound
       ? text(record.to_email, record.email, fallback.senderEmail)
-      : text(record.to_email, fallback.ownerEmail),
-    body: visibleMessageText(record.body, record.text, record.preview, record.snippet, fallback.preview),
-    sentAt: isoDate(record.received_at, record.date, record.created_at, fallback.receivedAt),
+      : text(record.to_email),
+    body: visibleMessageText(record.body, record.text, record.preview, record.snippet),
+    sentAt: isoDate(record.sent_at, record.received_at, record.date, record.created_at),
     authorId: outbound ? text(record.author_id, record.owner_id) || undefined : undefined,
   };
 }
@@ -156,39 +156,40 @@ export default function ThreadDetailPage() {
         return response.json() as Promise<{ email?: BackendEmailRecord; thread?: BackendEmailRecord[] }>;
       })
       .then((payload) => {
+        if (controller.signal.aborted) return;
         const records = Array.isArray(payload.thread) && payload.thread.length ? payload.thread : payload.email ? [payload.email] : [];
         if (!records.length) return;
         const baseThread = storedThread ?? mapBackendEmailThread(payload.email ?? records[0], state.users, state.leads);
         if (!storedThread) setBackendThread(baseThread);
-        const owner = baseThread.ownerId ? state.users.find((user) => user.id === baseThread.ownerId) : undefined;
         const mapped = records.map((record) =>
           messageFromBackendEmail(record, {
             id: baseThread.id,
             senderName: baseThread.senderName,
             senderEmail: baseThread.senderEmail,
-            ownerName: owner?.name ?? currentUser.name,
-            ownerEmail: owner?.email ?? currentUser.email,
-            receivedAt: baseThread.receivedAt,
-            preview: baseThread.preview,
           }),
         );
-        const hasOutbound = mapped.some((message) => message.direction === "outbound");
-        const responseNote = text(payload.email?.response_note);
-        if (responseNote && !hasOutbound) {
+        for (const record of records) {
+          const responseNote = text(record.response_note);
+          const responseAt = isoDate(record.response_at);
+          const mirrored = responseNote && responseAt && mapped.some(message => message.direction === "outbound"
+            && message.sentAt === responseAt && separateEmailContent(message.body).body.trim() === responseNote);
+          if (!responseNote || mirrored) continue;
           mapped.push({
-            id: `${baseThread.id}-reply`,
+            id: `${text(record.id, baseThread.id)}-reply`,
+            subject: text(record.subject, baseThread.subject),
             direction: "outbound",
-            fromName: owner?.name ?? currentUser.name,
-            fromEmail: owner?.email ?? currentUser.email,
-            toEmail: baseThread.senderEmail,
+            fromName: text(record.response_from_name, "Sender not recorded"),
+            fromEmail: text(record.response_from_email),
+            toEmail: text(record.email, baseThread.senderEmail),
             body: responseNote,
-            sentAt: isoDate(payload.email?.response_at, baseThread.receivedAt),
-            authorId: owner?.id ?? currentUser.id,
+            sentAt: responseAt,
+            authorId: text(record.response_author_id) || undefined,
           });
         }
         setDetailMessages(mapped);
       })
       .catch((error) => {
+        if (controller.signal.aborted && !timedOut) return;
         if ((error as Error).name !== "AbortError") {
           setDetailMessages(null);
           setDetailError(error instanceof Error ? error.message : "Email detail unavailable");
@@ -198,13 +199,13 @@ export default function ThreadDetailPage() {
       })
       .finally(() => {
         window.clearTimeout(timeout);
-        setDetailLoading(false);
+        if (!controller.signal.aborted || timedOut) setDetailLoading(false);
       });
     return () => {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [canSeeOwner, currentUser.email, currentUser.id, currentUser.name, id, state.leads, state.users, storedThread]);
+  }, [canSeeOwner, id, state.leads, state.users, storedThread]);
 
   const messages = useMemo(
     () =>
@@ -377,45 +378,10 @@ export default function ThreadDetailPage() {
             <CardHeader
               icon="ri-chat-3-line"
               title="Conversation"
-              subtitle={`${messages.length} messages`}
+              subtitle={`${messages.length} separate emails`}
             />
             <CardBody className="space-y-5">
-              {messages.map((message) => {
-                const outbound = message.direction === "outbound";
-                const messageBody = visibleMessageText(message.body);
-                return (
-                  <div
-                    key={message.id}
-                    className={`flex min-w-0 max-w-full gap-3 ${outbound ? "flex-row-reverse" : ""}`}
-                  >
-                    <Avatar name={message.fromName} size="sm" />
-                    <div className={`min-w-0 max-w-full flex-1 lg:max-w-[46rem] ${outbound ? "text-right" : ""}`}>
-                      <div className={`flex items-center gap-2 ${outbound ? "justify-end" : ""}`}>
-                        <span className="text-[12px] font-semibold text-foreground-900">
-                          {outbound ? "You" : message.fromName}
-                        </span>
-                        <span className="text-[11px] text-foreground-400">
-                          {formatDateTime(message.sentAt)}
-                        </span>
-                      </div>
-                      <div
-                        className={`mt-1.5 max-w-full whitespace-pre-wrap break-words rounded-lg border px-4 py-3 text-left text-[13px] leading-relaxed ${
-                          outbound
-                            ? "border-primary-200 bg-primary-50 text-foreground-800"
-                            : "border-background-200 bg-background-100 text-foreground-700"
-                        }`}
-                        style={{ overflowWrap: "anywhere", wordBreak: "break-word" }}
-                      >
-                        {messageBody || (
-                          <span className="italic text-foreground-400">
-                            No message body was available for this email.
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              {messages.map((message, index) => <EmailMessageCard key={message.id} message={message} subject={thread.subject} index={index} />)}
             </CardBody>
           </Card>
 

@@ -1,4 +1,4 @@
-import type { RouteObject } from "react-router-dom";
+import { Navigate, type RouteObject } from "react-router-dom";
 import AppShell from "@/components/feature/AppShell";
 import ModuleGuard from "@/components/feature/ModuleGuard";
 import { PENDING_MODULES } from "@/config/modules";
@@ -14,12 +14,9 @@ import ApplicationsPage from "@/pages/applications/page";
 import ApplicationDetailPage from "@/pages/applications/detail/page";
 import EventsPage from "@/pages/events/page";
 import EventDetailPage from "@/pages/events/detail/page";
-import CampaignsPage from "@/pages/campaigns/page";
 import ZoomPage from "@/pages/zoom/page";
 import ZoomCallDetailPage from "@/pages/zoom/calls/detail/page";
 import ZohoPage from "@/pages/zoho/page";
-import SourcesPage from "@/pages/sources/page";
-import FutureIntakePage from "@/pages/future-intake/page";
 import CommercialPage from "@/pages/commercial/page";
 import EmployersPage from "@/pages/employers/page";
 import EmployerDetailPage from "@/pages/employers/detail/page";
@@ -63,8 +60,12 @@ const routes: RouteObject[] = [
     element: <AppShell />,
     children: [
       { index: true, element: <Today /> },
+      { path: "today", element: <Today /> },
       { path: "leads", element: <LeadsPage /> },
       { path: "leads/:id", element: <LeadDetailPage /> },
+      ...["campaigns", "sources", "attribution", "future-intake"].map(path => ({
+        path: `${path}/*`, element: <Navigate to="/leads" replace />,
+      })),
       { path: "inbox", element: <InboxPage /> },
       { path: "inbox/:id", element: <ThreadDetailPage /> },
       { path: "planner", element: <PlannerPage /> },
@@ -72,7 +73,6 @@ const routes: RouteObject[] = [
       { path: "applications/:id", element: <ApplicationDetailPage /> },
       { path: "events", element: <EventsPage /> },
       { path: "events/:id", element: <EventDetailPage /> },
-      { path: "campaigns", element: <CampaignsPage /> },
       {
         path: "zoom",
         element: (
@@ -89,15 +89,10 @@ const routes: RouteObject[] = [
           </ModuleGuard>
         ),
       },
+      ...["zoom/meetings", "zoom/meetings/:id", "zoom/calls"].map(path => ({
+        path, element: <ModuleGuard navKey="zoom"><ZoomPage /></ModuleGuard>,
+      })),
       { path: "zoho", element: <ZohoPage /> },
-      {
-        path: "future-intake",
-        element: (
-          <ModuleGuard navKey="future-intake">
-            <FutureIntakePage />
-          </ModuleGuard>
-        ),
-      },
       {
         path: "commercial",
         element: (
@@ -119,14 +114,6 @@ const routes: RouteObject[] = [
         element: (
           <ModuleGuard navKey="employers">
             <EmployerDetailPage />
-          </ModuleGuard>
-        ),
-      },
-      {
-        path: "sources",
-        element: (
-          <ModuleGuard navKey="attribution">
-            <SourcesPage />
           </ModuleGuard>
         ),
       },

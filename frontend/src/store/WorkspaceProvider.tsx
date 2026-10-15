@@ -13,12 +13,23 @@ import { createSeedState } from "@/store/seed";
 import {
   clearBackendIntegrationOverviewCache,
   isBackendAuthRequiredError,
+  loadBackendLeadDetail,
+  loadBackendCallDetail,
+  loadBackendApplicationDetail,
+  loadBackendEventDetail,
+  loadBackendLeadTasks,
+  loadBackendTasks,
   loadBackendIntegrationOverview,
   loadBackendWorkspace,
+  loadBackendBusiness,
+  saveBusinessRecord,
+  type BackendBusinessData,
+  type BusinessQuery,
   type BackendIntegrationOverview,
   type BackendWorkspaceSection,
 } from "@/store/backendSync";
 import { bumpDatasetGeneration } from "@/store/datasetIdentity";
+import { callWorkflowUpdated } from "@/store/callJourney";
 import { sourceByName, categoryForInteractionType } from "@/config/attribution";
 import type { AudienceRow, CampaignStage } from "@/config/marketing";
 import {
@@ -61,6 +72,7 @@ import type {
   ActivityTone,
   Application,
   ApplicationStatus,
+  CollegeEvent,
   AttendanceOutcome,
   AuditEntry,
   Call,
@@ -399,8 +411,15 @@ export interface WorkspaceContextValue {
   backendLoading: boolean;
   integrationOverview: BackendIntegrationOverview | null;
   refreshBackendWorkspace: () => Promise<boolean>;
+  refreshBusinessData: (signal?: AbortSignal, employerName?: string, query?: BusinessQuery) => Promise<BackendBusinessData>;
+  loadCallDetail: (id: string, signal?: AbortSignal) => Promise<Call>;
+  loadApplicationDetail: (id: string, signal?: AbortSignal) => Promise<Application>;
+  loadEventDetail: (id: string, signal?: AbortSignal) => Promise<CollegeEvent>;
+  refreshPlannerTasks: () => Promise<void>;
   signInBackend: (email: string, password: string) => Promise<BackendSignInResult>;
+  signOutBackend: () => Promise<void>;
   // leads
+  loadLeadDetail: (id: string, signal?: AbortSignal) => Promise<Lead>;
   createLead: (input: LeadInput) => Lead;
   updateLead: (id: string, patch: Partial<Lead>) => void;
   deleteLead: (id: string) => void;
@@ -480,12 +499,12 @@ export interface WorkspaceContextValue {
   moveToFutureIntake: (input: FutureIntakeInput) => FutureIntakeRecord;
   updateFutureIntake: (id: string, patch: Partial<FutureIntakeRecord>) => void;
   removeFromFutureIntake: (id: string) => void;
-  referCommercial: (input: CommercialInput) => CommercialOpportunity;
-  updateCommercial: (id: string, patch: Partial<CommercialOpportunity>) => void;
-  createEmployerAgreement: (input: AgreementInput) => EmployerAgreement;
-  updateEmployerAgreement: (id: string, patch: Partial<EmployerAgreement>) => void;
-  createDasRecord: (input: DasInput) => DasRecord;
-  updateDas: (id: string, patch: Partial<DasRecord>) => void;
+  referCommercial: (input: CommercialInput) => Promise<CommercialOpportunity>;
+  updateCommercial: (id: string, patch: Partial<CommercialOpportunity>) => Promise<void>;
+  createEmployerAgreement: (input: AgreementInput) => Promise<EmployerAgreement>;
+  updateEmployerAgreement: (id: string, patch: Partial<EmployerAgreement>) => Promise<void>;
+  createDasRecord: (input: DasInput) => Promise<DasRecord>;
+  updateDas: (id: string, patch: Partial<DasRecord>) => Promise<void>;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -550,13 +569,49 @@ function looksLikeLegacyDemoWorkspace(raw: string): boolean {
   }
 }
 
+function looksLikeGeneratedWorkspace(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const users = Array.isArray(parsed.users) ? parsed.users : [];
+    return users.some((item) => {
+      if (!item || typeof item !== "object") return false;
+      return String((item as { email?: unknown }).email ?? "").endsWith("@kentbusinesscollege.local");
+    });
+  } catch {
+    return false;
+  }
+}
+
 function readStoredWorkspace(): string | null {
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (raw && looksLikeLegacyDemoWorkspace(raw)) {
+  if (raw && (looksLikeLegacyDemoWorkspace(raw) || looksLikeGeneratedWorkspace(raw))) {
     removeWorkspaceStorage();
     return null;
   }
   return raw;
+}
+
+function createEmptyWorkspaceState(): WorkspaceState {
+  const seed = createSeedState();
+  return {
+    ...seed,
+    leads: [],
+    touchpoints: [],
+    futureIntakes: [],
+    commercialOpportunities: [],
+    employerAgreements: [],
+    dasRecords: [],
+    threads: [],
+    tasks: [],
+    events: [],
+    campaigns: [],
+    applications: [],
+    meetings: [],
+    calls: [],
+    activity: [],
+    notifications: [],
+    audit: [],
+  };
 }
 
 function hasActiveIntegrationSync(overview: BackendIntegrationOverview | null): boolean {
@@ -568,20 +623,23 @@ function hasActiveIntegrationSync(overview: BackendIntegrationOverview | null): 
 }
 
 const ALL_BACKEND_SECTIONS: BackendWorkspaceSection[] = [
-  "leads",
   "tasks",
   "applications",
   "events",
   "meetings",
   "calls",
+  "emails",
+  "activity",
 ];
 
 function startupSectionsForPath(pathname: string): BackendWorkspaceSection[] {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/inbox") return [];
   if (path.startsWith("/inbox/")) return ["leads"];
-  if (path === "/" || path === "/today") return ["leads", "tasks", "applications", "events", "meetings"];
-  if (path.startsWith("/leads")) return ["leads", "tasks", "applications", "events"];
+  if (path === "/" || path === "/today") return [];
+  if (path === "/login") return [];
+  if (path.startsWith("/leads")) return ["leads"];
+  if (path.startsWith("/employers") || path.startsWith("/commercial")) return [];
   if (path.startsWith("/planner")) return ["tasks", "leads"];
   if (path.startsWith("/applications")) return ["applications", "leads", "tasks"];
   if (path.startsWith("/events")) return ["events", "leads"];
@@ -594,13 +652,18 @@ function startupSectionsForPath(pathname: string): BackendWorkspaceSection[] {
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const [boot] = useState(() =>
-    bootWorkspace(readStoredWorkspace(), createSeedState(), STORAGE_KEY),
+    bootWorkspace(readStoredWorkspace(), createEmptyWorkspaceState(), STORAGE_KEY),
   );
   const [state, setState] = useState<WorkspaceState>(boot.state);
+  // Keep detail loading stable when commit() clones the workspace after local edits.
+  const workspaceUsersRef = useRef(state.users);
+  workspaceUsersRef.current = state.users;
   const [issue, setIssue] = useState<BootIssue | null>(boot.issue);
   const [backendLoadedAt, setBackendLoadedAt] = useState<string | null>(null);
+  const [backendUserId, setBackendUserId] = useState<string | null>(null);
   const [backendAuthRequired, setBackendAuthRequired] = useState(false);
   const [backendLoading, setBackendLoading] = useState(true);
+  const [backendConnectionError, setBackendConnectionError] = useState("");
   const [integrationOverview, setIntegrationOverview] = useState<BackendIntegrationOverview | null>(null);
   const activeIntegrationSyncRef = useRef(false);
   const integrationOverviewTimerRef = useRef<number | null>(null);
@@ -644,17 +707,48 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setIssue(null);
       setState(result.state);
       setBackendLoadedAt(result.loadedAt);
+      setBackendUserId(result.currentUserId || null);
       setBackendAuthRequired(false);
       setIntegrationOverview(result.integrationOverview);
       setMigrationNotice(null);
     return true;
   }, []);
 
+  useEffect(() => {
+    const expire = () => {
+      clearBackendIntegrationOverviewCache();
+      removeWorkspaceStorage();
+      setState(createEmptyWorkspaceState());
+      setBackendUserId(null);
+      setBackendLoadedAt(null);
+      setBackendAuthRequired(true);
+      setIntegrationOverview(null);
+    };
+    window.addEventListener("kbc:session-expired", expire);
+    const changed = (event: StorageEvent) => { if (event.key === "kbc-auth-revision") window.location.reload(); };
+    const restored = (event: PageTransitionEvent) => { if (event.persisted) window.location.reload(); };
+    window.addEventListener("storage", changed);
+    window.addEventListener("pageshow", restored);
+    return () => { window.removeEventListener("kbc:session-expired", expire); window.removeEventListener("storage", changed); window.removeEventListener("pageshow", restored); };
+  }, []);
+
+  const signOutBackend = useCallback(async () => {
+    const response = await fetch("/api/logout", { method: "POST", credentials: "include", signal: AbortSignal.timeout(15000) });
+    if (!response.ok && response.status !== 401) throw new Error("Unable to sign out. Please try again.");
+    removeWorkspaceStorage();
+    clearBackendIntegrationOverviewCache();
+    try { localStorage.setItem("kbc-auth-revision", crypto.randomUUID()); } catch { /* Storage may be disabled. */ }
+    setState(createEmptyWorkspaceState());
+    setBackendUserId(null); setBackendLoadedAt(null); setBackendAuthRequired(true);
+    window.location.replace("/login");
+  }, []);
+
   const refreshBackendWorkspace = useCallback(async (): Promise<boolean> => {
     setBackendLoading(true);
+    setBackendConnectionError("");
     clearBackendIntegrationOverviewCache();
     try {
-      const result = await loadBackendWorkspace();
+      const result = await loadBackendWorkspace({ fast: true, sections: startupSectionsForPath(location.pathname), throwOnFailure: true });
       return applyBackendWorkspace(result);
     } catch (error) {
       if (isBackendAuthRequiredError(error)) {
@@ -662,11 +756,88 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setBackendLoadedAt(null);
         return false;
       }
+      setBackendConnectionError(error instanceof Error ? error.message : "Unable to connect to the workspace. Please retry.");
       throw error;
     } finally {
       setBackendLoading(false);
     }
-  }, [applyBackendWorkspace]);
+  }, [applyBackendWorkspace, location.pathname]);
+
+  const loadLeadDetail = useCallback(async (id: string, signal?: AbortSignal): Promise<Lead> => {
+    try {
+      const lead = await loadBackendLeadDetail(id, workspaceUsersRef.current, signal);
+      if (!signal?.aborted) {
+        setState((prev) => {
+          if (signal?.aborted) return prev;
+          const exists = prev.leads.some((item) => item.id === lead.id);
+          return {
+            ...prev,
+            leads: exists
+              ? prev.leads.map((item) => item.id === lead.id ? { ...item, ...lead } : item)
+              : [...prev.leads, lead],
+          };
+        });
+      }
+      return lead;
+    } catch (error) {
+      if (!signal?.aborted && isBackendAuthRequiredError(error)) setBackendAuthRequired(true);
+      throw error;
+    }
+  }, []);
+
+  const refreshBusinessData = useCallback(async (signal?: AbortSignal, employerName?: string, query?: BusinessQuery): Promise<BackendBusinessData> => {
+    try {
+      const result = await loadBackendBusiness(workspaceUsersRef.current, signal, employerName, query);
+      if (!signal?.aborted) setState(prev => {
+        const known = new Set(prev.leads.map(lead => lead.id));
+        return { ...prev, commercialOpportunities: result.commercialOpportunities,
+          employerAgreements: result.employerAgreements, dasRecords: result.dasRecords,
+          leads: [...prev.leads, ...result.leads.filter(lead => !known.has(lead.id))] };
+      });
+      return result;
+    } catch (error) {
+      if (!signal?.aborted && isBackendAuthRequiredError(error)) setBackendAuthRequired(true);
+      throw error;
+    }
+  }, []);
+
+  const loadApplicationDetail = useCallback(async (id: string, signal?: AbortSignal) => {
+    const { application, lead } = await loadBackendApplicationDetail(id, workspaceUsersRef.current, signal);
+    if (!signal?.aborted) setState(prev => ({ ...prev,
+      applications: [...prev.applications.filter(item => item.id !== application.id), application],
+      leads: lead ? [...prev.leads.filter(item => item.id !== lead.id), lead] : prev.leads,
+    }));
+    return application;
+  }, []);
+
+  const loadEventDetail = useCallback(async (id: string, signal?: AbortSignal) => {
+    const event = await loadBackendEventDetail(id, signal);
+    if (!signal?.aborted) setState(prev => ({ ...prev, events: [...prev.events.filter(item => item.id !== event.id), event] }));
+    return event;
+  }, []);
+
+  const loadCallDetail = useCallback(async (id: string, signal?: AbortSignal) => {
+    const call = await loadBackendCallDetail(id, workspaceUsersRef.current, signal);
+    if (!signal?.aborted) setState(prev => ({ ...prev, calls: [...prev.calls.filter(item => item.id !== call.id), call] }));
+    if (call.leadId && !signal?.aborted) await loadLeadDetail(call.leadId, signal).catch(() => {});
+    return call;
+  }, [loadLeadDetail]);
+  const refreshPlannerTasks = useCallback(async () => {
+    const tasks = await loadBackendTasks(workspaceUsersRef.current, { zoomCalls: true });
+    const known = new Set(tasks.map(task => task.id));
+    setState(prev => ({ ...prev, tasks: [...tasks, ...prev.tasks.filter(task => !known.has(task.id) && !task.callVerified)] }));
+  }, []);
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail;
+      if (!id) return;
+      void Promise.all([loadLeadDetail(id), loadBackendLeadTasks(id, workspaceUsersRef.current)]).then(([, tasks]) => {
+        setState(prev => ({ ...prev, tasks: [...prev.tasks.filter(task => task.relatedLeadId !== id), ...tasks.map(task => ({ ...task, callVerified: prev.tasks.find(item => item.id === task.id)?.callVerified }))] }));
+      }).catch(() => {});
+    };
+    window.addEventListener("kbc:call-workflow-updated", listener);
+    return () => window.removeEventListener("kbc:call-workflow-updated", listener);
+  }, [loadLeadDetail]);
 
   const refreshIntegrationOverview = useCallback(async (): Promise<BackendIntegrationOverview | null> => {
     try {
@@ -707,21 +878,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           }
           return { ok: false, error: message };
         }
+        const login = await response.json().catch(() => null) as { ok?: boolean; user?: { id?: string; email?: string } } | null;
+        if (!login?.ok || !login.user?.id || login.user.email?.toLowerCase() !== email.trim().toLowerCase()) {
+          return { ok: false, error: "The sign-in service returned an unexpected response. Check that you opened the correct workspace address." };
+        }
+        const sessionResponse = await fetch("/api/bootstrap", { credentials: "include", signal: controller.signal, headers: { Accept: "application/json" } });
+        if (sessionResponse.status === 401) return { ok: false, error: "Your sign-in session could not be saved. Allow cookies for this site and try again." };
+        if (!sessionResponse.ok) return { ok: false, error: "Your account was accepted, but the workspace could not be opened. Please retry." };
+        const session = await sessionResponse.json().catch(() => null) as { user?: { id?: string } } | null;
+        if (session?.user?.id !== login.user.id) return { ok: false, error: "The sign-in session could not be verified. Please sign in again." };
         clearBackendIntegrationOverviewCache();
-        setBackendAuthRequired(false);
-        setBackendLoadedAt(new Date().toISOString());
-        void loadBackendWorkspace({ fast: true, sections: startupSectionsForPath(location.pathname) })
-          .then((result) => {
-            applyBackendWorkspace(result);
-          })
-          .catch((error) => {
-            if (isBackendAuthRequiredError(error)) {
-              setBackendAuthRequired(true);
-              setBackendLoadedAt(null);
-              return;
-            }
-            console.warn("[backend-sync] Signed in, but background workspace load failed.", error);
-          });
+        removeWorkspaceStorage();
+        try { localStorage.setItem("kbc-auth-revision", crypto.randomUUID()); } catch { /* Storage may be disabled. */ }
+        setState(createEmptyWorkspaceState());
+        setBackendLoadedAt(null); setBackendUserId(null);
+        // A fresh document discards every request and component from the previous account.
+        window.location.replace("/");
         return { ok: true };
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") {
@@ -739,13 +911,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setBackendLoading(false);
       }
     },
-    [applyBackendWorkspace],
+    [applyBackendWorkspace, location.pathname],
   );
 
   useEffect(() => {
     let cancelled = false;
     setBackendLoading(true);
-    loadBackendWorkspace({ fast: true, sections: startupSectionsForPath(initialBackendPathRef.current) })
+    loadBackendWorkspace({ fast: true, sections: startupSectionsForPath(initialBackendPathRef.current), throwOnFailure: true })
       .then((result) => {
         if (cancelled) return;
         applyBackendWorkspace(result);
@@ -756,6 +928,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           setBackendAuthRequired(true);
           setBackendLoadedAt(null);
         } else {
+          setBackendConnectionError(error instanceof Error ? error.message : "Unable to connect to the workspace. Please retry.");
           console.warn("[backend-sync] Initial backend load failed.", error);
         }
       })
@@ -832,14 +1005,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const role = useMemo<RoleDefinition>(() => roleById(state.roleId), [state.roleId]);
-  const currentUserId = role.userId;
+  const currentUserId = backendLoadedAt && backendUserId ? backendUserId : role.userId;
 
   useEffect(() => {
     activeActorId = currentUserId;
   }, [currentUserId]);
 
-  const setRole = useCallback((next: RoleId) => {
-    setState((prev) => ({ ...prev, roleId: isRoleId(next) ? next : DEFAULT_ROLE_ID }));
+  const setRole = useCallback((_next: RoleId) => {
+    // Roles are assigned to the authenticated account on the server.
   }, []);
 
   const currentUser = useMemo(
@@ -855,7 +1028,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const userName = useCallback(
     (id: string | null | undefined) => {
       if (!id) return "Unassigned";
-      return state.users.find((u) => u.id === id)?.name ?? "Unknown user";
+      return state.users.find((u) => u.id === id)?.name ?? id;
     },
     [state.users],
   );
@@ -868,7 +1041,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setBackendLoadedAt(null);
     setIntegrationOverview(null);
     removeWorkspaceStorage();
-    setState(createSeedState());
+    setState(createEmptyWorkspaceState());
   }, []);
 
   const dismissMigrationNotice = useCallback(() => {
@@ -896,10 +1069,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           error: "That file is not a Kent Business College workspace backup.",
         };
       }
-      if (looksLikeLegacyDemoWorkspace(json)) {
+      if (looksLikeLegacyDemoWorkspace(json) || looksLikeGeneratedWorkspace(json)) {
         return {
           ok: false,
-          error: "That file contains legacy demo records and was not imported.",
+          error: "That file contains generated demo records and was not imported.",
         };
       }
       try {
@@ -909,7 +1082,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         } catch {
           /* best-effort */
         }
-        const result = runMigrations(parsed as Record<string, unknown>, createSeedState());
+        const result = runMigrations(parsed as Record<string, unknown>, createEmptyWorkspaceState());
         setState(result.state);
         if (result.applied && result.record) {
           setMigrationNotice(result.record);
@@ -933,8 +1106,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const retryRecovery = useCallback((): boolean => {
     const candidate = readStoredWorkspace() ?? issue?.raw ?? null;
-    const raw = candidate && looksLikeLegacyDemoWorkspace(candidate) ? null : candidate;
-    const result = bootWorkspace(raw, createSeedState(), STORAGE_KEY);
+    const raw =
+      candidate && (looksLikeLegacyDemoWorkspace(candidate) || looksLikeGeneratedWorkspace(candidate))
+        ? null
+        : candidate;
+    const result = bootWorkspace(raw, createEmptyWorkspaceState(), STORAGE_KEY);
     if (result.issue) {
       setIssue(result.issue);
       return false;
@@ -947,7 +1123,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const resetFromRecovery = useCallback(() => {
     removeWorkspaceStorage();
-    setState(createSeedState());
+    setState(createEmptyWorkspaceState());
     setIssue(null);
     setMigrationNotice(null);
   }, []);
@@ -1116,7 +1292,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
 
   const completeTask = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const linkedLeadId = state.tasks.find(task => task.id === id)?.relatedLeadId;
+      if (backendLoadedAt && id.startsWith('T-CALL-')) {
+        try {
+          const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/complete`, { method: 'POST', credentials: 'include' });
+          if (!response.ok) throw new Error('Task completion could not be saved. Please try again.');
+        } catch (error) { window.dispatchEvent(new CustomEvent('kbc:workflow-error', { detail: error instanceof Error ? error.message : 'Task update failed.' })); return; }
+      }
       commit((draft) => {
         const task = draft.tasks.find((t) => t.id === id);
         if (!task) return;
@@ -1139,20 +1322,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           after: "Completed",
         });
       });
+      if (backendLoadedAt && id.startsWith('T-CALL-') && linkedLeadId) callWorkflowUpdated(linkedLeadId);
     },
-    [commit],
+    [commit, backendLoadedAt, state.tasks],
   );
 
   const reopenTask = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const linkedLeadId = state.tasks.find(task => task.id === id)?.relatedLeadId;
+      if (backendLoadedAt && id.startsWith('T-CALL-')) {
+        try {
+          const response = await fetch(`/api/tasks/${encodeURIComponent(id)}/reopen`, { method: 'POST', credentials: 'include' });
+          if (!response.ok) throw new Error('Task reopening could not be saved. Please try again.');
+        } catch (error) { window.dispatchEvent(new CustomEvent('kbc:workflow-error', { detail: error instanceof Error ? error.message : 'Task update failed.' })); return; }
+      }
       commit((draft) => {
         const task = draft.tasks.find((t) => t.id === id);
         if (!task) return;
         task.status = "open";
         task.completedAt = undefined;
       });
+      if (backendLoadedAt && id.startsWith('T-CALL-') && linkedLeadId) callWorkflowUpdated(linkedLeadId);
     },
-    [commit],
+    [commit, backendLoadedAt, state.tasks],
   );
 
   const rescheduleTask = useCallback(
@@ -2311,9 +2503,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   );
 
   const referCommercial = useCallback(
-    (input: CommercialInput): CommercialOpportunity => {
-      const id = `CO-${nextNumber(state.commercialOpportunities.map((c) => c.id), "CO", 4000)}`;
-      const record: CommercialOpportunity = {
+    async (input: CommercialInput): Promise<CommercialOpportunity> => {
+      const saved = backendLoadedAt ? await saveBusinessRecord<CommercialOpportunity>("commercial-opportunities", input) : null;
+      const id = saved?.id || `CO-${nextNumber(state.commercialOpportunities.map((c) => c.id), "CO", 4000)}`;
+      const record: CommercialOpportunity = saved || {
         ...input,
         id,
         stage: "Referred",
@@ -2342,16 +2535,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
       return record;
     },
-    [commit, state.commercialOpportunities],
+    [commit, state.commercialOpportunities, backendLoadedAt],
   );
 
   const updateCommercial = useCallback(
-    (id: string, patch: Partial<CommercialOpportunity>) => {
+    async (id: string, patch: Partial<CommercialOpportunity>) => {
+      const saved = backendLoadedAt ? await saveBusinessRecord<CommercialOpportunity>("commercial-opportunities", patch, id) : null;
       commit((draft) => {
         const record = draft.commercialOpportunities.find((c) => c.id === id);
         if (!record) return;
         const beforeStage = record.stage;
-        Object.assign(record, patch, { updatedAt: now() });
+        Object.assign(record, saved || patch, { updatedAt: saved?.updatedAt || now() });
         const lead = draft.leads.find((l) => l.id === record.leadId);
         if (patch.stage && patch.stage !== beforeStage) {
           pushActivity(draft, {
@@ -2373,13 +2567,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
       });
     },
-    [commit],
+    [commit, backendLoadedAt],
   );
 
   const createEmployerAgreement = useCallback(
-    (input: AgreementInput): EmployerAgreement => {
-      const id = `EA-${nextNumber(state.employerAgreements.map((a) => a.id), "EA", 5000)}`;
-      const record: EmployerAgreement = { ...input, id, updatedAt: now() };
+    async (input: AgreementInput): Promise<EmployerAgreement> => {
+      const saved = backendLoadedAt ? await saveBusinessRecord<EmployerAgreement>("employer-agreements", input) : null;
+      const id = saved?.id || `EA-${nextNumber(state.employerAgreements.map((a) => a.id), "EA", 5000)}`;
+      const record: EmployerAgreement = saved || { ...input, id, updatedAt: now() };
       commit((draft) => {
         draft.employerAgreements.unshift(record);
         if (input.leadId) {
@@ -2398,16 +2593,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
       return record;
     },
-    [commit, state.employerAgreements],
+    [commit, state.employerAgreements, backendLoadedAt],
   );
 
   const updateEmployerAgreement = useCallback(
-    (id: string, patch: Partial<EmployerAgreement>) => {
+    async (id: string, patch: Partial<EmployerAgreement>) => {
+      const saved = backendLoadedAt ? await saveBusinessRecord<EmployerAgreement>("employer-agreements", patch, id) : null;
       commit((draft) => {
         const record = draft.employerAgreements.find((a) => a.id === id);
         if (!record) return;
         const before = record.status;
-        Object.assign(record, patch, { updatedAt: now() });
+        Object.assign(record, saved || patch, { updatedAt: saved?.updatedAt || now() });
         if (patch.status === "Signed" && !record.dateSigned) record.dateSigned = now();
         if (record.leadId) {
           const lead = draft.leads.find((l) => l.id === record.leadId);
@@ -2434,13 +2630,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
       });
     },
-    [commit],
+    [commit, backendLoadedAt],
   );
 
   const createDasRecord = useCallback(
-    (input: DasInput): DasRecord => {
-      const id = `DAS-${nextNumber(state.dasRecords.map((d) => d.id), "DAS", 6000)}`;
-      const record: DasRecord = { ...input, id, lastUpdatedAt: now() };
+    async (input: DasInput): Promise<DasRecord> => {
+      const saved = backendLoadedAt ? await saveBusinessRecord<DasRecord>("das-records", input) : null;
+      const id = saved?.id || `DAS-${nextNumber(state.dasRecords.map((d) => d.id), "DAS", 6000)}`;
+      const record: DasRecord = saved || { ...input, id, lastUpdatedAt: now() };
       commit((draft) => {
         draft.dasRecords.unshift(record);
         if (input.leadId) {
@@ -2459,16 +2656,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
       return record;
     },
-    [commit, state.dasRecords],
+    [commit, state.dasRecords, backendLoadedAt],
   );
 
   const updateDas = useCallback(
-    (id: string, patch: Partial<DasRecord>) => {
+    async (id: string, patch: Partial<DasRecord>) => {
+      const saved = backendLoadedAt ? await saveBusinessRecord<DasRecord>("das-records", patch, id) : null;
       commit((draft) => {
         const record = draft.dasRecords.find((d) => d.id === id);
         if (!record) return;
         const before = record.status;
-        Object.assign(record, patch, { lastUpdatedAt: now() });
+        Object.assign(record, saved || patch, { lastUpdatedAt: saved?.lastUpdatedAt || now() });
         if (patch.status && patch.status !== before) {
           pushActivity(draft, {
             action: `set Apprenticeship Service status to ${patch.status} for`,
@@ -2489,7 +2687,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
       });
     },
-    [commit],
+    [commit, backendLoadedAt],
   );
 
   const value = useMemo<WorkspaceContextValue>(
@@ -2515,7 +2713,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       backendLoading,
       integrationOverview,
       refreshBackendWorkspace,
+      refreshBusinessData,
+      loadCallDetail,
+      loadApplicationDetail,
+      loadEventDetail,
+      refreshPlannerTasks,
       signInBackend,
+      signOutBackend,
+      loadLeadDetail,
       createLead,
       updateLead,
       deleteLead,
@@ -2591,7 +2796,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       backendLoading,
       integrationOverview,
       refreshBackendWorkspace,
+      refreshBusinessData,
+      loadCallDetail,
+      loadApplicationDetail,
+      loadEventDetail,
+      refreshPlannerTasks,
       signInBackend,
+      signOutBackend,
+      loadLeadDetail,
       createLead,
       updateLead,
       deleteLead,
@@ -2650,6 +2862,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       updateDas,
     ],
   );
+
+  if (location.pathname === "/login" || backendAuthRequired || !backendLoadedAt || !backendUserId) {
+    return <BackendSignInScreen loading={backendLoading} connectionError={backendConnectionError} onRetry={() => { void refreshBackendWorkspace().catch(() => {}); }} onSignIn={signInBackend} />;
+  }
 
   if (issue) {
     return (

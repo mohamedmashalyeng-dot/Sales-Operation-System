@@ -11,7 +11,7 @@ import { formatDate } from "@/utils/format";
 interface ApplicationTableProps {
   applications: Application[];
   onOpen: (id: string) => void;
-  onEdit: (application: Application) => void;
+  onEdit?: (application: Application) => void;
 }
 
 export default function ApplicationTable({ applications, onOpen, onEdit }: ApplicationTableProps) {
@@ -26,6 +26,7 @@ export default function ApplicationTable({ applications, onOpen, onEdit }: Appli
           <Th>Applicant</Th>
           <Th>Programme</Th>
           <Th>Status</Th>
+          <Th>Enrolment source</Th>
           <Th>Owner</Th>
           <Th>Documents</Th>
           <Th>Submitted</Th>
@@ -63,6 +64,7 @@ export default function ApplicationTable({ applications, onOpen, onEdit }: Appli
                 <Td>
                   <Badge tone={APP_STATUS_TONES[app.status]}>{app.status}</Badge>
                 </Td>
+                <Td>{app.enrolmentSource || 'Not recorded'}</Td>
                 <Td>{userName(app.ownerId)}</Td>
                 <Td>
                   <span className="text-[12px] text-foreground-600">
@@ -72,7 +74,7 @@ export default function ApplicationTable({ applications, onOpen, onEdit }: Appli
                 <Td>{formatDate(app.submittedAt)}</Td>
                 <Td>
                   <div className="flex items-center justify-end gap-1.5">
-                    {canEdit ? (
+                    {canEdit && onEdit ? (
                       <Button
                         variant="outline"
                         size="icon-sm"

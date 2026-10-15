@@ -289,7 +289,6 @@ export function scenarioRecords(scenario: ScenarioDef, state: WorkspaceState): S
 
   const campaignExp = scenario.expectations.find((e) => e.kind === "campaign-matched");
   const campaign = campaigns.find((c) => c.id === campaignExp?.refId);
-  push("Campaign", campaignExp?.refId, Boolean(campaign), campaign ? campaign.name : "", "/campaigns");
 
   const regExp = scenario.expectations.find((e) => e.kind === "registered");
   const event = events.find((e) => e.id === regExp?.refId);
@@ -304,7 +303,6 @@ export function scenarioRecords(scenario: ScenarioDef, state: WorkspaceState): S
   push("Application", appExp?.refId, Boolean(app), app ? app.status : "", app ? `/applications/${app.id}` : "/applications");
 
   const intake = intakes.find((f) => f.leadId === scenario.leadId);
-  push("Future intake", intake?.id, Boolean(intake), intake ? intake.preferredIntake : "", "/future-intake");
 
   const commercialRecord = commercial.find((c) => c.leadId === scenario.leadId);
   push("Commercial opportunity", commercialRecord?.id, Boolean(commercialRecord), commercialRecord ? commercialRecord.stage : "", "/commercial");

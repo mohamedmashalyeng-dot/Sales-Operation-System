@@ -6,9 +6,12 @@ import MobileTabBar from "@/components/feature/MobileTabBar";
 import NotificationsDrawer from "@/components/feature/NotificationsDrawer";
 import Sidebar from "@/components/feature/Sidebar";
 import Topbar from "@/components/feature/Topbar";
+import PostCallInbox from "@/components/feature/PostCallInbox";
+import { useToast } from "@/components/base/Toast";
 import { pathForLanding, usePreferences } from "@/hooks/useLocalPrefs";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { RoleId } from "@/config/permissions";
+import ModuleGuard from "@/components/feature/ModuleGuard";
 
 const ROLE_LANDING: Record<RoleId, string> = {
   sales: "/leads",
@@ -23,6 +26,13 @@ export default function AppShell() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { roleId } = useWorkspace();
+  const moduleKey = /^\/(campaigns|sources|attribution|future-intake)(\/|$)/.test(pathname) || /^\/zoom\/calls\/[^/]+$/.test(pathname) ? "leads" : pathname.split("/")[1] || "today";
+  const { toast } = useToast();
+  useEffect(() => {
+    const listener = (event: Event) => toast({ title: 'Task update failed', message: (event as CustomEvent<string>).detail, tone: 'error' });
+    window.addEventListener('kbc:workflow-error', listener);
+    return () => window.removeEventListener('kbc:workflow-error', listener);
+  }, [toast]);
   const { prefs } = usePreferences();
   const landingApplied = useRef(false);
   const lastRole = useRef<RoleId | null>(null);
@@ -88,8 +98,9 @@ export default function AppShell() {
           onOpenSearch={() => setSearchOpen(true)}
           onOpenNotifications={() => setNotificationsOpen(true)}
         />
+        <PostCallInbox />
         <main className="kbc-scroll flex-1 overflow-x-hidden overflow-y-auto pb-20 lg:pb-0">
-          <Outlet />
+          <ModuleGuard navKey={moduleKey}><Outlet /></ModuleGuard>
         </main>
       </div>
 

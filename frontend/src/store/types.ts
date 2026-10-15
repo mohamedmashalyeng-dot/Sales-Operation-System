@@ -132,6 +132,22 @@ export interface EligibilityAssessment {
   verificationDate?: string;
   decisionMakerId?: string;
   decisionReasons?: string;
+  aiRecommendation?: {
+    status: EligibilityStatus;
+    confidence: number;
+    summary: string;
+    reasons: string[];
+    missing_information: string[];
+    evidence: string[];
+    screening_checks: {
+      question_id: string;
+      assessment: "met" | "not_met" | "unknown" | "review";
+      evidence: string[];
+    }[];
+    source: string;
+    provider_warning?: string;
+    analysed_at: string;
+  };
   updatedAt: string;
 }
 
@@ -200,6 +216,7 @@ export interface DasRecord {
   id: string;
   employerName: string;
   status: DasStatus;
+  accountExists?: boolean;
   accountSetupHelpNeeded: boolean;
   ukprnShared: boolean;
   providerAdditionRequested: boolean;
@@ -217,6 +234,8 @@ export interface Lead {
   id: string;
   name: string;
   contactName: string;
+  employer?: string;
+  journeyStage?: string;
   email: string;
   phone: string;
   programme: string;
@@ -272,6 +291,7 @@ export type ThreadStatusKey =
 
 export interface EmailMessage {
   id: string;
+  subject?: string;
   direction: "inbound" | "outbound";
   fromName: string;
   fromEmail: string;
@@ -306,6 +326,7 @@ export interface EmailThread {
 /* ----------------------------- Tasks ----------------------------- */
 
 export type TaskSource =
+  | "Call analysis"
   | "Zoho CRM"
   | "Gmail / Inbox"
   | "Events"
@@ -329,6 +350,10 @@ export interface Task {
   relatedThreadId?: string;
   relatedEventId?: string;
   relatedCallId?: string;
+  sourceEventId?: string;
+  evaluationId?: string;
+  sourceKey?: string;
+  callVerified?: boolean;
   programme?: string;
   notes: string;
   createdAt: string;
@@ -367,6 +392,7 @@ export interface CollegeEvent {
   meetingLink?: string;
   description: string;
   registrations: EventRegistration[];
+  registrationMetrics?: { booked: number; confirmed: number; attended: number; declined: number; pending: number };
   /* ---- Eventbrite / Zoom linkage (Phase 6) ---- */
   /** Public Eventbrite event reference — registration source, not acquisition. */
   eventbriteRef?: string;
@@ -457,6 +483,8 @@ export interface ApplicationStatusChange {
 
 export interface Application {
   id: string;
+  enrolmentSource?: string;
+  contractStatus?: string;
   applicantName: string;
   email: string;
   phone: string;
@@ -478,6 +506,7 @@ export interface Meeting {
   id: string;
   topic: string;
   hostId: string;
+  hostName?: string;
   account: string;
   startAt: string;
   durationMins: number;
@@ -559,6 +588,7 @@ export interface Notification {
   createdAt: string;
   read: boolean;
   tone: ActivityTone;
+  route?: string;
 }
 
 export interface AuditEntry {

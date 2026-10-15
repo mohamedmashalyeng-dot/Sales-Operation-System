@@ -439,6 +439,7 @@ function clearCachedSessionUserForUser(userId) {
 }
 
 async function currentSessionUser(req, trace = null) {
+  if (req.__workspaceSessionUser) return { ...req.__workspaceSessionUser };
   const cookieStarted = performance.now();
   const sid = Http.parseCookies(req).sid;
   Perf.perfAdd(trace, 'cookie_parse', performance.now() - cookieStarted);
@@ -748,7 +749,7 @@ function permissionsForUser(user) {
   if (developer) return { sales: true, review: true, admin: true, developer: true };
   const canonicalRole = canonicalWorkspaceRole(user?.role);
   if (canonicalRole === 'manager' || canonicalRole === 'admin') return { sales: true, review: true, admin: false, developer: false };
-  return { sales: true, review: false, admin: false, developer: false };
+  return { sales: ['sales','enrolment'].includes(canonicalRole), review: false, admin: false, developer: false, enrolment: canonicalRole === 'enrolment' };
 }
 
 function canonicalWorkspaceRole(role) {
@@ -764,21 +765,30 @@ function canonicalWorkspaceRole(role) {
     admissions: 'manager',
     qa: 'manager',
     member: 'sales',
-    sales: 'sales'
+    sales: 'sales',
+    'staff sales': 'sales',
+    staff_sales: 'sales',
+    enrollment: 'enrolment',
+    enrolment: 'enrolment',
+    'staff enrollment': 'enrolment',
+    'staff enrolment': 'enrolment',
+    staff_enrollment: 'enrolment',
+    staff_enrolment: 'enrolment'
   };
   return roles[key] || key;
 }
 
 function normalizeWorkspaceRole(role) {
   const canonical = canonicalWorkspaceRole(role);
-  return ['admin', 'manager', 'sales'].includes(canonical) ? canonical : '';
+  return ['admin', 'manager', 'sales', 'enrolment'].includes(canonical) ? canonical : '';
 }
 
 function workspaceRoleLabel(role) {
   const canonical = canonicalWorkspaceRole(role);
   if (canonical === 'admin') return 'Developer';
-  if (canonical === 'manager') return 'Monitor';
-  return 'Member';
+  if (canonical === 'manager') return 'Manager';
+  if (canonical === 'enrolment') return 'Staff Enrollment';
+  return 'Staff Sales';
 }
 
 function isConfiguredDeveloperUser(user) {
@@ -787,7 +797,8 @@ function isConfiguredDeveloperUser(user) {
 
 function visibleWorkspaceRoleKey(user) {
   if (isConfiguredDeveloperUser(user)) return 'developer';
-  return canonicalWorkspaceRole(user?.role) === 'sales' ? 'member' : 'monitor';
+  const role = canonicalWorkspaceRole(user?.role);
+  return role === 'enrolment' ? 'enrolment' : role === 'sales' ? 'member' : 'monitor';
 }
 
 async function loadDeveloperConfigDb() {
@@ -957,7 +968,7 @@ function assertUserCanBeManaged(target, actor, action, nextRole = '') {
 
 async function updateWorkspaceUserRole(userId, body, actor) {
   const role = normalizeWorkspaceRole(body.role);
-  if (!role) throw Http.statusError(400, 'Choose Developer, Monitor or Member.');
+  if (!role) throw Http.statusError(400, 'Choose Developer, Manager, Staff Sales or Staff Enrollment.');
   await ensureUserStorage();
   if (State.postgresPool) {
     const table = Storage.sqlIdentifier(Config.POSTGRES_USERS_TABLE, 'app_users');
@@ -1058,7 +1069,7 @@ function developerConfig(req, db) {
       email: user.email,
       role: user.role,
       role_key: visibleWorkspaceRoleKey(user),
-      role_label: visibleWorkspaceRoleKey(user) === 'developer' ? 'Developer' : visibleWorkspaceRoleKey(user) === 'monitor' ? 'Monitor' : 'Member',
+      role_label: isConfiguredDeveloperUser(user) ? 'Developer' : workspaceRoleLabel(user.role),
       is_configured_developer: isConfiguredDeveloperUser(user),
       invited_at: user.invited_at || '',
       password_changed_at: user.password_changed_at || '',
@@ -1205,6 +1216,7 @@ exports.publicUser = publicUser;
 exports.permissions = permissions;
 exports.permissionsForUser = permissionsForUser;
 exports.canonicalWorkspaceRole = canonicalWorkspaceRole;
+exports.workspaceRoleLabel = workspaceRoleLabel;
 exports.loadDeveloperConfigDb = loadDeveloperConfigDb;
 exports.createWorkspaceUser = createWorkspaceUser;
 exports.resetWorkspaceUserPassword = resetWorkspaceUserPassword;

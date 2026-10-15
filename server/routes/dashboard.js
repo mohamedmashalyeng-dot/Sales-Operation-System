@@ -8,6 +8,7 @@ const Auth = require('../auth');
 const Audit = require('../audit');
 const Leads = require('../leads');
 const Dashboard = require('../dashboard');
+const Today = require('../today');
 const Monitoring = require('../monitoring');
 const Authorization = require('../authorization');
 const NOT_HANDLED = require('./not-handled');
@@ -17,6 +18,10 @@ const serverStartedAt = new Date();
 // Dashboard routes that read and write the database directly.
 async function dashboardRoutes(ctx) {
   const { route, method, res, trace, req, url } = ctx;
+  if (route === '/api/dashboard/today' && method === 'GET') {
+    const user = await Auth.currentSessionUser(req, trace);
+    return Http.sendJson(res, await Today.load(url, user), 200, {}, trace);
+  }
   if (route === '/api/dashboard/summary' && method === 'GET') {
     const user = await Auth.currentSessionUser(req);
     return Http.sendJson(res, await Dashboard.loadDashboardCockpitSummaryDb(Dashboard.parseDashboardFilters(url, user), user));

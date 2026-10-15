@@ -46,7 +46,7 @@ function callSummary(call = {}) {
 function workspaceSnapshot(db = {}) {
   return {
     generated_at: new Date().toISOString(),
-    users: db.users || [],
+    users: (db.users || []).map(Auth.publicUser),
     integrations: db.integrations || [],
     leads: db.leads || [],
     tasks: db.tasks || [],
@@ -98,7 +98,7 @@ async function bootstrapRoutes(ctx) {
     return Http.sendJson(res, payload, 200, {}, trace);
   }
   if (route === '/api/workspace/full' && method === 'GET') {
-    await Auth.currentSessionUser(req, trace);
+    Auth.requireDeveloperAccess(req, await Auth.currentSessionUser(req, trace));
     const db = await Storage.loadDb();
     return Http.sendJson(res, workspaceSnapshot(db), 200, {}, trace);
   }

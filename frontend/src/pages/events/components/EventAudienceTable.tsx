@@ -51,11 +51,11 @@ export default function EventAudienceTable({
   const pagedRows = rows.slice((currentPage - 1) * PER_PAGE, currentPage * PER_PAGE);
 
   const selectableKeys = useMemo(
-    () => rows.filter((r) => r.registrationId).map((r) => r.registrationId as string),
+    () => rows.filter((r) => r.registrationId && r.attendance !== "Waiting").map((r) => r.registrationId as string),
     [rows],
   );
   const visibleSelectableKeys = useMemo(
-    () => pagedRows.filter((r) => r.registrationId).map((r) => r.registrationId as string),
+    () => pagedRows.filter((r) => r.registrationId && r.attendance !== "Waiting").map((r) => r.registrationId as string),
     [pagedRows],
   );
 
@@ -152,6 +152,7 @@ export default function EventAudienceTable({
                     <input
                       type="checkbox"
                       checked={allSelected}
+                      disabled={!visibleSelectableKeys.length}
                       onChange={toggleAll}
                       aria-label="Select all registrations"
                       className="h-3.5 w-3.5 cursor-pointer accent-primary-500"
@@ -163,7 +164,7 @@ export default function EventAudienceTable({
                 <Th>Related campaign</Th>
                 <Th>Invitation</Th>
                 <Th>Registration</Th>
-                <Th>Information session</Th>
+                <Th>Attendance</Th>
                 <Th>Sales owner</Th>
                 <Th>Follow-up</Th>
                 <Th>Journey</Th>
@@ -178,6 +179,7 @@ export default function EventAudienceTable({
                           <input
                             type="checkbox"
                             checked={selected.includes(row.registrationId)}
+                            disabled={row.attendance === "Waiting"}
                             onChange={() => toggleOne(row.registrationId as string)}
                             aria-label={`Select ${row.name}`}
                             className="h-3.5 w-3.5 cursor-pointer accent-primary-500"
@@ -259,7 +261,7 @@ export default function EventAudienceTable({
                               size="icon-sm"
                               aria-label="Mark attended"
                               title="Mark attended"
-                              disabled={row.attendance === "Attended"}
+                              disabled={row.attendance === "Waiting" || row.attendance === "Attended"}
                               onClick={() => onAttendance(row.registrationId as string, "Attended")}
                             >
                               <i className="ri-user-star-line"></i>
@@ -269,7 +271,7 @@ export default function EventAudienceTable({
                               size="icon-sm"
                               aria-label="Mark did not attend"
                               title="Mark did not attend"
-                              disabled={row.attendance === "Did Not Attend"}
+                              disabled={row.attendance === "Waiting" || row.attendance === "Did Not Attend"}
                               onClick={() => onAttendance(row.registrationId as string, "Did Not Attend")}
                             >
                               <i className="ri-user-minus-line"></i>

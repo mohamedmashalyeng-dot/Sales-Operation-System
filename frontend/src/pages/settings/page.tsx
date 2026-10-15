@@ -22,14 +22,14 @@ export default function SettingsPage() {
     const base: TabItem[] = [
       { value: "profile", label: "Profile & role", icon: "ri-user-settings-line" },
       { value: "preferences", label: "Preferences", icon: "ri-equalizer-line" },
-      { value: "integrations", label: "Integrations", icon: "ri-plug-line" },
-      { value: "data", label: "Workspace data", icon: "ri-database-2-line" },
     ];
+    if (role.scope === "all") base.push({ value: "integrations", label: "Integrations", icon: "ri-plug-line" });
+    if (showAdmin) base.push({ value: "data", label: "Workspace data", icon: "ri-database-2-line" });
     if (showAdmin) {
       base.push({ value: "users", label: "Users & permissions", icon: "ri-shield-user-line" });
     }
     return base;
-  }, [showAdmin]);
+  }, [showAdmin,role.scope]);
 
   return (
     <div className="mx-auto w-full max-w-[1600px] space-y-5 px-4 py-5 md:px-6 md:py-6">
@@ -64,8 +64,8 @@ export default function SettingsPage() {
           onReset={reset}
         />
       ) : null}
-      {tab === "integrations" ? <SettingsIntegrations /> : null}
-      {tab === "data" ? <SettingsDemoData /> : null}
+      {tab === "integrations" && role.scope === "all" ? <SettingsIntegrations /> : null}
+      {tab === "data" && showAdmin ? <SettingsDemoData /> : null}
       {tab === "users" && showAdmin ? <SettingsUsers /> : null}
     </div>
   );

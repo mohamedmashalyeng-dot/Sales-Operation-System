@@ -3,7 +3,6 @@ import Badge from "@/components/base/Badge";
 import Checkbox from "@/components/base/Checkbox";
 import Menu from "@/components/base/Menu";
 import { Table, TBody, Td, Th, THead, TableWrap, Tr } from "@/components/base/Table";
-import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { Lead } from "@/store/types";
 import { STAGE_TONES, formatCurrency } from "@/utils/crm";
 import { formatDate } from "@/utils/format";
@@ -42,8 +41,6 @@ export default function LeadTable({
   sortDir,
   onSort,
 }: LeadTableProps) {
-  const { userName } = useWorkspace();
-
   const allSelected = leads.length > 0 && leads.every((l) => selectedIds.includes(l.id));
   const someSelected = selectedIds.length > 0 && !allSelected;
 
@@ -75,7 +72,7 @@ export default function LeadTable({
 
   return (
     <TableWrap>
-      <Table className="min-w-[1080px]">
+      <Table className="min-w-[960px]">
         <THead>
           <Th className="w-10">
             <Checkbox
@@ -87,7 +84,6 @@ export default function LeadTable({
           {header("name", "Lead")}
           {header("programme", "Programme")}
           {header("stage", "Stage")}
-          {header("owner", "Owner")}
           <Th>Source</Th>
           <Th>Next action</Th>
           {header("value", "Value", "text-right")}
@@ -135,10 +131,7 @@ export default function LeadTable({
                   <span className="text-[11px] text-foreground-400">{lead.intake}</span>
                 </Td>
                 <Td>
-                  <Badge tone={STAGE_TONES[lead.stage]}>{lead.stage}</Badge>
-                </Td>
-                <Td>
-                  <span className="text-[13px] text-foreground-700">{userName(lead.ownerId)}</span>
+                  <Badge tone={STAGE_TONES[lead.stage]}>{lead.journeyStage || lead.stage}</Badge>
                 </Td>
                 <Td>
                   <span className="whitespace-nowrap text-[12px] text-foreground-500">
@@ -147,10 +140,10 @@ export default function LeadTable({
                 </Td>
                 <Td>
                   <span className="block max-w-[16rem] truncate text-[12px] text-foreground-700">
-                    {lead.nextAction}
+                    {lead.nextAction || 'Not set'}
                   </span>
                   <span className="text-[11px] text-foreground-400">
-                    {formatDate(lead.nextActionAt)}
+                    {lead.nextActionAt ? formatDate(lead.nextActionAt) : 'Not scheduled'}
                   </span>
                 </Td>
                 <Td className="text-right">

@@ -9,6 +9,8 @@ const Audit = require('../audit');
 const Leads = require('../leads');
 const Applications = require('../applications');
 const Authorization = require('../authorization');
+const AccessPolicy = require('../access-policy');
+const UploadSecurity = require('../upload-security');
 const NOT_HANDLED = require('./not-handled');
 
 async function verifyContractFastDb(id, body) {
@@ -52,6 +54,11 @@ function appFor(db, id) {
 async function applicationsRoutes(ctx) {
   const { route, method, res, trace, body, req, url } = ctx;
   let lightweightMatch = null;
+  if (route === '/api/applications/reconcile-enrolled' && method === 'POST') {
+    const actor = await Auth.currentSessionUser(req);
+    Authorization.requireTeam(actor);
+    return Http.sendJson(res, await Applications.reconcileEnrolledApplications(actor));
+  }
   if (route === '/api/admissions/pipeline' && method === 'GET') {
     const user = await Auth.currentSessionUser(req, trace);
     return Http.sendJson(res, await Applications.loadAdmissionsPipelineDb({
@@ -127,7 +134,7 @@ async function applicationsRoutes(ctx) {
   lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)\/review$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'evidence',lightweightMatch[1]);
     return Http.sendJson(res, await Applications.reviewEvidenceFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/evidence\/([^/]+)$/);
@@ -151,19 +158,19 @@ async function applicationsRoutes(ctx) {
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/review$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'application',lightweightMatch[1]);
     return Http.sendJson(res, await Applications.reviewApplicationFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/contract$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'application',lightweightMatch[1]);
     return Http.sendJson(res, await verifyContractFastDb(lightweightMatch[1], body));
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/enrol$/);
   if (lightweightMatch && method === 'POST' && State.postgresPool) {
     const user = await Auth.currentSessionUser(req);
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'application',lightweightMatch[1]);
     return Http.sendJson(res, await Applications.enrolApplicationFastDb(lightweightMatch[1], body, user));
   }
   lightweightMatch = route.match(/^\/api\/applications\/([^/]+)\/status$/);
@@ -222,7 +229,8 @@ async function applicationsWorkspaceRoutes(ctx) {
     const app = appFor(db, match[1]);
     const req = app.requirements.find(item => item.id === body.requirement_id);
     if (!req) throw Http.statusError(404, 'Requirement not found.');
-    req.latest = { id: Util.nextId('ER', [db.applications.flatMap(a => a.requirements.map(r => r.latest).filter(Boolean))]), filename: body.filename, version: (req.latest?.version || 0) + 1, status: 'Pending', reviewer: null, content_base64: body.content_base64 };
+    const upload = UploadSecurity.validateEvidenceUpload(body);
+    req.latest = { id: Util.nextId('ER', [db.applications.flatMap(a => a.requirements.map(r => r.latest).filter(Boolean))]), filename: upload.filename, version: (req.latest?.version || 0) + 1, status: 'Pending', reviewer: null, content_base64: upload.content_base64, content_type: upload.content_type, file_type: upload.file_type, size: upload.size };
     if (!app.learner) app.status = 'In review';
     await Storage.saveDb(db);
     return Http.sendJson(res, { ok: true }, 201);
@@ -234,13 +242,14 @@ async function applicationsWorkspaceRoutes(ctx) {
     const req = db.applications.flatMap(app => app.requirements).find(item => item.latest?.id === match[1]);
     if (!req?.latest) throw Http.statusError(404, 'Evidence not found.');
     const content = Buffer.from(req.latest.content_base64 || '', 'base64');
-    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${req.latest.filename}"` });
+    const filename = UploadSecurity.safeFileName(req.latest.filename || 'evidence-file');
+    res.writeHead(200, { 'Content-Type': req.latest.content_type || 'application/octet-stream', 'Content-Disposition': `attachment; filename="${filename}"` });
     return res.end(content);
   }
 
   match = route.match(/^\/api\/evidence\/([^/]+)\/review$/);
   if (match && method === 'POST') {
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'evidence',match[1],db);
     const req = db.applications.flatMap(app => app.requirements).find(item => item.latest?.id === match[1]);
     if (!req?.latest) throw Http.statusError(404, 'Evidence not found.');
     req.latest.status = body.status;
@@ -252,7 +261,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/review$/);
   if (match && method === 'POST') {
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'application',match[1],db);
     const app = appFor(db, match[1]);
     const lead = Leads.leadFor(db, app.lead_id);
     app.status = body.status;
@@ -264,7 +273,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/contract$/);
   if (match && method === 'POST') {
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'application',match[1],db);
     const app = appFor(db, match[1]);
     app.contract = { status: 'Verified', signatory: body.signatory, signed_at: body.signed_at, note: body.note, consistency_confirmed: body.consistency_confirmed };
     await Storage.saveDb(db);
@@ -273,7 +282,7 @@ async function applicationsWorkspaceRoutes(ctx) {
 
   match = route.match(/^\/api\/applications\/([^/]+)\/enrol$/);
   if (match && method === 'POST') {
-    Authorization.requireTeam(user);
+    await AccessPolicy.requireApplicationReview(user,'application',match[1],db);
     const app = appFor(db, match[1]);
     const lead = Leads.leadFor(db, app.lead_id);
     app.status = 'Enrolled';

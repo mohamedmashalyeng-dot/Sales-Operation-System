@@ -15,9 +15,15 @@ const NOT_HANDLED = require('./not-handled');
 async function tasksRoutes(ctx) {
   const { route, method, res, trace, body, req, url } = ctx;
   let lightweightMatch = null;
+  lightweightMatch = route.match(/^\/api\/tasks\/([^/]+)\/reopen$/);
+  if (lightweightMatch && method === 'POST' && State.postgresPool) {
+    const user = await Auth.currentSessionUser(req);
+    await Authorization.requireRecord(user, 'task', lightweightMatch[1]);
+    return Http.sendJson(res, await Tasks.completeTaskFastDb(lightweightMatch[1], user, true));
+  }
   if (route === '/api/tasks' && method === 'GET') {
     const user = await Auth.currentSessionUser(req, trace);
-    const params = Object.fromEntries(['limit', 'status', 'offset', 'cursor', 'today_start', 'tomorrow_start', 'bucket', 'search', 'owner_id', 'lead_id', 'due_before', 'due_after', 'include_counts']
+    const params = Object.fromEntries(['limit', 'status', 'offset', 'cursor', 'today_start', 'tomorrow_start', 'bucket', 'search', 'owner_id', 'lead_id', 'due_before', 'due_after', 'include_counts', 'source']
       .map(name => [name, url.searchParams.get(name)]));
     if (params.lead_id) await Authorization.requireRecord(user, 'lead', params.lead_id);
     params.owner_id = Authorization.ownerFilter(user, params.owner_id);
@@ -50,6 +56,15 @@ async function tasksRoutes(ctx) {
 async function tasksWorkspaceRoutes(ctx) {
   const { route, method, res, body, db, user } = ctx;
   let match = null;
+  match = route.match(/^\/api\/tasks\/([^/]+)\/reopen$/);
+  if (match && method === 'POST') {
+    await Authorization.requireRecord(user, 'task', match[1], db);
+    const task = db.tasks.find(item => item.id === match[1]);
+    if (!task) throw Http.statusError(404, 'Task not found.');
+    task.status = 'Open'; task.completed_at = null;
+    Audit.addAudit(db, user, 'Task reopened', 'lead', task.lead_id, task.title);
+    await Storage.saveDb(db); return Http.sendJson(res, { ok: true });
+  }
   if (route === '/api/tasks' && method === 'POST') {
     Authorization.rejectProtectedFields(body);
     await Authorization.requireRecord(user, 'lead', body.lead_id, db);

@@ -243,6 +243,11 @@ function eventListDataSql() {
       'name', coalesce(e.name, e.data->>'name', 'Event'),
       'title', coalesce(e.name, e.data->>'title', e.data->>'name', 'Event'),
       'start_at', e.start_at,
+      'end_at', coalesce(e.data->>'end_at', e.data->>'endAt'),
+      'duration', e.data->'duration',
+      'duration_mins', e.data->'duration_mins',
+      'source', e.data->>'source',
+      'eventbrite_event_id', e.data->>'eventbrite_event_id',
       'location', coalesce(e.location, e.data->>'location', ''),
       'campaign', coalesce(e.campaign, e.data->>'campaign', ''),
       'capacity', coalesce(e.capacity, nullif(e.data->>'capacity', '')::int, 0),
@@ -250,7 +255,7 @@ function eventListDataSql() {
       'attendance', coalesce(e.attendance, a.attended, 0),
       'attendee_count', coalesce(a.attendee_count, 0),
       'description', coalesce(e.data->>'description', ''),
-      'status', coalesce(e.data->>'status', 'live'),
+      'status', coalesce(e.data->>'status', ''),
       'meeting_link', coalesce(e.data->>'meeting_link', e.data->>'zoom_link', ''),
       'zoom_link', coalesce(e.data->>'zoom_link', e.data->>'meeting_link', ''),
       'zoom_meeting_id', coalesce(e.data->>'zoom_meeting_id', ''),
@@ -263,7 +268,7 @@ function eventListDataSql() {
       'metrics', jsonb_build_object(
         'booked', greatest(coalesce(e.registrations, 0), coalesce(a.attendee_count, 0)),
         'confirmed', coalesce(a.confirmed, 0),
-        'attended', coalesce(a.attended, 0),
+        'attended', greatest(coalesce(e.attendance, 0), coalesce(a.attended, 0)),
         'declined', coalesce(a.declined, 0),
         'noAnswer', coalesce(a.no_answer, 0),
         'pending', greatest(0, greatest(coalesce(e.registrations, 0), coalesce(a.attendee_count, 0)) - coalesce(a.confirmed, 0) - coalesce(a.attended, 0) - coalesce(a.declined, 0)),
@@ -277,11 +282,20 @@ const EVENT_ATTENDEE_STATS_SQL = `
   left join lateral (
     select
       count(*)::int as attendee_count,
-      count(*) filter (where coalesce(x.value->>'attended_at', '') <> '' or lower(coalesce(x.value->>'status', '')) ~ 'attended|present|checked')::int as attended,
-      count(*) filter (where coalesce(x.value->>'attended_at', '') = '' and lower(coalesce(x.value->>'status', '')) ~ 'confirm|confirmed')::int as confirmed,
+      count(*) filter (where recorded.attendance = 'attended')::int as attended,
+      count(*) filter (where recorded.attendance <> 'attended' and lower(coalesce(x.value->>'status', x.value->>'outcome', '')) ~ 'confirm|confirmed')::int as confirmed,
       count(*) filter (where lower(coalesce(x.value->>'status', '')) ~ 'declined|cancel|no show|absent')::int as declined,
       count(*) filter (where lower(coalesce(x.value->>'status', '')) ~ 'no answer|not reached')::int as no_answer
     from jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end) x
+    cross join lateral (select case
+      when lower(trim(coalesce(x.value->>'attendance', ''))) = 'did not attend' then 'absent'
+      when lower(trim(coalesce(x.value->>'attendance', ''))) = 'attended' then 'attended'
+      when coalesce(nullif(x.value->>'attended_at', ''), nullif(x.value->>'checked_in_at', ''), '') <> '' then 'attended'
+      when lower(trim(coalesce(x.value->>'outcome', ''))) in ('no show','no-show','absent','did not attend','not attended')
+        or lower(trim(coalesce(x.value->>'status', ''))) in ('no show','no-show','absent','did not attend','not attended') then 'absent'
+      when lower(trim(coalesce(x.value->>'outcome', ''))) in ('attended','present','checked in','checked_in','checked-in')
+        or lower(trim(coalesce(x.value->>'status', ''))) in ('attended','present','checked in','checked_in','checked-in') then 'attended'
+      else 'unknown' end as attendance) recorded
   ) a on true`;
 
 async function loadEventDetailDb(id, trace = null) {
@@ -297,6 +311,39 @@ async function loadEventDetailDb(id, trace = null) {
   return { event };
 }
 
+async function loadEventPeoplePage(id, options = {}, trace = null) {
+  const offset = Math.max(0, Math.min(1000000, Number.parseInt(options.offset, 10) || 0));
+  const limit = Math.max(1, Math.min(100, Number.parseInt(options.limit, 10) || 50));
+  await Storage.ensureStorage();
+  let event, people, total;
+  if (State.postgresPool && Storage.usesPostgresStorage()) {
+    const result = await Storage.timedPostgresQuery(trace, 'event_people', `select e.id,
+      jsonb_array_length(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end)::int as total,
+      (select coalesce(jsonb_agg(a.person order by a.position), '[]'::jsonb) from (
+        select person, position from jsonb_array_elements(case when jsonb_typeof(e.attendees) = 'array' then e.attendees else '[]'::jsonb end)
+        with ordinality as p(person, position) order by position limit $2 offset $3
+      ) a) as people from app_events e where e.id = $1`, [String(id), limit, offset]);
+    event = result.rows[0];
+    total = Number(event?.total || 0); people = event?.people || [];
+  } else {
+    event = (await Storage.loadDb()).events.find(item => String(item.id) === String(id));
+    const attendees = Array.isArray(event?.attendees) ? event.attendees : [];
+    total = attendees.length; people = attendees.slice(offset, offset + limit);
+  }
+  if (!event) throw Http.statusError(404, 'Event not found.');
+  return { event_id: String(id), total, offset, limit, has_more: offset + people.length < total,
+    items: people.map((person, index) => ({
+      id: String(person.id || `${id}-person-${offset + index}`),
+      name: person.name || [person.first_name, person.last_name].filter(Boolean).join(' ') || '',
+      email: person.email || '', phone: person.phone || '',
+      status: person.status || person.outcome || '',
+      attendance: person.attendance || '',
+      attended_at: person.attended_at || person.checked_in_at || null,
+      registered_at: person.registered_at || person.created_at || null,
+      lead_id: person.lead_id || null,
+    })) };
+}
+
 // Events are loaded as bounded summaries. Attendees stay off the hot list path and are fetched
 // only for a single event detail dialog.
 async function loadEventPage(options = {}, trace = null) {
@@ -305,12 +352,40 @@ async function loadEventPage(options = {}, trace = null) {
   const upcomingOnly = ['1', 'true'].includes(String(options.upcoming || '').toLowerCase());
   const includeTotal = !options.cursor && ['1', 'true'].includes(String(options.include_total || '').toLowerCase());
   const cursor = Util.decodePageCursor(options.cursor, 'event cursor');
+  if (options.cursor && (!cursor || typeof cursor.id !== 'string' || !cursor.id || (cursor.start_at && !Number.isFinite(Date.parse(cursor.start_at))))) {
+    throw Http.statusError(400, 'Invalid event cursor.');
+  }
+  const search = String(options.search || '').trim().toLowerCase().slice(0, 200);
+  const source = String(options.source || 'all');
+  if (!['all', 'Zoom', 'Eventbrite', 'Manual'].includes(source)) throw Http.statusError(400, 'Invalid event source.');
+  const dateBound = name => {
+    if (!options[name]) return null;
+    const value = Date.parse(options[name]);
+    if (!Number.isFinite(value)) throw Http.statusError(400, `Invalid ${name}.`);
+    return new Date(value).toISOString();
+  };
+  const startFrom = dateBound('start_from') || (upcomingOnly ? new Date().toISOString() : null);
+  const startTo = dateBound('start_to');
   await Perf.perfPhase(trace, 'events_storage', () => Storage.ensureStorage());
   if (!State.postgresPool || !Storage.usesPostgresStorage()) {
     const db = await Storage.loadDb();
     const events = (db.events || [])
-      .filter(event => !upcomingOnly || new Date(event.start_at || 0) >= new Date())
-      .sort((a, b) => new Date(b.start_at || 0) - new Date(a.start_at || 0));
+      .filter(event => {
+        const start = Date.parse(event.start_at);
+        const label = String(event.source || (event.zoom_meeting_id || event.zoom_meeting_uuid ? 'Zoom' : event.eventbrite_event_id ? 'Eventbrite' : event.campaign || '')).toLowerCase();
+        const eventSource = label.includes('zoom') ? 'Zoom' : label.includes('eventbrite') ? 'Eventbrite' : 'Manual';
+        return (!startFrom || start >= Date.parse(startFrom)) && (!startTo || start < Date.parse(startTo))
+          && (source === 'all' || source === eventSource)
+          && (!search || `${event.name || event.title || ''} ${event.location || ''}`.toLowerCase().includes(search));
+      })
+      .sort((a, b) => {
+        const aDate = Date.parse(a.start_at), bDate = Date.parse(b.start_at);
+        if (!Number.isFinite(aDate) || !Number.isFinite(bDate)) {
+          if (Number.isFinite(aDate)) return -1;
+          if (Number.isFinite(bDate)) return 1;
+        } else if (aDate !== bDate) return upcomingOnly ? aDate - bDate : bDate - aDate;
+        return upcomingOnly ? String(a.id).localeCompare(String(b.id)) : String(b.id).localeCompare(String(a.id));
+      });
     const start = cursor?.id ? Math.max(0, events.findIndex(item => item.id === cursor.id) + 1) : 0;
     const page = events.slice(start, start + limit);
     const nextCursor = start + page.length < events.length ? Util.encodePageCursor({ start_at: page[page.length - 1]?.start_at || null, id: page[page.length - 1]?.id || '' }) : '';
@@ -319,7 +394,15 @@ async function loadEventPage(options = {}, trace = null) {
   const conditions = [];
   const values = [];
   const bind = value => { values.push(value); return `$${values.length}`; };
-  if (upcomingOnly) conditions.push(`start_at >= now()`);
+  if (startFrom) conditions.push(`e.start_at >= ${bind(startFrom)}::timestamptz`);
+  if (startTo) conditions.push(`e.start_at < ${bind(startTo)}::timestamptz`);
+  if (search) conditions.push(`position(${bind(search)} in lower(coalesce(e.name, e.data->>'name', e.data->>'title', '') || ' ' || coalesce(e.location, e.data->>'location', ''))) > 0`);
+  if (source !== 'all') {
+    const label = `lower(coalesce(nullif(e.data->>'source', ''), case when coalesce(e.data->>'zoom_meeting_id', e.data->>'zoom_meeting_uuid', '') <> '' then 'Zoom' when coalesce(e.data->>'eventbrite_event_id', '') <> '' then 'Eventbrite' end, e.campaign, ''))`;
+    conditions.push(`(case when ${label} like '%zoom%' then 'Zoom' when ${label} like '%eventbrite%' then 'Eventbrite' else 'Manual' end) = ${bind(source)}`);
+  }
+  const countWhere = conditions.length ? `where ${conditions.join(' and ')}` : '';
+  const countValues = [...values];
   if (cursor?.id) {
     const idParam = bind(String(cursor.id || ''));
     if (cursor.start_at) {
@@ -332,10 +415,10 @@ async function loadEventPage(options = {}, trace = null) {
     }
   }
   const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
-  const order = upcomingOnly ? `start_at asc nulls last, id` : `start_at desc nulls last, id`;
+  const order = upcomingOnly ? `e.start_at asc nulls last, e.id asc` : `e.start_at desc nulls last, e.id desc`;
   const [list, count] = await Promise.all([
     Storage.timedPostgresQuery(trace, 'events_page', `select ${eventListDataSql()} as data, e.start_at from app_events e ${EVENT_ATTENDEE_STATS_SQL} ${where} order by ${order} limit $${values.length + 1}`, [...values, limit + 1]),
-    includeTotal ? Storage.timedPostgresQuery(trace, 'events_count', `select count(*)::int as total from app_events ${upcomingOnly ? 'where start_at >= now()' : ''}`) : Promise.resolve(null)
+    includeTotal ? Storage.timedPostgresQuery(trace, 'events_count', `select count(*)::int as total from app_events e ${countWhere}`, countValues) : Promise.resolve(null)
   ]);
   return Perf.perfPhase(trace, 'mapping', async () => {
     const rows = list.rows.slice(0, limit).map(row => row.data).filter(Boolean);
@@ -821,6 +904,7 @@ exports.numericHash = numericHash;
 exports.eventSourceName = eventSourceName;
 exports.leadInputFromAttendee = leadInputFromAttendee;
 exports.loadEventDetailDb = loadEventDetailDb;
+exports.loadEventPeoplePage = loadEventPeoplePage;
 exports.loadEventPage = loadEventPage;
 exports.loadMarketingSummary = loadMarketingSummary;
 exports.checkInAttendeeFastDb = checkInAttendeeFastDb;

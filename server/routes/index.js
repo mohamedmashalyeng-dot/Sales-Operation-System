@@ -4,6 +4,7 @@ const Http = require('../http');
 const Perf = require('../perf');
 const Storage = require('../storage');
 const Auth = require('../auth');
+const AccessPolicy = require('../access-policy');
 const NOT_HANDLED = require('./not-handled');
 const SystemRoutes = require('./system');
 const AccountRoutes = require('./account');
@@ -28,6 +29,8 @@ const AnalyticsRoutes = require('./analytics');
 const NotificationsRoutes = require('./notifications');
 const DocumentsRoutes = require('./documents');
 const AdminAuditRoutes = require('./admin-audit');
+const BusinessRoutes = require('./business');
+const CallJourneyRoutes = require('./call-journey');
 
 // The route groups, in the order they are tried. A request is answered by the first group
 // that has a route for it; every group works on one area of the API.
@@ -35,6 +38,10 @@ const OPEN_ROUTES = [SystemRoutes.systemOpenRoutes, AccountRoutes.accountOpenRou
 const DIRECT_ROUTES = [AccountRoutes.accountRoutes, BootstrapRoutes.bootstrapRoutes, SystemRoutes.systemRoutes, DashboardRoutes.dashboardRoutes, LeadsRoutes.leadsRoutes, TasksRoutes.tasksRoutes, EventsRoutes.eventsRoutes, EmailsRoutes.emailsRoutes, ApplicationsRoutes.applicationsRoutes, ZoomRoutes.zoomRoutes, ZohoRoutes.zohoRoutes, AutomationsRoutes.automationsRoutes, SavedViewsRoutes.savedViewsRoutes, DataQualityRoutes.dataQualityRoutes, IntegrationCentreRoutes.integrationCentreRoutes, AnalyticsRoutes.analyticsRoutes, NotificationsRoutes.notificationsRoutes, DocumentsRoutes.documentsRoutes, AdminAuditRoutes.adminAuditRoutes];
 const PUBLIC_WORKSPACE_ROUTES = [AccountRoutes.accountPublicWorkspaceRoutes];
 const WORKSPACE_ROUTES = [LeadsRoutes.leadsWorkspaceRoutes, DashboardRoutes.dashboardWorkspaceRoutes, GmailRoutes.gmailWorkspaceRoutes, EventbriteRoutes.eventbriteWorkspaceRoutes, EventsRoutes.eventsWorkspaceRoutes, ZoomRoutes.zoomWorkspaceRoutes, MetaRoutes.metaWorkspaceRoutes, ApolloRoutes.apolloWorkspaceRoutes, ZohoRoutes.zohoWorkspaceRoutes, TasksRoutes.tasksWorkspaceRoutes, EmailsRoutes.emailsWorkspaceRoutes, ApplicationsRoutes.applicationsWorkspaceRoutes];
+
+DIRECT_ROUTES.unshift(BusinessRoutes.businessRoutes);
+DIRECT_ROUTES.unshift(CallJourneyRoutes.callJourneyRoutes);
+OPEN_ROUTES.unshift(CallJourneyRoutes.webhookRoutes);
 
 async function tryRoutes(groups, ctx) {
   for (const group of groups) {
@@ -75,6 +82,9 @@ async function handleApi(req, res) {
     const hasSessionCookie = Boolean(Http.parseCookies(req).sid);
     Perf.perfAdd(trace, 'middleware_cookie_gate', performance.now() - cookieGateStarted);
     if (!hasSessionCookie) throw Http.statusError(401, 'Sign in to continue.');
+    const user = await Auth.currentSessionUser(req, trace);
+    AccessPolicy.requireRoute(user, route, method, body);
+    req.__workspaceSessionUser = user;
   }
   finishMiddleware();
   result = await tryRoutes(DIRECT_ROUTES, ctx);

@@ -679,13 +679,21 @@ function fileToBase64(file){
   reader.readAsDataURL(file);
  });
 }
+const EVIDENCE_ACCEPT='.pdf,.png,.jpg,.jpeg,.zip,application/pdf,image/png,image/jpeg,application/zip,application/x-zip-compressed';
+const EVIDENCE_MAX_BYTES=10*1024*1024;
+function assertEvidenceFile(file){
+ if(!file)throw new Error('Choose a document first.');
+ const name=String(file.name||'').toLowerCase();
+ if(file.size>EVIDENCE_MAX_BYTES)throw new Error('Choose a document no larger than 10 MB.');
+ if(!/\.(pdf|png|jpe?g|zip)$/.test(name))throw new Error('Only PDF, PNG, JPEG or ZIP evidence files can be uploaded.');
+}
 async function applicationEvidencePayloads(form){
  const files=[];
  for(const [key] of APPLICATION_DOCUMENT_TEMPLATES){
   const file=form?.querySelector(`[name="doc_${key}"]`)?.files?.[0];
   if(!file)continue;
-  if(file.size>5*1024*1024)throw new Error(`${file.name} is larger than 5 MB.`);
-  files.push({key,filename:file.name,content_base64:await fileToBase64(file)});
+  assertEvidenceFile(file);
+  files.push({key,filename:file.name,content_type:file.type,content_base64:await fileToBase64(file)});
  }
  return files;
 }
@@ -2542,7 +2550,7 @@ function applicationIntakeSelect(leadId=''){
  return select('intake_id','Intake',options,options[0]?.[0]||'');
 }
 function applicationExistingLearnerFields(options={}){
- const docFields=APPLICATION_DOCUMENT_TEMPLATES.map(([key,title])=>`<label class="field"><span>${esc(title)}</span><input type="file" name="doc_${esc(key)}" accept="application/pdf,image/png,image/jpeg"></label>`).join('');
+ const docFields=APPLICATION_DOCUMENT_TEMPLATES.map(([key,title])=>`<label class="field"><span>${esc(title)}</span><input type="file" name="doc_${esc(key)}" accept="${EVIDENCE_ACCEPT}"></label>`).join('');
  const templateLinks=options.manual?applicationDocumentTemplateLinks():'';
  const enrolledControl=options.manual
   ? `<div class="notice">Manual applications are saved as enrolled learners. Uploaded documents stay available to download, sign and upload again.</div>`
@@ -2813,10 +2821,9 @@ async function action(act,id='',target=null){
  if(act==='apply')return showDialog('Start an application',`Open eligibility review for ${fullName(lead)}.`,applicationIntakeSelect(id)+applicationExistingLearnerFields(),async(v,form)=>{v.lead_id=id;if(v.intake_id===DEFAULT_INTAKE_ID)v.intake_id='';v.already_enrolled=v.already_enrolled==='on';v.evidence_files=await applicationEvidencePayloads(form);APPLICATION_DOCUMENT_TEMPLATES.forEach(([key])=>delete v[`doc_${key}`]);const result=await api('/api/applications',v);await applyServerMutation(result);toast(v.already_enrolled?'Enrolled learner added with documents.':'Application created. Evidence review is pending.');go('applications');return false;},'Submit application');
  if(act==='upload'){
  const req=app.requirements.find(r=>r.id===target.dataset.req);
- return showDialog('Upload evidence',`${req.title}. Uploads remain pending until reviewed by admissions or QA. New versions invalidate prior eligibility approval.`,`<label class="field"><span>PDF, PNG or JPEG · maximum 5 MB</span><input type="file" name="document" accept="application/pdf,image/png,image/jpeg" required></label>`,async(v,form)=>{
-  const file=form.document.files[0];if(!file||file.size>5*1024*1024)throw new Error('Choose a document no larger than 5 MB.');
-  const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));
-  const result=await api(`/api/applications/${id}/evidence`,{requirement_id:req.id,filename:file.name,content_base64:btoa(binary)});await applyServerMutation(result);toast('Evidence uploaded for human review.');return false;},'Upload document');
+ return showDialog('Upload evidence',`${req.title}. Uploads remain pending until reviewed by admissions or QA. New versions invalidate prior eligibility approval.`,`<label class="field"><span>PDF, PNG, JPEG or ZIP · maximum 10 MB</span><input type="file" name="document" accept="${EVIDENCE_ACCEPT}" required></label>`,async(v,form)=>{
+  const file=form.document.files[0];assertEvidenceFile(file);
+  const result=await api(`/api/applications/${id}/evidence`,{requirement_id:req.id,filename:file.name,content_type:file.type,content_base64:await fileToBase64(file)});await applyServerMutation(result);toast('Evidence uploaded for human review.');return false;},'Upload document');
  }
  if(act==='review-evidence')return showDialog('Human evidence review','Download and inspect the latest document before recording your decision.',select('status','Decision',['Verified','Rejected'])+area('note','Checks performed and decision reason'),async v=>{const result=await api(`/api/evidence/${id}/review`,v);await applyServerMutation(result);toast('Evidence review recorded.');return false;},'Record decision');
  if(act==='review-app')return showDialog('Eligibility decision','Only approve when you have checked all applicable eligibility rules and the latest evidence. Every required document must be verified.',select('status','Decision',['Eligible','Not Eligible'])+area('note','Eligibility checks and decision reason'),async v=>{const result=await api(`/api/applications/${id}/review`,v);await applyServerMutation(result);toast('Human eligibility decision recorded.');return false;},'Record decision');

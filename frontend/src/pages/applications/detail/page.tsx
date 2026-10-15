@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import LoadingState from "@/components/base/LoadingState";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Avatar from "@/components/base/Avatar";
 import Badge from "@/components/base/Badge";
@@ -39,6 +40,8 @@ export default function ApplicationDetailPage() {
   const { toast } = useToast();
   const {
     state,
+    loadApplicationDetail,
+    backendLoadedAt,
     userName,
     updateApplicationStatus,
     updateApplication,
@@ -55,6 +58,17 @@ export default function ApplicationDetailPage() {
   const [statusNote, setStatusNote] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
   const [taskOpen, setTaskOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  useEffect(() => {
+    if (!id || !backendLoadedAt) return;
+    const controller = new AbortController();
+    setLoading(true); setLoadError('');
+    void loadApplicationDetail(id, controller.signal).catch(error => {
+      if (!controller.signal.aborted) setLoadError(error instanceof Error ? error.message : 'Application could not be loaded.');
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [id, loadApplicationDetail, backendLoadedAt]);
 
   const visible = useMemo(() => {
     if (!application) return false;
@@ -67,14 +81,15 @@ export default function ApplicationDetailPage() {
     return false;
   }, [application, seesAll, canSeeOwner, currentUserId, state.leads]);
 
-  if (!application || !visible) {
+  if (loading) return <LoadingState className="p-6">Loading application...</LoadingState>;
+  if (loadError || !application || !visible) {
     return (
       <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6">
         <Card>
           <EmptyState
             icon="ri-lock-2-line"
             title="Application not available"
-            message="This application does not exist, or your demo role cannot see it."
+            message={loadError || "This application does not exist, or your role cannot see it."}
             action={
               <Button variant="outline" onClick={() => navigate("/applications")}>
                 Back to applications
@@ -188,6 +203,8 @@ export default function ApplicationDetailPage() {
               <Field label="Email" value={application.email} />
               <Field label="Phone" value={application.phone} />
               <Field label="Reference" value={application.id} />
+              <Field label="Enrolment source" value={application.enrolmentSource || 'Not recorded'} />
+              <Field label="Contract status" value={application.contractStatus || 'Not recorded'} />
               <Field label="Submitted" value={formatDateTime(application.submittedAt)} />
               <Field label="Last updated" value={formatDateTime(application.updateAt)} />
             </CardBody>
@@ -198,7 +215,7 @@ export default function ApplicationDetailPage() {
               icon="ri-file-list-3-line"
               iconTone="accent"
               title="Documents & checklist"
-              subtitle="Fictional demonstration metadata — click a status to change it"
+              subtitle="Recorded document status. Verification requires supporting evidence."
             />
             <CardBody>
               {application.documents.length === 0 ? (
@@ -221,9 +238,7 @@ export default function ApplicationDetailPage() {
                           <span className="block text-[11px] text-foreground-400">{doc.type}</span>
                         </span>
                       </span>
-                      <button type="button" onClick={() => cycleDoc(doc)} className="cursor-pointer">
-                        <Badge tone={DOC_STATUS_TONES[doc.status]}>{doc.status}</Badge>
-                      </button>
+                      <Badge tone={DOC_STATUS_TONES[doc.status]}>{doc.status}</Badge>
                     </li>
                   ))}
                 </ul>

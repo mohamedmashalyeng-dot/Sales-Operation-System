@@ -1,3 +1,4 @@
+import LoadingState from "@/components/base/LoadingState";
 import { useEffect, useMemo, useState } from "react";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
@@ -14,6 +15,7 @@ import {
   EMPLOYER_AGREEMENT_STATUSES,
 } from "@/config/employer";
 import { usePermissions } from "@/hooks/usePermissions";
+import { useBusinessData } from "@/hooks/useBusinessData";
 import { useWorkspace } from "@/store/WorkspaceProvider";
 import type { EmployerAgreementStatus, DasStatus } from "@/store/types";
 import { formatDate, relativeTime } from "@/utils/format";
@@ -23,6 +25,7 @@ interface OnboardingPanelProps {
   employerContact?: string;
   leadId?: string;
   applicationId?: string;
+  dataLoaded?: boolean;
 }
 
 export default function OnboardingPanel({
@@ -30,6 +33,7 @@ export default function OnboardingPanel({
   employerContact = "",
   leadId,
   applicationId,
+  dataLoaded = false,
 }: OnboardingPanelProps) {
   const { toast } = useToast();
   const {
@@ -42,6 +46,14 @@ export default function OnboardingPanel({
   } = useWorkspace();
   const { can } = usePermissions();
   const canManage = can("employer.manage");
+  const { loading, error, reload } = useBusinessData(!dataLoaded);
+  const [saving, setSaving] = useState(false);
+  const persist = async (work: () => Promise<unknown>, title: string) => {
+    setSaving(true);
+    try { await work(); toast({ title, tone: "success" }); }
+    catch (reason) { toast({ title: "Save failed", message: reason instanceof Error ? reason.message : "Please try again.", tone: "error" }); }
+    finally { setSaving(false); }
+  };
 
   const agreement = useMemo(
     () =>
@@ -83,7 +95,7 @@ export default function OnboardingPanel({
     if (!das) return;
     setDasStatus(das.status);
     setDasFlags({
-      "das-account": das.providerAdditionConfirmed ? true : !das.accountSetupHelpNeeded,
+      "das-account": das.accountExists ?? das.providerAdditionConfirmed,
       "das-help": das.accountSetupHelpNeeded,
       "das-ukprn": das.ukprnShared,
       "das-requested": das.providerAdditionRequested,
@@ -97,31 +109,29 @@ export default function OnboardingPanel({
 
   const openAgreement = () => {
     if (!canManage) return;
-    createEmployerAgreement({
+    void persist(() => createEmployerAgreement({
       employerName,
       employerContact,
       status: "Not Sent",
       notes: "",
       leadId,
       applicationId,
-    });
-    toast({ title: "Employer agreement opened", message: "No real signature is recorded in this demo.", tone: "success" });
+    }), "Employer agreement opened");
   };
 
   const saveAgreement = () => {
     if (!agreement) return;
-    updateEmployerAgreement(agreement.id, {
+    void persist(() => updateEmployerAgreement(agreement.id, {
       status: agStatus,
       notes: agNotes.slice(0, 500),
-      followUpDueAt: agFollowUp ? new Date(agFollowUp).toISOString() : undefined,
+      followUpDueAt: agFollowUp ? new Date(agFollowUp).toISOString() : "",
       verifiedById: currentUserId,
-    });
-    toast({ title: "Agreement updated", tone: "success" });
+    }), "Agreement updated");
   };
 
   const openDas = () => {
     if (!canManage) return;
-    createDasRecord({
+    void persist(() => createDasRecord({
       employerName,
       status: "Employer Account Required",
       accountSetupHelpNeeded: true,
@@ -133,25 +143,27 @@ export default function OnboardingPanel({
       notes: "",
       leadId,
       applicationId,
-    });
-    toast({ title: "Apprenticeship Service tracking started", message: "Simulated demonstration only.", tone: "success" });
+    }), "Apprenticeship Service tracking started");
   };
 
   const saveDas = () => {
     if (!das) return;
-    updateDas(das.id, {
+    void persist(() => updateDas(das.id, {
       status: dasStatus,
+      accountExists: Boolean(dasFlags["das-account"]),
       accountSetupHelpNeeded: Boolean(dasFlags["das-help"]),
       ukprnShared: Boolean(dasFlags["das-ukprn"]),
       providerAdditionRequested: Boolean(dasFlags["das-requested"]),
       providerAdditionConfirmed: Boolean(dasFlags["das-confirmed"]),
       fundingActionsReviewed: Boolean(dasFlags["das-funding"]),
       responsibleStaffId: dasStaff,
-      followUpAt: dasFollowUp ? new Date(dasFollowUp).toISOString() : undefined,
+      followUpAt: dasFollowUp ? new Date(dasFollowUp).toISOString() : "",
       notes: dasNotes.slice(0, 500),
-    });
-    toast({ title: "Apprenticeship Service status updated", tone: "success" });
+    }), "Apprenticeship Service status updated");
   };
+
+  if (loading) return <Card><CardBody><LoadingState>Loading employer onboarding...</LoadingState></CardBody></Card>;
+  if (error) return <Card><CardBody><p role="alert">{error}</p><Button onClick={() => void reload()}>Try again</Button></CardBody></Card>;
 
   return (
     <div className="space-y-5">
@@ -179,7 +191,7 @@ export default function OnboardingPanel({
                 No employer agreement is being tracked for {employerName}.
               </p>
               <PermissionGate capability="employer.manage">
-                <Button size="sm" leftIcon={<i className="ri-add-line"></i>} onClick={openAgreement}>
+                <Button size="sm" disabled={saving} leftIcon={<i className="ri-add-line"></i>} onClick={openAgreement}>
                   Open agreement
                 </Button>
               </PermissionGate>
@@ -239,7 +251,7 @@ export default function OnboardingPanel({
                   />
                 </div>
                 <div className="flex justify-end">
-                  <Button size="sm" leftIcon={<i className="ri-save-line"></i>} onClick={saveAgreement}>
+                  <Button size="sm" loading={saving} disabled={saving} leftIcon={<i className="ri-save-line"></i>} onClick={saveAgreement}>
                     Save agreement
                   </Button>
                 </div>
@@ -275,7 +287,7 @@ export default function OnboardingPanel({
                 Apprenticeship Service readiness is not being tracked for {employerName} yet.
               </p>
               <PermissionGate capability="employer.manage">
-                <Button size="sm" leftIcon={<i className="ri-add-line"></i>} onClick={openDas}>
+                <Button size="sm" disabled={saving} leftIcon={<i className="ri-add-line"></i>} onClick={openDas}>
                   Start DAS tracking
                 </Button>
               </PermissionGate>
@@ -299,7 +311,7 @@ export default function OnboardingPanel({
                         <i
                           className={
                             {
-                              "das-account": !das.accountSetupHelpNeeded,
+                              "das-account": das.accountExists ?? das.providerAdditionConfirmed,
                               "das-help": das.accountSetupHelpNeeded,
                               "das-ukprn": das.ukprnShared,
                               "das-requested": das.providerAdditionRequested,
@@ -370,14 +382,14 @@ export default function OnboardingPanel({
                   </div>
                 </div>
                 <div className="flex justify-end">
-                  <Button size="sm" leftIcon={<i className="ri-save-line"></i>} onClick={saveDas}>
+                  <Button size="sm" loading={saving} disabled={saving} leftIcon={<i className="ri-save-line"></i>} onClick={saveDas}>
                     Save DAS status
                   </Button>
                 </div>
               </PermissionGate>
               <p className="rounded-md bg-background-100 px-3 py-2 text-[11px] text-foreground-500">
-                Simulated demonstration — the workspace never accesses the real government account, and
-                provider addition is never claimed to have happened automatically.
+                Record progress confirmed by your team. Use the reference link to complete the
+                employer's Apprenticeship Service account actions.
               </p>
             </>
           )}

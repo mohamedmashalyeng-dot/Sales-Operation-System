@@ -45,6 +45,13 @@ function isZoomEventRecord(event = {}) {
   );
 }
 
+function zoomEventSqlCondition() {
+  return `(coalesce(e.data->>'zoom_meeting_id', '') <> ''
+    or coalesce(e.data->>'zoom_meeting_uuid', '') <> ''
+    or lower(coalesce(e.location, e.data->>'location', '')) = 'zoom'
+    or lower(coalesce(e.campaign, e.data->>'campaign', '')) like 'zoom%')`;
+}
+
 async function loadZoomEventListDb(limit = 2000) {
   return (await loadZoomEventPageDb({ limit })).items;
 }
@@ -78,12 +85,7 @@ async function loadZoomEventPageDb(options = {}, trace = null) {
   if (filters.provider && filters.provider !== 'zoom') throw Http.statusError(400, 'Only Zoom meetings are available here.');
   if (State.postgresPool) {
     const values = [];
-    const conditions = [
-      `(coalesce(e.data->>'zoom_meeting_id', '') <> ''
-        or coalesce(e.data->>'zoom_meeting_uuid', '') <> ''
-        or lower(coalesce(e.location, e.data->>'location', '')) = 'zoom'
-        or lower(coalesce(e.campaign, e.data->>'campaign', '')) like 'zoom%')`
-    ];
+    const conditions = [zoomEventSqlCondition()];
     const bind = value => { values.push(value); return `$${values.length}`; };
     if (filters.startFrom) conditions.push(`e.start_at >= ${bind(filters.startFrom)}::timestamptz`);
     if (filters.startTo) conditions.push(`e.start_at < ${bind(filters.startTo)}::timestamptz`);
@@ -175,6 +177,32 @@ async function loadZoomEventPageDb(options = {}, trace = null) {
 }
 
 const ZOOM_CALL_PAGE_MAX = 100;
+async function loadZoomMeetingDetailDb(id, options = {}) {
+  await Storage.ensureStorage();
+  const offset = Math.max(0, Math.min(100000, Number.parseInt(options.offset, 10) || 0));
+  const limit = 50;
+  let event, attendees, total;
+  if (State.postgresPool) {
+    const result = await State.postgresPool.query(`select data - 'attendees' as data,
+      jsonb_array_length(case when jsonb_typeof(attendees)='array' then attendees else '[]'::jsonb end)::int as total
+      from app_events where id=$1`, [id]);
+    event = result.rows[0]?.data; total = result.rows[0]?.total || 0;
+    if (event && isZoomEventRecord(event)) attendees = (await State.postgresPool.query(`select attendee from app_events e
+      cross join lateral jsonb_array_elements(case when jsonb_typeof(e.attendees)='array' then e.attendees else '[]'::jsonb end)
+      with ordinality as a(attendee, position) where e.id=$1 order by position limit $2 offset $3`, [id, limit, offset])).rows.map(row => row.attendee);
+  } else {
+    event = (await Storage.loadDb()).events.find(item => String(item.id) === String(id));
+    const rows = Array.isArray(event?.attendees) ? event.attendees : [];
+    total = rows.length; attendees = rows.slice(offset, offset + limit);
+  }
+  if (!event || !isZoomEventRecord(event)) throw Http.statusError(404, 'Zoom meeting not found.');
+  const keys = ['id', 'name', 'topic', 'title', 'start_at', 'end_at', 'duration', 'status', 'zoom_list_type', 'zoom_meeting_id',
+    'zoom_meeting_uuid', 'zoom_host_id', 'zoom_host_label', 'zoom_account_id', 'zoom_account_label', 'meeting_link', 'zoom_link', 'join_url'];
+  return { meeting: { ...Object.fromEntries(keys.filter(key => event[key] !== undefined).map(key => [key, event[key]])), attendee_count: total },
+    attendees: (attendees || []).map((item, index) => ({ id: item.id || `${id}-attendee-${offset + index}`, name: item.name || [item.first_name, item.last_name].filter(Boolean).join(' ') || '',
+      email: item.email || '', lead_id: item.lead_id || null, status: item.status || item.outcome || '', attended_at: item.attended_at || item.checked_in_at || null })),
+    total, has_more: offset + (attendees || []).length < total, next_offset: offset + (attendees || []).length };
+}
 
 // A stored call also carries the provider's raw record and the participants. The import needs
 // them; the calls list does not show them, and they are about half of every call.
@@ -183,51 +211,121 @@ function zoomCallListItem(call) {
   return item;
 }
 
+function normalizeZoomCallPageOptions(options = {}) {
+  return {
+    limit: Math.max(1, Math.min(Number(options.limit || 50), ZOOM_CALL_PAGE_MAX)),
+    offset: Math.max(0, Number(options.offset || 0)),
+    direction: String(options.direction || '').trim().toLowerCase(),
+    status: String(options.status || '').trim().toLowerCase(),
+    match: String(options.match || options.crm_match || '').trim().toLowerCase(),
+    search: String(options.search || '').trim().toLowerCase().slice(0, 200)
+  };
+}
+
+function zoomCallStatusKey(call = {}) {
+  const result = String(call.result || call.status || '').toLowerCase();
+  const duration = Number(call.duration_sec || call.duration || 0);
+  if (result.includes('voice')) return 'voicemail';
+  if (/no[ _-]?answer|not[ _-]?answer|missed|cancel|busy|failed/.test(result)) return 'no-answer';
+  if (result.includes('answer') || result.includes('connected') || duration > 0) return 'answered';
+  return 'no-answer';
+}
+
+function zoomCallMatchesFilters(call = {}, filters = {}) {
+  const direction = String(call.direction || '').toLowerCase();
+  if (filters.direction === 'incoming' && !direction.includes('in')) return false;
+  if (filters.direction === 'outgoing' && !direction.includes('out')) return false;
+  if (filters.status && filters.status !== 'all') {
+    const status = zoomCallStatusKey(call);
+    if (filters.status === 'connected') {
+      const result = String(call.result || call.status || '').toLowerCase();
+      if (!result.includes('connected') && status !== 'answered') return false;
+    } else if (status !== filters.status) {
+      return false;
+    }
+  }
+  if (filters.match === 'verified' && !call.lead_id) return false;
+  if (filters.match === 'none' && call.lead_id) return false;
+  if (filters.match === 'uncertain') return false;
+  if (filters.search && !JSON.stringify(zoomCallListItem(call)).toLowerCase().includes(filters.search)) return false;
+  return true;
+}
+
 // The calls live in one JSON array inside app_workspace.meta (about 500 KB). Reading the whole
 // array for every page cost more than the page itself, so PostgreSQL cuts the page out and only
 // that travels. A call without both numbers keeps its raw record: it is rebuilt from it below.
-async function loadZoomCallPageSql(limit, offset) {
+async function loadZoomCallPageSql(filters) {
+  const values = ['main'];
+  const bind = value => {
+    values.push(value);
+    return `$${values.length}`;
+  };
+  const conditions = [];
+  if (filters.direction === 'incoming') conditions.push(`direction_text like '%in%'`);
+  if (filters.direction === 'outgoing') conditions.push(`direction_text like '%out%'`);
+  if (filters.status && filters.status !== 'all') {
+    if (filters.status === 'voicemail') {
+      conditions.push(`result_text like '%voice%'`);
+    } else if (filters.status === 'answered' || filters.status === 'connected') {
+      conditions.push(`(result_text !~ 'no[ _-]?answer|not[ _-]?answer|missed|cancel|busy|failed' and (result_text like '%answer%' or result_text like '%connected%' or duration_sec > 0))`);
+    } else if (filters.status === 'no-answer') {
+      conditions.push(`(result_text ~ 'no[ _-]?answer|not[ _-]?answer|missed|cancel|busy|failed' or (result_text not like '%voice%' and result_text not like '%answer%' and result_text not like '%connected%' and duration_sec <= 0))`);
+    }
+  }
+  if (filters.match === 'verified') conditions.push(`coalesce(call->>'lead_id', '') <> ''`);
+  if (filters.match === 'none') conditions.push(`coalesce(call->>'lead_id', '') = ''`);
+  if (filters.match === 'uncertain') conditions.push(`false`);
+  if (filters.search) conditions.push(`lower(call::text) like ${bind(`%${filters.search}%`)}`);
+  const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
+  const limitParam = bind(filters.limit);
+  const offsetParam = bind(filters.offset);
   const result = await State.postgresPool.query(
     `with state as (
        select coalesce(meta->'zoom', '{}'::jsonb) as zoom from app_workspace where id = $1
      ), calls as (
        select item.call, item.position,
-              case when item.call->>'started_at' ~ '^\\d{4}-\\d{2}-\\d{2}' then (item.call->>'started_at')::timestamptz end as started
+              case when item.call->>'started_at' ~ '^\\d{4}-\\d{2}-\\d{2}' then (item.call->>'started_at')::timestamptz end as started,
+              lower(coalesce(item.call->>'direction', '')) as direction_text,
+              lower(coalesce(item.call->>'result', item.call->>'status', '')) as result_text,
+              case when coalesce(item.call->>'duration_sec', item.call->>'duration', '0') ~ '^[0-9]+(\\.[0-9]+)?$'
+                then coalesce(item.call->>'duration_sec', item.call->>'duration', '0')::numeric else 0 end as duration_sec
        from state
        cross join lateral jsonb_array_elements(
          case when jsonb_typeof(state.zoom->'calls') = 'array' then state.zoom->'calls' else '[]'::jsonb end
        ) with ordinality as item(call, position)
+     ), filtered_calls as (
+       select * from calls ${where}
      )
      select
-       (select count(*)::int from calls) as total,
+       (select count(*)::int from filtered_calls) as total,
        (select zoom->>'last_call_sync_at' from state) as last_sync_at,
        coalesce((
          select jsonb_agg(
            case when coalesce(page.call->>'caller_number', '') <> '' and coalesce(page.call->>'callee_number', '') <> ''
              then page.call - 'raw' - 'participants' else page.call end
            order by page.started desc nulls last, page.position)
-         from (select call, started, position from calls order by started desc nulls last, position limit $2 offset $3) page
+         from (select call, started, position from filtered_calls order by started desc nulls last, position limit ${limitParam} offset ${offsetParam}) page
        ), '[]'::jsonb) as calls`,
-    ['main', limit, offset]
+    values
   );
   const row = result.rows[0] || {};
   return { calls: (row.calls || []).map(zoomCallListItem), total: Number(row.total || 0), last_sync_at: row.last_sync_at || null };
 }
 
-async function loadZoomCallPageDb(limit = 50, offset = 0) {
+async function loadZoomCallPageDb(limit = 50, offset = 0, options = {}) {
   await Storage.ensureStorage();
-  const safeLimit = Math.max(1, Math.min(Number(limit || 50), ZOOM_CALL_PAGE_MAX));
-  const safeOffset = Math.max(0, Number(offset || 0));
+  const filters = normalizeZoomCallPageOptions(typeof limit === 'object' ? limit : { ...options, limit, offset });
   let page;
   if (State.postgresPool && Storage.usesPostgresStorage() && !State.dbCache?.zoom?.calls?.length) {
-    page = await loadZoomCallPageSql(safeLimit, safeOffset);
+    page = await loadZoomCallPageSql(filters);
   } else {
     const zoomState = await loadZoomStateForPaging();
     const allCalls = (zoomState.calls || [])
       .map(call => hydrateZoomStoredCall({ leads: [] }, call))
+      .filter(call => zoomCallMatchesFilters(call, filters))
       .sort((a, b) => new Date(b.started_at || 0) - new Date(a.started_at || 0));
     page = {
-      calls: allCalls.slice(safeOffset, safeOffset + safeLimit).map(zoomCallListItem),
+      calls: allCalls.slice(filters.offset, filters.offset + filters.limit).map(zoomCallListItem),
       total: allCalls.length,
       last_sync_at: zoomState.last_call_sync_at || null
     };
@@ -235,11 +333,11 @@ async function loadZoomCallPageDb(limit = 50, offset = 0) {
   return {
     calls: page.calls,
     total: page.total,
-    offset: safeOffset,
-    limit: safeLimit,
-    loaded: safeOffset + page.calls.length,
-    has_more: safeOffset + page.calls.length < page.total,
-    next_offset: safeOffset + page.calls.length,
+    offset: filters.offset,
+    limit: filters.limit,
+    loaded: filters.offset + page.calls.length,
+    has_more: filters.offset + page.calls.length < page.total,
+    next_offset: filters.offset + page.calls.length,
     last_sync_at: page.last_sync_at
   };
 }
@@ -254,6 +352,57 @@ async function loadZoomStateForPaging() {
     zoomState = (await Storage.loadDb()).zoom || {};
   }
   return zoomState || {};
+}
+
+async function loadZoomOverviewDb(options = {}, trace = null) {
+  const now = Tasks.parseOptionalIsoDate(options.now, 'now') || new Date().toISOString();
+  const dayStart = Tasks.parseOptionalIsoDate(options.day_start, 'day_start') || `${now.slice(0, 10)}T00:00:00.000Z`;
+  const dayEnd = Tasks.parseOptionalIsoDate(options.day_end, 'day_end') || new Date(Date.parse(dayStart) + 86400000).toISOString();
+  if (Date.parse(dayEnd) <= Date.parse(dayStart)) throw Http.statusError(400, 'day_end must be after day_start.');
+  await Storage.ensureStorage();
+  const meetingKeys = ['id', 'name', 'topic', 'title', 'start_at', 'duration', 'status', 'zoom_meeting_id',
+    'zoom_host_id', 'zoom_host_label', 'zoom_account_id', 'zoom_account_label', 'meeting_link', 'zoom_link'];
+  const meetingSummary = event => Object.fromEntries(meetingKeys.filter(key => event[key] !== undefined).map(key => [key, event[key]]));
+  let metrics, nextMeetings, recentCalls;
+  if (State.postgresPool && Storage.usesPostgresStorage()) {
+    const [meetingStats, next, calls, callStats] = await Promise.all([
+      Storage.timedPostgresQuery(trace, 'zoom_overview_meetings', `select count(*)::int as total_meetings,
+        count(*) filter (where e.start_at >= $1::timestamptz)::int as upcoming_meetings,
+        count(*) filter (where e.start_at >= $2::timestamptz and e.start_at < $3::timestamptz)::int as meetings_today
+        from app_events e where ${zoomEventSqlCondition()}`, [now, dayStart, dayEnd]),
+      Storage.timedPostgresQuery(trace, 'zoom_overview_next', `select e.id, e.name, e.start_at,
+        e.data->>'duration' as duration, e.data->>'status' as status, e.data->>'zoom_meeting_id' as zoom_meeting_id,
+        e.data->>'zoom_host_id' as zoom_host_id, e.data->>'zoom_host_label' as zoom_host_label,
+        e.data->>'zoom_account_id' as zoom_account_id, e.data->>'zoom_account_label' as zoom_account_label,
+        e.data->>'meeting_link' as meeting_link, e.data->>'zoom_link' as zoom_link
+        from app_events e where ${zoomEventSqlCondition()} and e.start_at >= $1::timestamptz
+        order by e.start_at asc, e.id asc limit 4`, [now]),
+      loadZoomCallPageSql(normalizeZoomCallPageOptions({ limit: 5, offset: 0 })),
+      Storage.timedPostgresQuery(trace, 'zoom_overview_missed', `select count(*)::int as missed_calls from (
+        select lower(coalesce(call->>'result', call->>'status', '')) as result,
+          case when coalesce(call->>'duration_sec', call->>'duration', '0') ~ '^[0-9]+(\\.[0-9]+)?$'
+          then coalesce(call->>'duration_sec', call->>'duration', '0')::numeric else 0 end as duration
+        from app_workspace w cross join lateral jsonb_array_elements(
+          case when jsonb_typeof(w.meta->'zoom'->'calls') = 'array' then w.meta->'zoom'->'calls' else '[]'::jsonb end) call
+        where w.id = 'main'
+      ) c where result like '%voice%' or result ~ 'no[ _-]?answer|not[ _-]?answer|missed|cancel|busy|failed'
+        or (result not like '%answer%' and result not like '%connected%' and duration <= 0)`, []),
+    ]);
+    metrics = { ...meetingStats.rows[0], calls_logged: calls.total, missed_calls: Number(callStats.rows[0]?.missed_calls || 0) };
+    nextMeetings = next.rows.map(meetingSummary); recentCalls = calls.calls;
+  } else {
+    const db = await Storage.loadDb();
+    const meetings = (db.events || []).filter(isZoomEventRecord);
+    const upcoming = meetings.filter(event => Date.parse(event.start_at) >= Date.parse(now))
+      .sort((a, b) => Date.parse(a.start_at) - Date.parse(b.start_at) || String(a.id).localeCompare(String(b.id)));
+    const calls = (db.zoom?.calls || []).map(call => hydrateZoomStoredCall({ leads: [] }, call))
+      .sort((a, b) => Date.parse(b.started_at || 0) - Date.parse(a.started_at || 0));
+    metrics = { total_meetings: meetings.length, upcoming_meetings: upcoming.length,
+      meetings_today: meetings.filter(event => Date.parse(event.start_at) >= Date.parse(dayStart) && Date.parse(event.start_at) < Date.parse(dayEnd)).length,
+      calls_logged: calls.length, missed_calls: calls.filter(call => ['no-answer', 'voicemail'].includes(zoomCallStatusKey(call))).length };
+    nextMeetings = upcoming.slice(0, 4).map(meetingSummary); recentCalls = calls.slice(0, 5).map(zoomCallListItem);
+  }
+  return { metrics, next_meetings: nextMeetings, recent_calls: recentCalls, as_of: now, day_start: dayStart, day_end: dayEnd };
 }
 
 function zoomStoredNumberKey(number = '') {
@@ -1348,7 +1497,9 @@ async function importZoomMeetings(db, user, maxMeetings = 25, options = {}) {
 
 exports.mergeZoomState = mergeZoomState;
 exports.loadZoomEventPageDb = loadZoomEventPageDb;
+exports.loadZoomMeetingDetailDb = loadZoomMeetingDetailDb;
 exports.loadZoomCallPageDb = loadZoomCallPageDb;
+exports.loadZoomOverviewDb = loadZoomOverviewDb;
 exports.loadZoomNumberPageDb = loadZoomNumberPageDb;
 exports.zoomConfigured = zoomConfigured;
 exports.zoomAccounts = zoomAccounts;

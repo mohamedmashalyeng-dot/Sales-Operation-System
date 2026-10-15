@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Avatar from "@/components/base/Avatar";
 import Badge from "@/components/base/Badge";
@@ -12,13 +12,12 @@ import PermissionGate from "@/components/feature/PermissionGate";
 import { usePermissions } from "@/hooks/usePermissions";
 import TaskFormModal from "@/pages/planner/components/TaskFormModal";
 import LeadFormModal from "@/pages/leads/components/LeadFormModal";
-import JourneyPanel from "@/pages/leads/components/JourneyPanel";
 import ClosingModal from "@/pages/leads/components/ClosingModal";
-import EligibilityPanel from "@/pages/leads/components/EligibilityPanel";
-import IntakePanel from "@/pages/leads/components/IntakePanel";
-import CommercialPanel from "@/pages/leads/components/CommercialPanel";
+import LeadCallJourney from "@/pages/leads/components/LeadCallJourney";
+import BusinessRoutingActions from "@/components/feature/BusinessRoutingActions";
 import EnrolmentPanel from "@/pages/leads/components/EnrolmentPanel";
 import SessionBadge from "@/pages/leads/components/SessionBadge";
+import { BackendRequestError, BackendRequestTimeoutError } from "@/store/backendSync";
 import { useWorkspace, type LeadInput, type ClosingInput } from "@/store/WorkspaceProvider";
 import type { Task } from "@/store/types";
 import { APP_STATUS_TONES, PRIORITY_TONES, STAGE_TONES, formatCurrency, toInputDateTime } from "@/utils/crm";
@@ -26,11 +25,8 @@ import { formatDate, formatDateTime, relativeTime } from "@/utils/format";
 
 const TABS = [
   { value: "overview", label: "Overview", icon: "ri-profile-line" },
-  { value: "eligibility", label: "Eligibility", icon: "ri-shield-check-line" },
-  { value: "intake", label: "Intake planning", icon: "ri-calendar-schedule-line" },
-  { value: "commercial", label: "Commercial", icon: "ri-briefcase-4-line" },
   { value: "enrolment", label: "Enrolment", icon: "ri-graduation-cap-line" },
-  { value: "journey", label: "Journey & Attribution", icon: "ri-flow-chart" },
+  { value: "journey", label: "Lead Journey", icon: "ri-route-line" },
   { value: "activity", label: "Activity", icon: "ri-history-line" },
   { value: "tasks", label: "Tasks", icon: "ri-checkbox-multiple-line" },
   { value: "applications", label: "Applications", icon: "ri-file-list-3-line" },
@@ -43,6 +39,8 @@ export default function LeadDetailPage() {
   const { toast } = useToast();
   const {
     state,
+    backendLoading,
+    loadLeadDetail,
     userName,
     currentUser,
     updateLead,
@@ -65,6 +63,39 @@ export default function LeadDetailPage() {
   const [taskOpen, setTaskOpen] = useState(false);
   const [closingOpen, setClosingOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [detailRequest, setDetailRequest] = useState(0);
+  const [detailState, setDetailState] = useState<{ id: string; loading: boolean; error: string | null }>({
+    id: "", loading: true, error: null,
+  });
+
+  useEffect(() => {
+    if (backendLoading) return;
+    if (!id) {
+      setDetailState({ id, loading: false, error: "Choose a lead to open its details." });
+      return;
+    }
+    const controller = new AbortController();
+    setDetailState({ id, loading: true, error: null });
+    void loadLeadDetail(id, controller.signal)
+      .then((loaded) => {
+        if (controller.signal.aborted) return;
+        if (loaded.id !== id) {
+          navigate(`/leads/${encodeURIComponent(loaded.id)}`, { replace: true });
+          return;
+        }
+        setDetailState({ id, loading: false, error: null });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const message = error instanceof BackendRequestError && (error.status === 403 || error.status === 404)
+          ? "This lead does not exist, or you do not have permission to view it."
+          : error instanceof BackendRequestTimeoutError
+            ? "The lead is taking too long to load. Please try again."
+            : "The lead could not be loaded. Please try again.";
+        setDetailState({ id, loading: false, error: message });
+      });
+    return () => controller.abort();
+  }, [id, backendLoading, loadLeadDetail, navigate, detailRequest]);
 
   const lead = state.leads.find((l) => l.id === id);
 
@@ -85,23 +116,36 @@ export default function LeadDetailPage() {
     [state.activity, id],
   );
 
-  const leadTouchpoints = useMemo(
-    () => (Array.isArray(state.touchpoints) ? state.touchpoints : []).filter((t) => t.leadId === id),
-    [state.touchpoints, id],
-  );
 
-  if (!lead || !canSeeOwner(lead.ownerId)) {
+  if (backendLoading || detailState.id !== id || detailState.loading) {
+    return (
+      <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6" role="status" aria-live="polite">
+        <Card>
+          <EmptyState icon="ri-loader-4-line animate-spin" title="Loading lead" message="Opening lead details." />
+        </Card>
+      </div>
+    );
+  }
+
+  if (detailState.error || !lead || !canSeeOwner(lead.ownerId)) {
     return (
       <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6">
         <Card>
           <EmptyState
             icon="ri-lock-2-line"
             title="Lead not available"
-            message="This lead does not exist, or your demo role cannot see it."
+            message={detailState.error || "This lead does not exist, or you do not have permission to view it."}
             action={
-              <Button variant="outline" onClick={() => navigate("/leads")}>
-                Back to Leads
-              </Button>
+              <div className="flex justify-center gap-2">
+                {detailState.error ? (
+                  <Button variant="outline" onClick={() => setDetailRequest((request) => request + 1)}>
+                    Try again
+                  </Button>
+                ) : null}
+                <Button variant="outline" onClick={() => navigate("/leads")}>
+                  Back to Leads
+                </Button>
+              </div>
             }
           />
         </Card>
@@ -137,14 +181,14 @@ export default function LeadDetailPage() {
     setClosingOpen(false);
     toast({
       title: input.outcome === "won" ? "Lead closed won" : "Lead closed lost",
-      message: "The closing attribution snapshot was saved.",
+      message: "The lead closing details were saved.",
       tone: input.outcome === "won" ? "success" : "info",
     });
   };
 
   const handleReopen = () => {
     reopenLead(lead.id);
-    toast({ title: "Lead reopened", message: "Closing attribution was cleared.", tone: "info" });
+    toast({ title: "Lead reopened", message: "The lead is active again.", tone: "info" });
   };
 
   return (
@@ -166,7 +210,7 @@ export default function LeadDetailPage() {
                 <h1 className="font-heading text-xl font-extrabold text-foreground-950">
                   {lead.name}
                 </h1>
-                <Badge tone={STAGE_TONES[lead.stage]}>{lead.stage}</Badge>
+                <Badge tone={STAGE_TONES[lead.stage]}>{lead.journeyStage || lead.stage}</Badge>
                 <Badge tone={PRIORITY_TONES[lead.priority]}>{lead.priority} priority</Badge>
                 {lead.zohoSynced ? (
                   <Badge tone="primary" icon="ri-cloud-line">
@@ -202,7 +246,7 @@ export default function LeadDetailPage() {
             >
               Compose email
             </Button>
-            <PermissionGate capability="attribution.manage">
+            <PermissionGate capability="leads.edit">
               {isClosed ? (
                 <Button
                   variant="outline"
@@ -238,8 +282,15 @@ export default function LeadDetailPage() {
         </div>
       </Card>
 
+      {tab === "overview" ? <>
+        <div className="rounded-xl border border-background-200 bg-white p-4">
+          <h2 className="mb-2 font-semibold">Review &amp; route lead</h2>
+          <BusinessRoutingActions key={lead.id} leadId={lead.id} />
+        </div>
+        <LeadCallJourney leadId={lead.id} />
+      </> : null}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_20rem]">
-        <div className="space-y-5">
+        <div className="min-w-0 space-y-5">
           {tab === "overview" ? (
             <Card>
               <CardHeader icon="ri-profile-line" title="Lead overview" subtitle="Record details" />
@@ -251,21 +302,15 @@ export default function LeadDetailPage() {
                 <Detail label="Estimated value" value={formatCurrency(lead.value)} />
                 <Detail label="Created" value={formatDate(lead.createdAt)} />
                 <Detail label="Last contact" value={relativeTime(lead.lastContactAt)} />
-                <Detail label="Next action due" value={formatDateTime(lead.nextActionAt)} />
+                <Detail label="Next action due" value={lead.nextActionAt ? formatDateTime(lead.nextActionAt) : 'Not scheduled'} />
               </CardBody>
             </Card>
           ) : null}
 
-          {tab === "eligibility" ? <EligibilityPanel lead={lead} /> : null}
-
-          {tab === "intake" ? <IntakePanel lead={lead} /> : null}
-
-          {tab === "commercial" ? <CommercialPanel lead={lead} /> : null}
-
           {tab === "enrolment" ? <EnrolmentPanel lead={lead} /> : null}
 
           {tab === "journey" ? (
-            <JourneyPanel lead={lead} touchpoints={leadTouchpoints} />
+            <LeadCallJourney leadId={lead.id} detailed />
           ) : null}
 
           {tab === "activity" ? (
@@ -431,9 +476,9 @@ export default function LeadDetailPage() {
           <Card>
             <CardHeader icon="ri-focus-3-line" iconTone="accent" title="Next action" />
             <CardBody>
-              <p className="text-[13px] font-semibold text-foreground-900">{lead.nextAction}</p>
+              <p className="text-[13px] font-semibold text-foreground-900">{lead.nextAction || 'No next action set'}</p>
               <p className="mt-1 text-[12px] text-foreground-500">
-                Due {formatDateTime(lead.nextActionAt)}
+                {lead.nextActionAt ? `Due ${formatDateTime(lead.nextActionAt)}` : 'Not scheduled'}
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Button
@@ -551,7 +596,6 @@ export default function LeadDetailPage() {
         open={closingOpen}
         onClose={() => setClosingOpen(false)}
         lead={lead}
-        touchpoints={leadTouchpoints}
         onSubmit={handleClose}
       />
     </div>

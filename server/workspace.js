@@ -15,6 +15,7 @@ const Zoom = require('./integrations/zoom');
 const Meta = require('./integrations/meta');
 const Apollo = require('./integrations/apollo');
 const Zoho = require('./integrations/zoho');
+const CallNextAction = require('./call-next-action');
 
 const DEFAULT_STAGES = ['New lead', 'Qualified', 'Application Submitted', 'Eligibility', 'Ready for Enrolment', 'Enrolled', 'Not Eligible', 'Lost'];
 const DEFAULT_SOURCES = ['Website', 'Referral', 'Event', 'Meta', 'LinkedIn', 'Cold outreach'];
@@ -32,6 +33,7 @@ function seedDatabase() {
     emails: [],
     applications: [],
     events: [],
+    commercialOpportunities: [],
     integrations: [
       { name: 'Gmail', status: 'Not connected', detail: 'Connect Gmail after the backend mailbox adapter is configured.' },
       { name: 'Eventbrite', status: 'Not connected', detail: 'Event data is stored locally until provider sync is enabled.' }
@@ -46,7 +48,11 @@ function workspaceMetaState(db = {}) {
     ...(db.meta || {}),
     apollo: db.apollo || db.meta?.apollo || { imported_person_ids: [] },
     zoom: db.zoom || db.meta?.zoom || { imported_meeting_ids: [] },
-    zoho: db.zoho || db.meta?.zoho || { imported_record_ids: [] }
+    zoho: db.zoho || db.meta?.zoho || { imported_record_ids: [] },
+    commercialOpportunities: db.commercialOpportunities || db.meta?.commercialOpportunities || [],
+    employers: db.employers || db.meta?.employers || [],
+    employerAgreements: db.employerAgreements || db.meta?.employerAgreements || [],
+    dasRecords: db.dasRecords || db.meta?.dasRecords || []
   };
 }
 
@@ -164,6 +170,7 @@ function recalculate(db) {
   db.events ||= [];
   db.audit ||= [];
   db.attribution ||= [];
+  db.commercialOpportunities ||= db.meta?.commercialOpportunities || [];
   db.gmail ||= { connected: false, imported_message_ids: [] };
   db.eventbrite ||= { connected: false, imported_event_ids: [], imported_attendee_ids: [] };
   db.meta ||= { imported_lead_ids: [], imported_form_ids: [] };
@@ -173,6 +180,7 @@ function recalculate(db) {
   db.meta.apollo = db.apollo;
   db.meta.zoho = db.zoho;
   db.meta.zoom = db.zoom;
+  db.meta.commercialOpportunities = db.commercialOpportunities;
   if (!db.sources.includes('Meta')) db.sources.push('Meta');
   if (!db.sources.includes('Email')) db.sources.push('Email');
   if (!db.sources.includes('Apollo')) db.sources.push('Apollo');
@@ -181,10 +189,16 @@ function recalculate(db) {
   const ownerById = new Map(db.users.map(item => [item.id, item]));
   const leadById = new Map(db.leads.map(lead => [lead.id, lead]));
   const openTaskByLead = new Map();
+  const taskById = new Map(db.tasks.map(task => [task.id, task]));
+  const openCallTaskByLead = new Map();
   for (const task of db.tasks) {
     if (task.status !== 'Open' || !task.lead_id) continue;
     const current = openTaskByLead.get(task.lead_id);
     if (!current || new Date(task.due_at || 0) < new Date(current.due_at || 0)) openTaskByLead.set(task.lead_id, task);
+    if (task.source === 'call_analysis') {
+      const callTask = openCallTaskByLead.get(task.lead_id);
+      if (!callTask || new Date(task.due_at || 0) < new Date(callTask.due_at || 0)) openCallTaskByLead.set(task.lead_id, task);
+    }
   }
   db.leads.forEach(lead => {
     const programme = programmeById.get(lead.programme_id);
@@ -194,7 +208,8 @@ function recalculate(db) {
     lead.level = programme?.level || lead.level;
     lead.owner = owner?.name || lead.owner;
     const open = openTaskByLead.get(lead.id);
-    lead.next_action_at = open?.due_at || null;
+    if (lead.next_action_source === 'call_analysis') CallNextAction.update(lead, taskById.get(lead.next_action_task_id), openCallTaskByLead.get(lead.id));
+    else lead.next_action_at = open?.due_at || null;
   });
   db.tasks.forEach(task => {
     const lead = leadById.get(task.lead_id);

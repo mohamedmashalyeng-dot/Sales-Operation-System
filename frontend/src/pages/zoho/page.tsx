@@ -199,7 +199,7 @@ export default function ZohoPage() {
             </Button>
           ) : null}
           {can("zoho.retry") ? (
-            <Button variant="outline" leftIcon={<i className="ri-refresh-line"></i>} onClick={retry} disabled={retrying}>
+            <Button variant="outline" leftIcon={<i className="ri-refresh-line"></i>} onClick={retry} loading={retrying} disabled={retrying}>
               {retrying ? "Queueing sync..." : "Retry failed sync"}
             </Button>
           ) : null}

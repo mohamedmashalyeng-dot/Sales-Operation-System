@@ -1,3 +1,4 @@
+import LoadingState from "@/components/base/LoadingState";
 import { useState } from "react";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
@@ -8,6 +9,7 @@ import PermissionGate from "@/components/feature/PermissionGate";
 import CommercialReferralModal from "@/pages/leads/components/CommercialReferralModal";
 import { COMMERCIAL_STAGES, COMMERCIAL_TONES, OPEN_COMMERCIAL_STAGES } from "@/config/commercial";
 import { useWorkspace } from "@/store/WorkspaceProvider";
+import { useBusinessData } from "@/hooks/useBusinessData";
 import type { CommercialStage, Lead } from "@/store/types";
 import { formatDateTime, relativeTime } from "@/utils/format";
 
@@ -15,8 +17,11 @@ export default function CommercialPanel({ lead }: { lead: Lead }) {
   const { toast } = useToast();
   const { state, userName, updateCommercial } = useWorkspace();
   const [modalOpen, setModalOpen] = useState(false);
+  const { loading, error, reload } = useBusinessData();
 
   const record = state.commercialOpportunities.find((c) => c.leadId === lead.id);
+  if (loading) return <Card><CardBody><LoadingState>Loading commercial opportunities...</LoadingState></CardBody></Card>;
+  if (error) return <Card><CardBody><p role="alert">{error}</p><Button onClick={() => void reload()}>Try again</Button></CardBody></Card>;
 
   return (
     <div className="space-y-5">
@@ -78,9 +83,11 @@ export default function CommercialPanel({ lead }: { lead: Lead }) {
                     size="sm"
                     label="Move stage"
                     value={record.stage}
-                    onChange={(v) => {
-                      updateCommercial(record.id, { stage: v as CommercialStage });
+                    onChange={async (v) => {
+                      try {
+                      await updateCommercial(record.id, { stage: v as CommercialStage });
                       toast({ title: `Commercial stage → ${v}`, tone: "success" });
+                      } catch (error) { toast({ title: "Update failed", message: error instanceof Error ? error.message : "Please try again.", tone: "error" }); }
                     }}
                     options={COMMERCIAL_STAGES.map((s) => ({ value: s, label: s }))}
                   />

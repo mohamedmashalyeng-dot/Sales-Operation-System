@@ -3,6 +3,7 @@ import Button from "@/components/base/Button";
 import { Table, TableWrap, TBody, Td, Th, THead, Tr } from "@/components/base/Table";
 import type { CollegeEvent } from "@/store/types";
 import { formatDateTime } from "@/utils/format";
+import { eventPhase, recordedAttendance } from "@/utils/eventAttendance";
 
 const SOURCE_TONES = {
   Eventbrite: "accent",
@@ -37,22 +38,25 @@ export default function EventTable({
           <Th className="text-center">Confirmed</Th>
           <Th className="text-center">Declined</Th>
           <Th className="text-center">Pending</Th>
+          <Th className="text-center">Attendance</Th>
           <Th className="text-right">Actions</Th>
         </THead>
         <TBody>
           {events.length === 0 ? (
             <Tr>
-              <td colSpan={9} className="px-4 py-8 text-center text-[13px] text-foreground-400">
+              <td colSpan={10} className="px-4 py-8 text-center text-[13px] text-foreground-400">
                 {emptyMessage}
               </td>
             </Tr>
           ) : (
             events.map((event) => {
-            const confirmed = event.registrations.filter((r) =>
+            const confirmed = event.registrationMetrics ? event.registrationMetrics.confirmed + event.registrationMetrics.attended : event.registrations.filter((r) =>
               ["confirmed", "attended"].includes(r.outcome),
             ).length;
-            const declined = event.registrations.filter((r) => r.outcome === "declined").length;
-            const pending = event.registrations.filter((r) => r.outcome === "pending").length;
+            const declined = event.registrationMetrics?.declined ?? event.registrations.filter((r) => r.outcome === "declined").length;
+            const pending = event.registrationMetrics?.pending ?? event.registrations.filter((r) => r.outcome === "pending").length;
+            const phase = eventPhase(event);
+            const attended = event.registrationMetrics?.attended ?? event.registrations.filter(reg => recordedAttendance(reg) === "Attended").length;
             return (
               <Tr key={event.id}>
                 <Td>
@@ -72,14 +76,15 @@ export default function EventTable({
                   <Badge tone={SOURCE_TONES[event.source]}>{event.source}</Badge>
                 </Td>
                 <Td>
-                  <Badge tone={STATUS_TONES[event.status]} dot>
-                    {event.status}
+                  <Badge tone={STATUS_TONES[phase]} dot>
+                    {phase}
                   </Badge>
                 </Td>
-                <Td className="text-center font-semibold">{event.registrations.length}</Td>
+                <Td className="text-center font-semibold">{event.registrationMetrics?.booked ?? event.registrations.length}</Td>
                 <Td className="text-center font-semibold text-green-700">{confirmed}</Td>
                 <Td className="text-center font-semibold text-red-600">{declined}</Td>
                 <Td className="text-center font-semibold text-amber-600">{pending}</Td>
+                <Td className="text-center"><Badge tone={phase === "completed" ? "success" : "warning"}>{phase === "completed" ? `${attended} attended` : "Waiting"}</Badge></Td>
                 <Td>
                   <div className="flex justify-end">
                     <Button variant="subtle" size="sm" onClick={() => onOpen(event.id)}>

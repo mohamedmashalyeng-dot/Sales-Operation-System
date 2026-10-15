@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import Button from "@/components/base/Button";
 import Input from "@/components/base/Input";
-import kentLogoFull from "../../../../assets/images/kent-logo-full-dark.png";
+
+const kentLogoFull = "/assets/images/kent-logo-full-dark.png";
 
 export interface BackendSignInResult {
   ok: boolean;
@@ -10,15 +11,18 @@ export interface BackendSignInResult {
 
 interface BackendSignInScreenProps {
   loading?: boolean;
+  connectionError?: string;
+  onRetry?: () => void;
   onSignIn: (email: string, password: string) => Promise<BackendSignInResult>;
 }
 
-export default function BackendSignInScreen({ loading, onSignIn }: BackendSignInScreenProps) {
+export default function BackendSignInScreen({ loading, connectionError, onRetry, onSignIn }: BackendSignInScreenProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     if (!submitting) {
@@ -40,11 +44,14 @@ export default function BackendSignInScreen({ loading, onSignIn }: BackendSignIn
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (loading || submitting) return;
     setError("");
     setSubmitting(true);
     try {
-      const result = await onSignIn(email.trim(), password);
+      const result = await onSignIn(email.trim().toLowerCase(), password);
       if (!result.ok) setError(result.error || "Sign in failed.");
+    } catch {
+      setError("Unable to sign in. Check your connection and try again.");
     } finally {
       setSubmitting(false);
     }
@@ -64,40 +71,48 @@ export default function BackendSignInScreen({ loading, onSignIn }: BackendSignIn
               Sign in
             </h1>
             <p className="mt-1 text-[13px] leading-5 text-foreground-500">
-              Use the backend account to load live workspace records.
+              Use your work email and password. Your account opens with its assigned role and permissions.
             </p>
           </div>
         </div>
 
-        <form className="space-y-3.5" onSubmit={submit}>
+        <div className="mb-4 rounded-md bg-primary-50 p-3 text-xs text-foreground-600">
+          <p className="font-semibold text-primary-800">Manager · Staff Sales · Staff Enrollment</p>
+          <p className="mt-1">Managers can view the team. Staff can view their assigned records.</p>
+        </div>
+        {connectionError ? <div role="alert" className="mb-4 space-y-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700"><p>{connectionError}</p>{onRetry && <Button size="sm" variant="outline" disabled={loading || submitting} loading={loading} onClick={onRetry}>Retry connection</Button>}</div> : null}
+        <form className="space-y-3.5" onSubmit={submit} aria-busy={submitting || loading}>
           <Input
             label="Email"
             name="email"
             type="email"
             autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
             leftIcon="ri-mail-line"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             required
           />
-          <Input
+          <div className="relative"><Input
             label="Password"
             name="password"
-            type="password"
+            type={showPassword ? "text" : "password"}
             autoComplete="current-password"
             leftIcon="ri-lock-password-line"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             required
-          />
+          /><button type="button" className="mt-1 text-xs font-semibold text-primary-700" aria-label={showPassword ? 'Hide password' : 'Show password'} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)}>{showPassword ? 'Hide password' : 'Show password'}</button></div>
           {error ? (
-            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
+            <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] font-semibold text-red-700">
               {error}
             </p>
           ) : null}
           <Button
             type="submit"
             fullWidth
+            loading={submitting || loading}
             disabled={submitting || loading}
             leftIcon={<i className="ri-login-circle-line"></i>}
           >

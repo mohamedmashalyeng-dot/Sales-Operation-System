@@ -45,12 +45,12 @@ export default function MeetingTable({ meetings, onOpen, hostName, eventName }: 
                     )}
                   </button>
                 </Td>
-                <Td>{hostName(meeting.hostId)}</Td>
+                <Td>{meeting.hostName || (meeting.hostId ? hostName(meeting.hostId) : 'Not recorded')}</Td>
                 <Td>
                   <span className="text-[12px] text-foreground-500">{meeting.account}</span>
                 </Td>
-                <Td>{formatDateTime(meeting.startAt)}</Td>
-                <Td>{meeting.durationMins} min</Td>
+                <Td>{meeting.startAt ? formatDateTime(meeting.startAt) : 'Not recorded'}</Td>
+                <Td>{meeting.durationMins ? `${meeting.durationMins} min` : 'Not recorded'}</Td>
                 <Td>
                   <Badge tone={meeting.status === "scheduled" ? "primary" : "neutral"} dot>
                     {meeting.status}

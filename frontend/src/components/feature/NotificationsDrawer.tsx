@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Button from "@/components/base/Button";
 import Drawer from "@/components/base/Drawer";
 import Tabs from "@/components/base/Tabs";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import type { ActivityTone } from "@/store/types";
+import type { ActivityTone, Notification } from "@/store/types";
+import { loadBackendNotifications } from "@/store/backendSync";
 import { cn, relativeTime } from "@/utils/format";
+import LoadingState from "@/components/base/LoadingState";
 
 const TONE_STYLES: Record<ActivityTone, { icon: string; wrap: string }> = {
   danger: { icon: "ri-error-warning-line", wrap: "bg-red-100 text-red-600" },
@@ -36,12 +38,25 @@ export default function NotificationsDrawer({ open, onClose }: NotificationsDraw
   const { seesAll } = usePermissions();
   const navigate = useNavigate();
   const [tab, setTab] = useState("all");
+  const [backend, setBackend] = useState<Notification[] | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    let cancelled = false;
+    void loadBackendNotifications().then(items => { if (!cancelled) { setBackend(items); setError(""); } })
+      .catch(() => { if (!cancelled) setError("Notifications could not be refreshed."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open]);
+  const notifications = backend || state.notifications;
 
   // Notifications mentioning team-wide integration/system events are shown to
   // manager and admin roles; operational roles see the operational ones.
   const visible = seesAll
-    ? state.notifications
-    : state.notifications.filter((n) => n.module !== "Integrations");
+    ? notifications
+    : notifications.filter((n) => n.module !== "Integrations");
 
   const unread = visible.filter((n) => !n.read);
   const list = tab === "unread" ? unread : visible;
@@ -74,6 +89,8 @@ export default function NotificationsDrawer({ open, onClose }: NotificationsDraw
         ]}
       />
       <div className="space-y-2">
+        {loading && <LoadingState inline className="mb-3 text-xs text-foreground-500">Loading notifications…</LoadingState>}
+        {error ? <p role="alert" className="text-sm text-amber-700">{error}</p> : null}
         {list.map((item) => {
           const tone = TONE_STYLES[item.tone];
           return (
@@ -81,7 +98,8 @@ export default function NotificationsDrawer({ open, onClose }: NotificationsDraw
               key={item.id}
               type="button"
               onClick={() => {
-                navigate(MODULE_ROUTE[item.module] ?? "/");
+                if (item.route) void fetch(`/api/notifications/${encodeURIComponent(item.id)}/read`, { method: "PATCH", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ read: true }) });
+                navigate(item.route && !item.route.startsWith('//') && !item.route.includes('://') ? `/${item.route.replace(/^\//, '')}` : MODULE_ROUTE[item.module] ?? "/");
                 onClose();
               }}
               className="flex w-full cursor-pointer items-start gap-3 rounded-lg border border-background-200 bg-background-50 p-3 text-left transition-colors hover:border-primary-200 hover:bg-primary-50/40"

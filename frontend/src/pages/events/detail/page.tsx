@@ -1,4 +1,5 @@
-import { useState } from "react";
+import LoadingState from "@/components/base/LoadingState";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Badge from "@/components/base/Badge";
 import Button from "@/components/base/Button";
@@ -17,6 +18,7 @@ import type { EventRegistration } from "@/store/types";
 import { buildEventAudience, summariseAudience } from "@/utils/events";
 import { formatDateTime } from "@/utils/format";
 import { fromInputDateTime } from "@/utils/crm";
+import { eventPhase } from "@/utils/eventAttendance";
 
 const SOURCE_TONES = { Eventbrite: "accent", Zoom: "primary", Manual: "secondary" } as const;
 
@@ -24,7 +26,7 @@ export default function EventDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { state, setRegistrationOutcome, setRegistrationAttendance, scheduleCallback, createTask } =
+  const { state, backendLoadedAt, loadEventDetail, setRegistrationOutcome, setRegistrationAttendance, scheduleCallback, createTask } =
     useWorkspace();
   const { can } = usePermissions();
 
@@ -34,6 +36,19 @@ export default function EventDetailPage() {
   const [audienceFilter, setAudienceFilter] = useState<EventAudienceFilter>("all");
   const [callbackTarget, setCallbackTarget] = useState<EventRegistration | null>(null);
   const [callbackAt, setCallbackAt] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [revision, setRevision] = useState(0);
+  const canView = can("events.view");
+  useEffect(() => {
+    if (!id || !canView || !backendLoadedAt) return;
+    const controller = new AbortController();
+    setLoading(true); setLoadError("");
+    void loadEventDetail(id, controller.signal).catch(cause => {
+      if (!controller.signal.aborted) setLoadError(cause instanceof Error ? cause.message : "Event could not be loaded.");
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [id, canView, backendLoadedAt, loadEventDetail, revision]);
 
   if (!can("events.view")) {
     return (
@@ -54,18 +69,23 @@ export default function EventDetailPage() {
     );
   }
 
-  if (!event) {
+  if (loading) return <LoadingState className="p-6">Loading event details...</LoadingState>;
+
+  if (loadError || !event) {
     return (
       <div className="mx-auto w-full max-w-[900px] px-4 py-10 md:px-6">
         <Card>
           <EmptyState
             icon="ri-calendar-close-line"
-            title="Event not found"
-            message="This event does not exist in the demonstration dataset."
+            title="Event not available"
+            message={loadError || "This event could not be found."}
             action={
+              <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setRevision(value => value + 1)}>Retry event</Button>
               <Button variant="outline" onClick={() => navigate("/events")}>
                 Back to events
               </Button>
+              </div>
             }
           />
         </Card>
@@ -79,8 +99,9 @@ export default function EventDetailPage() {
 
   // Invitation, registration and attendance are kept as separate facts so the
   // audience never over- or under-states who actually engaged.
-  const audience = buildEventAudience(event, state.campaigns, state.leads);
+  const audience = buildEventAudience(event, [], state.leads);
   const summary = summariseAudience(audience);
+  const waiting = eventPhase(event) !== "completed";
   const filteredAudience =
     audienceFilter === "all"
       ? audience
@@ -91,6 +112,7 @@ export default function EventDetailPage() {
           if (audienceFilter === "did-not-attend") return row.attendance === "Did Not Attend";
           if (audienceFilter === "attendance-unknown")
             return row.registrationStatus === "Registered" && row.attendance === "Attendance Unknown";
+          if (audienceFilter === "waiting") return row.attendance === "Waiting";
           if (audienceFilter === "invited-only")
             return row.invitationStatus !== "Not invited" && row.registrationStatus === "Not Registered";
           if (audienceFilter === "follow-up-required")
@@ -177,11 +199,11 @@ export default function EventDetailPage() {
         <MetricCard label="Invited" value={summary.invited} icon="ri-mail-send-line" tone="secondary" />
         <MetricCard label="Registered" value={summary.registered} icon="ri-user-add-line" tone="primary" />
         <MetricCard label="Cancelled" value={summary.cancelled} icon="ri-user-unfollow-line" tone="danger" />
-        <MetricCard label="Attended" value={summary.attended} icon="ri-user-star-line" tone="success" />
+        <MetricCard label="Attended" value={waiting ? "Waiting" : summary.attended} icon="ri-user-star-line" tone="success" />
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="Did not attend" value={summary.didNotAttend} icon="ri-user-minus-line" tone="accent" />
-        <MetricCard label="Attendance unknown" value={summary.attendanceUnknown} icon="ri-question-line" tone="secondary" />
+        <MetricCard label="Did not attend" value={waiting ? "Waiting" : summary.didNotAttend} icon="ri-user-minus-line" tone="accent" />
+        <MetricCard label={waiting ? "Waiting for event to finish" : "Attendance unknown"} value={waiting ? summary.waiting : summary.attendanceUnknown} icon="ri-question-line" tone="secondary" />
         <MetricCard label="Not registered" value={summary.notRegistered} icon="ri-user-search-line" tone="secondary" />
         <MetricCard label="Registration rate" value={pct(summary.registered, summary.invited || summary.registered + summary.cancelled)} icon="ri-percent-line" tone="accent" />
       </div>

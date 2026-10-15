@@ -1,9 +1,8 @@
+import LoadingState from "@/components/base/LoadingState";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import Button from "@/components/base/Button";
+import { Link, useSearchParams } from "react-router-dom";
 import { Card, CardBody, CardHeader } from "@/components/base/Card";
 import MetricCard from "@/components/base/MetricCard";
-import Modal from "@/components/base/Modal";
 import PaginationFooter from "@/components/base/PaginationFooter";
 import SearchInput from "@/components/base/SearchInput";
 import Select from "@/components/base/Select";
@@ -11,9 +10,9 @@ import Tabs, { type TabItem } from "@/components/base/Tabs";
 import { useToast } from "@/components/base/Toast";
 import { usePermissions } from "@/hooks/usePermissions";
 import TaskCalendar from "@/pages/planner/components/TaskCalendar";
-import TaskFormModal from "@/pages/planner/components/TaskFormModal";
 import TaskList from "@/pages/planner/components/TaskList";
-import { useWorkspace, type TaskInput } from "@/store/WorkspaceProvider";
+import { useWorkspace } from "@/store/WorkspaceProvider";
+import { openCallReview } from "@/store/callJourney";
 import type { Task } from "@/store/types";
 import { relativeTime } from "@/utils/format";
 import { ownerOptions, taskPriorityOptions, taskSourceOptions } from "@/utils/filterOptions";
@@ -41,7 +40,19 @@ function isToday(iso: string): boolean {
 
 export default function PlannerPage() {
   const { toast } = useToast();
-  const { state, createTask, updateTask, deleteTask, userName } = useWorkspace();
+  const { state, userName, refreshPlannerTasks, backendLoadedAt } = useWorkspace();
+  const [tasksReady, setTasksReady] = useState(false);
+  const [taskError, setTaskError] = useState('');
+  useEffect(() => {
+    if (!backendLoadedAt) return;
+    let active = true;
+    const refresh = () => { setTaskError(''); void refreshPlannerTasks().then(() => { if (active) setTasksReady(true); }).catch(error => {
+      if (active) setTaskError(error instanceof Error ? error.message : 'Please try again.');
+      toast({ title: "Planner refresh failed", message: error instanceof Error ? error.message : "Please try again.", tone: "error" });
+    }); };
+    refresh(); window.addEventListener('kbc:call-workflow-updated', refresh);
+    return () => { active = false; window.removeEventListener('kbc:call-workflow-updated', refresh); };
+  }, [backendLoadedAt, refreshPlannerTasks]);
   const { canSeeOwner } = usePermissions();
   const [searchParams] = useSearchParams();
 
@@ -50,9 +61,6 @@ export default function PlannerPage() {
   const [owner, setOwner] = useState("all");
   const [priority, setPriority] = useState("all");
   const [source, setSource] = useState("all");
-  const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<Task | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   const [listPage, setListPage] = useState(1);
   const [overduePage, setOverduePage] = useState(1);
   const [todayPage, setTodayPage] = useState(1);
@@ -61,8 +69,8 @@ export default function PlannerPage() {
   const [activityPage, setActivityPage] = useState(1);
 
   const visibleTasks = useMemo(
-    () => state.tasks.filter((t) => canSeeOwner(t.ownerId)),
-    [state.tasks, canSeeOwner],
+    () => tasksReady ? state.tasks.filter((t) => t.callVerified && t.relatedCallId && t.sourceEventId && canSeeOwner(t.ownerId)) : [],
+    [state.tasks, canSeeOwner, tasksReady],
   );
   const owners = useMemo(() => ownerOptions(state), [state]);
   const priorities = useMemo(() => taskPriorityOptions({ ...state, tasks: visibleTasks }), [state, visibleTasks]);
@@ -114,26 +122,12 @@ export default function PlannerPage() {
   const completedPageCount = Math.max(1, Math.ceil(filteredCompleted.length / PER_PAGE));
   const completedCurrentPage = Math.min(completedPage, completedPageCount);
   const pagedCompleted = filteredCompleted.slice((completedCurrentPage - 1) * PER_PAGE, completedCurrentPage * PER_PAGE);
-  const activityPageCount = Math.max(1, Math.ceil(state.activity.length / PER_PAGE));
+  const taskIds = new Set(visibleTasks.map(task => task.id));
+  const callActivity = state.activity.filter(entry => entry.entityType === 'task' && taskIds.has(entry.entityId));
+  const activityPageCount = Math.max(1, Math.ceil(callActivity.length / PER_PAGE));
   const activityCurrentPage = Math.min(activityPage, activityPageCount);
-  const pagedActivity = state.activity.slice((activityCurrentPage - 1) * PER_PAGE, activityCurrentPage * PER_PAGE);
-
-  const handleSubmit = (input: TaskInput) => {
-    if (editing) {
-      updateTask(editing.id, input);
-      toast({ title: "Task updated", tone: "success" });
-    } else {
-      createTask(input);
-      toast({ title: "Task created", message: "Now visible on the Today dashboard.", tone: "success" });
-    }
-    setFormOpen(false);
-    setEditing(null);
-  };
-
-  const openForm = (task?: Task | null) => {
-    setEditing(task ?? null);
-    setFormOpen(true);
-  };
+  const pagedActivity = callActivity.slice((activityCurrentPage - 1) * PER_PAGE, activityCurrentPage * PER_PAGE);
+  const openTaskReview = (task: Task) => { if (task.sourceEventId) openCallReview(task.sourceEventId); };
 
   const tabItems: TabItem[] = VIEWS.map((v) => ({
     value: v.value,
@@ -215,14 +209,16 @@ export default function PlannerPage() {
           <p className="text-[11px] font-bold uppercase tracking-wider text-primary-600">Productivity</p>
           <h1 className="mt-1 font-heading text-2xl font-extrabold text-foreground-950">Planner</h1>
           <p className="mt-1 text-[13px] text-foreground-500">
-            Tasks from Zoho CRM, Inbox, Events, Zoom and manual entries
+            Follow-up tasks approved from your Zoom call results
           </p>
         </div>
-        <Button leftIcon={<i className="ri-add-line"></i>} onClick={() => openForm(null)}>
-          New task
-        </Button>
+        <Link className="inline-flex items-center gap-2 rounded-md bg-primary-600 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-700" to="/zoom/calls"><i className="ri-phone-line" />Review Zoom calls</Link>
       </div>
 
+      <div className="rounded-md border border-primary-200 bg-primary-50 p-3 text-sm text-primary-800">
+        {taskError ? <span role="alert">Unable to load call tasks: {taskError} <button className="font-semibold underline" onClick={() => window.dispatchEvent(new Event('kbc:call-workflow-updated'))}>Retry</button></span>
+          : tasksReady ? "Tasks appear here after a call result is reviewed and approved. Open a task's call or review to see its context." : <LoadingState inline>Loading approved Zoom call tasks...</LoadingState>}
+      </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <MetricCard label="Open tasks" value={openTasks.length} icon="ri-checkbox-multiple-line" tone="primary" />
         <MetricCard label="Overdue" value={overdue.length} icon="ri-alarm-warning-line" tone="danger" />
@@ -238,15 +234,15 @@ export default function PlannerPage() {
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
           <Card>
             <CardHeader icon="ri-alarm-warning-line" iconTone="accent" title="Overdue" subtitle={`${overdue.length} tasks need attention`} />
-            <TaskList tasks={overdue} onEdit={openForm} onDelete={setDeleteTarget} emptyMessage="Nothing overdue — great work." />
+            <TaskList tasks={overdue} emptyMessage="Nothing overdue — great work." />
           </Card>
           <Card>
             <CardHeader icon="ri-sun-line" title="Due today" subtitle={`${dueToday.length} tasks today`} />
-            <TaskList tasks={dueToday} onEdit={openForm} onDelete={setDeleteTarget} emptyMessage="No tasks due today." />
+            <TaskList tasks={dueToday} emptyMessage="No tasks due today." />
           </Card>
           <Card className="xl:col-span-2">
             <CardHeader icon="ri-calendar-schedule-line" iconTone="secondary" title="Upcoming" subtitle={`${upcoming.length} scheduled ahead`} />
-            <TaskList tasks={upcoming.slice(0, 6)} onEdit={openForm} onDelete={setDeleteTarget} emptyMessage="No upcoming tasks." />
+            <TaskList tasks={upcoming.slice(0, 6)} emptyMessage="No upcoming tasks." />
           </Card>
         </div>
       ) : null}
@@ -262,7 +258,7 @@ export default function PlannerPage() {
             itemLabel="tasks"
             onPageChange={setListPage}
           />
-          <TaskList tasks={pagedListTasks} onEdit={openForm} onDelete={setDeleteTarget} />
+          <TaskList tasks={pagedListTasks} />
           <PaginationFooter
             currentPage={listCurrentPage}
             pageCount={listPageCount}
@@ -275,7 +271,7 @@ export default function PlannerPage() {
 
       {view === "calendar" ? (
         <Card>
-          <TaskCalendar tasks={visibleTasks} onEdit={openForm} />
+          <TaskCalendar tasks={visibleTasks} onEdit={openTaskReview} />
         </Card>
       ) : null}
 
@@ -290,7 +286,7 @@ export default function PlannerPage() {
             itemLabel="tasks"
             onPageChange={setOverduePage}
           />
-          <TaskList tasks={pagedOverdue} onEdit={openForm} onDelete={setDeleteTarget} emptyMessage="Nothing overdue." />
+          <TaskList tasks={pagedOverdue} emptyMessage="Nothing overdue." />
           <PaginationFooter
             currentPage={overdueCurrentPage}
             pageCount={overduePageCount}
@@ -312,7 +308,7 @@ export default function PlannerPage() {
             itemLabel="tasks"
             onPageChange={setTodayPage}
           />
-          <TaskList tasks={pagedToday} onEdit={openForm} onDelete={setDeleteTarget} emptyMessage="No tasks due today." />
+          <TaskList tasks={pagedToday} emptyMessage="No tasks due today." />
           <PaginationFooter
             currentPage={todayCurrentPage}
             pageCount={todayPageCount}
@@ -334,7 +330,7 @@ export default function PlannerPage() {
             itemLabel="tasks"
             onPageChange={setUpcomingPage}
           />
-          <TaskList tasks={pagedUpcoming} onEdit={openForm} onDelete={setDeleteTarget} />
+          <TaskList tasks={pagedUpcoming} />
           <PaginationFooter
             currentPage={upcomingCurrentPage}
             pageCount={upcomingPageCount}
@@ -356,7 +352,7 @@ export default function PlannerPage() {
             itemLabel="tasks"
             onPageChange={setCompletedPage}
           />
-          <TaskList tasks={pagedCompleted} onEdit={openForm} onDelete={setDeleteTarget} />
+          <TaskList tasks={pagedCompleted} />
           <PaginationFooter
             currentPage={completedCurrentPage}
             pageCount={completedPageCount}
@@ -369,12 +365,12 @@ export default function PlannerPage() {
 
       {view === "activity" ? (
         <Card>
-          <CardHeader icon="ri-history-line" iconTone="secondary" title="Activity history" subtitle="Workspace task activity" />
+          <CardHeader icon="ri-history-line" iconTone="secondary" title="Activity history" subtitle="Zoom call task activity" />
           <PaginationFooter
             position="top"
             currentPage={activityCurrentPage}
             pageCount={activityPageCount}
-            total={state.activity.length}
+            total={callActivity.length}
             itemLabel="activity entries"
             onPageChange={setActivityPage}
           />
@@ -400,52 +396,13 @@ export default function PlannerPage() {
           <PaginationFooter
             currentPage={activityCurrentPage}
             pageCount={activityPageCount}
-            total={state.activity.length}
+            total={callActivity.length}
             itemLabel="activity entries"
             onPageChange={setActivityPage}
           />
         </Card>
       ) : null}
 
-      <TaskFormModal
-        open={formOpen}
-        task={editing}
-        onClose={() => {
-          setFormOpen(false);
-          setEditing(null);
-        }}
-        onSubmit={handleSubmit}
-      />
-
-      <Modal
-        open={Boolean(deleteTarget)}
-        onClose={() => setDeleteTarget(null)}
-        size="sm"
-        title="Delete this task?"
-        description="This removes the task from the demonstration dataset."
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              leftIcon={<i className="ri-delete-bin-line"></i>}
-              onClick={() => {
-                if (deleteTarget) {
-                  deleteTask(deleteTarget.id);
-                  toast({ title: "Task deleted", tone: "info" });
-                }
-                setDeleteTarget(null);
-              }}
-            >
-              Delete task
-            </Button>
-          </>
-        }
-      >
-        <p className="text-[13px] text-foreground-600">{deleteTarget?.title}</p>
-      </Modal>
     </div>
   );
 }

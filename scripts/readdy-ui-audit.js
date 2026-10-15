@@ -8,6 +8,7 @@ const root = path.join(__dirname, '..');
 const frontend = path.join(root, 'frontend');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const uiPkg = JSON.parse(fs.readFileSync(path.join(frontend, 'package.json'), 'utf8'));
+const rootIndexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(frontend, 'index.html'), 'utf8');
 const main = fs.readFileSync(path.join(frontend, 'src', 'main.tsx'), 'utf8');
 const provider = fs.readFileSync(path.join(frontend, 'src', 'store', 'WorkspaceProvider.tsx'), 'utf8');
@@ -45,6 +46,13 @@ for (const forbidden of ['firebase', '@supabase/supabase-js', '@stripe/react-str
 assert(uiPkg.dependencies?.remixicon, 'Remix Icon should be served from a frontend dependency, not a CDN');
 assert(!/cdnjs\.cloudflare\.com/i.test(indexHtml), 'Readdy index.html should not depend on CDN stylesheets');
 assert(main.includes("remixicon/fonts/remixicon.css"), 'Readdy main.tsx should import local Remix Icon CSS');
+
+for (const [, url] of rootIndexHtml.matchAll(/\b(?:src|href)="([^"]+)"/g)) {
+  if (/^(?:https?:)?\/\//.test(url)) continue;
+  const cleanUrl = decodeURIComponent(url.split('?')[0].replace(/^\/+/, ''));
+  if (!cleanUrl || cleanUrl === '#') continue;
+  assert(fs.existsSync(path.join(root, cleanUrl)), `Root index references missing file: ${url}`);
+}
 
 assert(!staticFiles.includes('KBC_UI_MODE'), 'Static server should not keep a legacy UI opt-out');
 assert(staticFiles.includes('Readdy frontend build is missing'), 'Static server should fail clearly when the Readdy build is missing');

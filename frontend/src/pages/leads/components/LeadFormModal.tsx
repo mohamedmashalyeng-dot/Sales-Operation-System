@@ -109,7 +109,7 @@ export default function LeadFormModal({ open, onClose, lead, onSubmit }: LeadFor
       priority: form.priority,
       value: Number(form.value) || 0,
       nextAction: form.nextAction.trim() || "First contact",
-      nextActionAt: fromInputDateTime(form.nextActionAt) || new Date().toISOString(),
+      nextActionAt: fromInputDateTime(form.nextActionAt),
       tags: form.tags
         .split(",")
         .map((t) => t.trim())
@@ -193,7 +193,8 @@ export default function LeadFormModal({ open, onClose, lead, onSubmit }: LeadFor
           placeholder="Assign owner"
         />
         <Select
-          label="Stage"
+          label={lead ? "Stage (change in Journey with a reason)" : "Stage"}
+          disabled={Boolean(lead)}
           value={form.stage}
           onChange={(v) => set({ stage: v as LeadStage })}
           options={LEAD_STAGES.map((s) => ({ value: s, label: s }))}

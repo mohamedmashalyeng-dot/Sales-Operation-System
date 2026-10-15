@@ -51,7 +51,7 @@ const MATRIX: { group: string; rows: { label: string; cap: Capability }[] }[] = 
 ];
 
 export default function SettingsUsers() {
-  const { state, role } = useWorkspace();
+  const { state, currentUserId } = useWorkspace();
 
   return (
     <div className="space-y-5">
@@ -60,12 +60,14 @@ export default function SettingsUsers() {
           icon="ri-group-line"
           iconTone="secondary"
           title="Workspace users"
-          subtitle="Frontend role profiles used by this browser session"
+          subtitle="Accounts and their assigned workspace roles"
         />
         <CardBody className="space-y-2.5">
           {state.users.map((user) => {
-            const mappedRole = ROLE_LIST.find((r) => r.userId === user.id);
-            const isActive = mappedRole?.id === role.id;
+            const stored = user.role.toLowerCase();
+            const roleKey = /enrol/.test(stored) ? "enrolment" : /manager|monitor/.test(stored) ? "manager" : /admin|developer/.test(stored) ? "admin" : "sales";
+            const mappedRole = ROLE_LIST.find((r) => r.id === roleKey);
+            const isActive = user.id === currentUserId;
             return (
               <div
                 key={user.id}
@@ -100,7 +102,7 @@ export default function SettingsUsers() {
           icon="ri-shield-check-line"
           iconTone="accent"
           title="Role permission overview"
-          subtitle="Frontend-only capabilities by role"
+          subtitle="Account capabilities; the API also enforces record ownership"
         />
         <div className="kbc-scroll overflow-x-auto">
           <table className="w-full min-w-[720px] border-collapse text-left text-sm">
