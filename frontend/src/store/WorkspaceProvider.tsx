@@ -29,7 +29,7 @@ import {
   type BackendWorkspaceSection,
 } from "@/store/backendSync";
 import { bumpDatasetGeneration } from "@/store/datasetIdentity";
-import { callWorkflowUpdated } from "@/store/callJourney";
+import { callWorkflowUpdated, clearCallReviewsCache } from "@/store/callJourney";
 import { sourceByName, categoryForInteractionType } from "@/config/attribution";
 import type { AudienceRow, CampaignStage } from "@/config/marketing";
 import {
@@ -622,31 +622,23 @@ function hasActiveIntegrationSync(overview: BackendIntegrationOverview | null): 
   );
 }
 
-const ALL_BACKEND_SECTIONS: BackendWorkspaceSection[] = [
-  "tasks",
-  "applications",
-  "events",
-  "meetings",
-  "calls",
-  "emails",
-  "activity",
-];
-
 function startupSectionsForPath(pathname: string): BackendWorkspaceSection[] {
   const path = pathname.replace(/\/+$/, "") || "/";
   if (path === "/inbox") return [];
   if (path.startsWith("/inbox/")) return ["leads"];
   if (path === "/" || path === "/today") return [];
   if (path === "/login") return [];
-  if (path.startsWith("/leads")) return ["leads"];
+  if (path.startsWith("/leads")) return [];
   if (path.startsWith("/employers") || path.startsWith("/commercial")) return [];
-  if (path.startsWith("/planner")) return ["tasks", "leads"];
+  if (path.startsWith("/planner")) return [];
   if (path.startsWith("/applications")) return ["applications", "leads", "tasks"];
   if (path.startsWith("/events")) return ["events", "leads"];
-  if (path.startsWith("/zoom")) return ["meetings", "calls", "tasks", "events", "leads"];
+  if (path.startsWith("/zoom")) return [];
   if (path.startsWith("/zoho")) return ["leads", "tasks"];
   if (path.startsWith("/audit") || path.startsWith("/settings")) return [];
-  return ALL_BACKEND_SECTIONS;
+  if (path.startsWith("/admin")) return ["leads", "tasks", "applications", "emails"];
+  if (path.startsWith("/apprenticeship-reports")) return ["leads", "applications"];
+  return [];
 }
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
@@ -716,6 +708,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const expire = () => {
+      clearCallReviewsCache();
       clearBackendIntegrationOverviewCache();
       removeWorkspaceStorage();
       setState(createEmptyWorkspaceState());
@@ -736,6 +729,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const response = await fetch("/api/logout", { method: "POST", credentials: "include", signal: AbortSignal.timeout(15000) });
     if (!response.ok && response.status !== 401) throw new Error("Unable to sign out. Please try again.");
     removeWorkspaceStorage();
+    clearCallReviewsCache();
     clearBackendIntegrationOverviewCache();
     try { localStorage.setItem("kbc-auth-revision", crypto.randomUUID()); } catch { /* Storage may be disabled. */ }
     setState(createEmptyWorkspaceState());
@@ -888,6 +882,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         const session = await sessionResponse.json().catch(() => null) as { user?: { id?: string } } | null;
         if (session?.user?.id !== login.user.id) return { ok: false, error: "The sign-in session could not be verified. Please sign in again." };
         clearBackendIntegrationOverviewCache();
+        clearCallReviewsCache();
         removeWorkspaceStorage();
         try { localStorage.setItem("kbc-auth-revision", crypto.randomUUID()); } catch { /* Storage may be disabled. */ }
         setState(createEmptyWorkspaceState());

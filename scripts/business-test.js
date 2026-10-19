@@ -38,7 +38,10 @@ function harness(postgres = false) {
       if (sql.startsWith('select 1')) return { rows: db.leads.filter(lead => lead.id === args[0] && lead.owner_id === args[1]).map(() => ({ exists: 1 })) };
       if (sql.includes('from app_applications')) return { rows: db.applications.filter(app => args[0].includes(app.lead_id)).map(data => ({ data })) };
       if (sql.includes('where id = any')) return { rows: db.leads.filter(lead => args[0].includes(lead.id)).map(lead => ({ data: { id: lead.id, first_name: lead.first_name } })) };
-      if (sql.includes('from app_leads')) return { rows: db.leads.filter(lead => (!args[0] || lead.owner_id === args[0]) && (!args[2] || lead.employer.toLowerCase()===args[2])).map(data => ({ data: structuredClone(data) })) };
+      if (sql.includes('from app_leads')) {
+        const employer = typeof args[1] === 'string' ? args[1] : args[2];
+        return { rows: db.leads.filter(lead => (!args[0] || lead.owner_id === args[0]) && (!employer || lead.employer.toLowerCase()===employer)).map(data => ({ data: structuredClone(data) })) };
+      }
       throw new Error(`Unexpected pool query: ${sql}`);
     },
     connect: async () => {

@@ -101,6 +101,11 @@ function query(f) {
   ), daily as (
     select kind,to_char(at at time zone $14,'YYYY-MM-DD') as date,count(*)::int as count from facts
     where at>=least($9::timestamptz,$13::timestamptz) and (at<=$6::timestamptz or kind='followups' and at<$8::timestamptz) group by kind,date
+  ), option_groups as materialized (
+    select programme,intake,source,owner_id,min(owner) as owner,
+      grouping(programme) as programme_group,grouping(intake) as intake_group,
+      grouping(source) as source_group,grouping(owner_id) as owner_group
+    from base group by grouping sets ((programme),(intake),(source),(owner_id))
   ), priorities as (
     select id,name,programme,source,stage,priority,owner,created_at,next_action_at from scoped
     where lower(coalesce(stage,'')) not in ('won','enrolled','closed won','closed-won','lost','closed lost','not eligible')
@@ -112,10 +117,10 @@ function query(f) {
     coalesce((select jsonb_agg(d order by date,kind) from daily d),'[]'::jsonb) as daily,
     coalesce((select jsonb_agg(p) from priorities p),'[]'::jsonb) as priority,
     jsonb_build_object(
-      'programme',coalesce((select jsonb_agg(v order by v) from(select programme as v from base where programme<>'' union select programme from available_apps where programme<>'' order by v limit 500) d),'[]'::jsonb),
-      'intake',coalesce((select jsonb_agg(v order by v) from(select intake as v from base where intake<>'' union select intake from available_apps where intake<>'' order by v limit 500) d),'[]'::jsonb),
-      'source',coalesce((select jsonb_agg(v order by v) from(select distinct source as v from base where source<>'' order by v limit 500) d),'[]'::jsonb),
-      'owner',coalesce((select jsonb_agg(d order by label) from(select owner_id as value,min(owner) as label from base where owner_id is not null and owner_id<>'' group by owner_id order by label,owner_id limit 500) d),'[]'::jsonb)
+      'programme',coalesce((select jsonb_agg(v order by v) from(select programme as v from option_groups where programme_group=0 and programme<>'' union select programme from available_apps where programme<>'' order by v limit 500) d),'[]'::jsonb),
+      'intake',coalesce((select jsonb_agg(v order by v) from(select intake as v from option_groups where intake_group=0 and intake<>'' union select intake from available_apps where intake<>'' order by v limit 500) d),'[]'::jsonb),
+      'source',coalesce((select jsonb_agg(v order by v) from(select source as v from option_groups where source_group=0 and source<>'' order by v limit 500) d),'[]'::jsonb),
+      'owner',coalesce((select jsonb_agg(d order by label) from(select owner_id as value,owner as label from option_groups where owner_group=0 and owner_id is not null and owner_id<>'' order by label,owner_id limit 500) d),'[]'::jsonb)
     ) as options`;
   values.push([process.env.MAIL_FROM, process.env.GMAIL_SMTP_USER, process.env.INITIAL_ADMIN_EMAIL || 'alteam.kbc@gmail.com'].filter(Boolean).map(value => value.toLowerCase()));
   return { sql, values };

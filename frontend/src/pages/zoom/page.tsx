@@ -174,7 +174,7 @@ export default function ZoomPage() {
   }, [backendLoadedAt, callStatus, direction, matchFilter, resetBackendCallPages, search]);
 
   useEffect(() => {
-    if (!backendLoadedAt || view !== 'calls') return;
+    if (!backendLoadedAt || (view !== 'calls' && view !== 'numbers')) return;
     const pageToLoad = view === "calls" ? callsPage : 1;
     void loadCallPage(pageToLoad);
     return () => {
@@ -222,7 +222,8 @@ export default function ZoomPage() {
       string,
       { number: string; calls: number; incoming: number; outgoing: number; last: string; leadId?: string; matched: boolean }
     >();
-    state.calls.forEach((c) => {
+    const calls = backendLoadedAt ? backendCallPages[1] || [] : state.calls;
+    calls.forEach((c) => {
       const existing = map.get(c.phoneNumber);
       const entry =
         existing ??
@@ -246,7 +247,7 @@ export default function ZoomPage() {
       map.set(c.phoneNumber, entry);
     });
     return Array.from(map.values()).sort((a, b) => b.calls - a.calls);
-  }, [state.calls]);
+  }, [state.calls, backendLoadedAt, backendCallPages]);
 
   const zoomTasks = state.tasks.filter(
     (t) => t.status === "open" && canSeeOwner(t.ownerId) && t.callVerified && t.relatedCallId,
@@ -284,7 +285,7 @@ export default function ZoomPage() {
       const ok = await refreshBackendWorkspace();
       resetBackendCallPages();
       setCallsPage(1);
-      if (ok && view === "calls") await loadCallPage(1, true);
+      if (ok && (view === "calls" || view === "numbers")) await loadCallPage(1, true);
       toast({
         title: ok ? "Zoom data refreshed" : "Zoom data not refreshed",
         message: ok ? "Meetings and calls were reloaded from the backend." : "Sign in or check the backend connection.",
@@ -315,7 +316,7 @@ export default function ZoomPage() {
       await refreshBackendWorkspace();
       resetBackendCallPages();
       setCallsPage(1);
-      if (view === "calls") await loadCallPage(1, true);
+      if (view === "calls" || view === "numbers") await loadCallPage(1, true);
       toast({
         title: "Zoom calls synced",
         message: `${Number(payload.imported_calls || 0)} created, ${Number(payload.updated_calls || 0)} updated, ${Number(payload.scanned || 0)} scanned.`,
@@ -574,6 +575,8 @@ export default function ZoomPage() {
             onPageChange={setNumbersPage}
           />
           <CardBody className="space-y-2.5">
+            {backendCallLoading ? <LoadingState>Loading phone numbers...</LoadingState> : null}
+            {backendCallError ? <p role="alert">{backendCallError}</p> : null}
             {pagedNumbers.map((n) => (
               <div
                 key={n.number}

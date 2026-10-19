@@ -67,16 +67,34 @@ function directory(meta, leads) {
 async function leadRows(user, linkedIds = [], employer = null) {
   if (!State.postgresPool || !Storage.usesPostgresStorage()) return (await Storage.loadDb()).leads || [];
   const owner = Authorization.isTeam(user) ? null : user.id;
-  const result = await State.postgresPool.query(`select jsonb_build_object('id', id, 'owner_id', owner_id,
+  // The existing date index puts nulls first on a backwards scan. Select each
+  // date partition separately so the small preview can use that index without
+  // scanning every lead twice. Keep undated leads last, as in the full list.
+  const selection = employer === null ? `with preview as materialized (
+    (select id, created_at from app_leads
+      where ($1::text is null or owner_id = $1) and coalesce(data->>'deleted_at', '') = ''
+        and created_at is not null
+      order by created_at desc, id desc limit 50)
+    union all
+    (select id, created_at from app_leads
+      where ($1::text is null or owner_id = $1) and coalesce(data->>'deleted_at', '') = ''
+        and created_at is null
+      order by id desc limit 50)
+    order by created_at desc nulls last, id desc limit 50
+  ), candidates as (
+    select id from preview
+    union select id from app_leads where ($1::text is null or owner_id = $1)
+      and id = any($2::text[]) and coalesce(data->>'deleted_at', '') = ''
+  ) ` : '';
+  const scope = employer === null ? 'id in (select id from candidates)'
+    : "lower(regexp_replace(trim(coalesce(employer,'')), '[[:space:]]+', ' ', 'g')) = $2";
+  const result = await State.postgresPool.query(`${selection}select jsonb_build_object('id', id, 'owner_id', owner_id,
     'first_name', data->'first_name', 'last_name', data->'last_name', 'name', data->'name',
     'email', data->'email', 'employer', data->'employer', 'programme', data->'programme',
     'phone', data->'phone', 'stage', stage, 'created_at', created_at) as data
     from app_leads where ($1::text is null or owner_id = $1) and coalesce(data->>'deleted_at', '') = ''
-      and ($3::text is null or lower(regexp_replace(trim(coalesce(employer,'')), '[[:space:]]+', ' ', 'g')) = $3)
-      and ($3::text is not null or id = any($2::text[]) or id in (
-        select id from app_leads where ($1::text is null or owner_id = $1) and coalesce(data->>'deleted_at','')=''
-        order by created_at desc nulls last,id desc limit 50))
-    order by created_at desc nulls last,id desc limit 500`, [owner, linkedIds, employer]);
+      and ${scope}
+    order by created_at desc nulls last,id desc limit 500`, [owner, employer === null ? linkedIds : employer]);
   return result.rows.map(row => row.data);
 }
 

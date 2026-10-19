@@ -46,6 +46,7 @@ export default function Today() {
           <div className="flex gap-1" aria-label="Performance period">{[["week", "This Week"], ["month", "This Month"], ["year", "This Year"]].map(([key, label]) => <button key={key} aria-pressed={filters.range === key} onClick={() => setFilters({ ...filters, range: key })} className={`rounded-full px-3.5 py-2 font-medium transition-colors ${filters.range === key ? "bg-primary-600 text-white" : "text-foreground-600 hover:bg-primary-50"}`}>{label}</button>)}</div>
         </div>
       </div>
+      <TodayFilters filters={filters} onChange={setFilters} programmeOptions={options("programme", "All programmes")} intakeOptions={options("intake", "All intakes")} sourceOptions={options("source", "All sources")} ownerOptions={[{ value: "all", label: "All permitted owners" }, ...(data?.options.owner || [])]} />
       {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"><span>Unable to load Today: {error}</span><Button size="sm" variant="secondary" onClick={retry}>Retry</Button></div>}
       <SalesPerformance data={visible} range={filters.range} programme={filters.programme} loading={loading} onRefresh={retry} />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -56,7 +57,6 @@ export default function Today() {
           <p className={`mt-1.5 text-[11px] ${card.kind === "followups" && total("followups", "overdue") ? "text-red-600" : "text-foreground-500"}`} title={card.title}>{visible ? card.note : loading ? <LoadingState inline>Loading…</LoadingState> : "Unavailable"}</p>
         </Card>)}
       </div>
-      <TodayFilters filters={filters} onChange={setFilters} programmeOptions={options("programme", "All programmes")} intakeOptions={options("intake", "All intakes")} sourceOptions={options("source", "All sources")} ownerOptions={[{ value: "all", label: "All permitted owners" }, ...(data?.options.owner || [])]} />
       <div className="grid grid-cols-1 items-stretch gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <Card className="min-w-0">
           <CardHeader title="Leads & Applications Pipeline" subtitle="Monthly acquisition, applications and enrolments" icon="ri-bar-chart-grouped-line" action={<select aria-label="Pipeline period" className="max-w-[120px] rounded-md border border-background-200 bg-background-50 p-1.5 text-xs text-foreground-700" value={months} onChange={e => setMonths(Number(e.target.value))}><option value={3}>Last 3 Months</option><option value={6}>Last 6 Months</option><option value={12}>Last 12 Months</option></select>} />

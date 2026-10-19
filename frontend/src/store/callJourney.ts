@@ -55,7 +55,79 @@ export async function callJourneyApi<T>(path: string, body?: unknown, signal?: A
 export function openCallReview(eventId: string) {
   window.dispatchEvent(new CustomEvent("kbc:open-call-review", { detail: eventId }));
 }
+export type PendingCallReview = Pick<CallResultReview, "event_id" | "lead_id" | "lead_name" | "suggested_stage" | "call_id">;
+type CallReviewList = { items: PendingCallReview[] };
+interface CallReviewRequest {
+  promise: Promise<CallReviewList>;
+  controller: AbortController;
+  subscribers: number;
+  settled: boolean;
+  expiresAt: number;
+  abortTimer?: ReturnType<typeof setTimeout>;
+}
+const CALL_REVIEW_CACHE_MS = 45000;
+const callReviewRequests = new Map<string, CallReviewRequest>();
+
+export function clearCallReviewsCache(userId?: string): void {
+  for (const [key, entry] of callReviewRequests) {
+    if (userId !== undefined && key !== userId) continue;
+    callReviewRequests.delete(key);
+    clearTimeout(entry.abortTimer);
+    entry.controller.abort();
+  }
+}
+
+export function loadCallReviews(userId: string, options: { signal?: AbortSignal; force?: boolean } = {}): Promise<CallReviewList> {
+  const { signal } = options;
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  let entry = callReviewRequests.get(userId);
+  if (entry?.settled && (options.force || entry.expiresAt <= Date.now())) {
+    callReviewRequests.delete(userId);
+    entry = undefined;
+  }
+  if (!entry) {
+    const controller = new AbortController();
+    const request: CallReviewRequest = {
+      controller, subscribers: 0, settled: false, expiresAt: 0,
+      promise: Promise.resolve({ items: [] }),
+    };
+    request.promise = callJourneyApi<CallReviewList>("/api/call-reviews", undefined, controller.signal)
+      .then(data => {
+        if (!Array.isArray(data.items)) throw new Error("The call review list is incomplete. Please retry.");
+        request.expiresAt = Date.now() + CALL_REVIEW_CACHE_MS;
+        return data;
+      }).catch(error => {
+        if (callReviewRequests.get(userId) === request) callReviewRequests.delete(userId);
+        throw error;
+      }).finally(() => { request.settled = true; clearTimeout(request.abortTimer); });
+    callReviewRequests.set(userId, request);
+    entry = request;
+  }
+  const shared = entry;
+  clearTimeout(shared.abortTimer);
+  shared.subscribers++;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      if (finished) return false;
+      finished = true;
+      signal?.removeEventListener("abort", abort);
+      shared.subscribers--;
+      // Allow StrictMode's immediate replacement subscriber to reuse the request.
+      if (!shared.settled && shared.subscribers === 0) shared.abortTimer = setTimeout(() => {
+        if (shared.subscribers || shared.settled) return;
+        if (callReviewRequests.get(userId) === shared) callReviewRequests.delete(userId);
+        shared.controller.abort();
+      }, 0);
+      return true;
+    };
+    const abort = () => { if (release()) reject(signal?.reason); };
+    signal?.addEventListener("abort", abort, { once: true });
+    shared.promise.then(value => { if (release()) resolve(value); }, error => { if (release()) reject(error); });
+  });
+}
 export function callWorkflowUpdated(leadId: string) {
+  clearCallReviewsCache();
   window.dispatchEvent(new CustomEvent("kbc:call-workflow-updated", { detail: leadId }));
 }
 export const BUSINESS_STAGES = ["Application Submitted", "Eligibility", "Ready for Enrolment", "Offer Sent", "Signed", "Enrolled", "Not Eligible"];

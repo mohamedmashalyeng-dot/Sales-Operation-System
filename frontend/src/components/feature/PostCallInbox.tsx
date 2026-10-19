@@ -6,9 +6,9 @@ import Input from "@/components/base/Input";
 import Modal from "@/components/base/Modal";
 import Select from "@/components/base/Select";
 import { useWorkspace } from "@/store/WorkspaceProvider";
-import { BUSINESS_STAGES, callJourneyApi, callWorkflowUpdated, callOutcome, localDateTime, type CallResultReview } from "@/store/callJourney";
+import { BUSINESS_STAGES, callJourneyApi, callWorkflowUpdated, callOutcome, clearCallReviewsCache, loadCallReviews, localDateTime, type CallResultReview, type PendingCallReview } from "@/store/callJourney";
 
-type Pending = Pick<CallResultReview, "event_id" | "lead_id" | "lead_name" | "suggested_stage" | "call_id">;
+type Pending = PendingCallReview;
 export default function PostCallInbox() {
   const { backendLoadedAt, currentUserId } = useWorkspace();
   const location = useLocation(); const navigate = useNavigate();
@@ -17,12 +17,21 @@ export default function PostCallInbox() {
   const shown = useRef(new Set<string>());
   const known = useRef<Set<string> | null>(null);
   const arrived = useRef(new Set<string>());
+  const request = useRef<AbortController | null>(null);
+  const backendReady = Boolean(backendLoadedAt);
+  const selectedReview = new URLSearchParams(location.search).get("call_review");
+  const reviewsEnabled = backendReady && (/^\/(leads|zoom|planner)(\/|$)/.test(location.pathname) || Boolean(selectedReview));
   useEffect(() => { shown.current.clear(); known.current = null; arrived.current.clear(); setPending([]); setEventId(null); }, [currentUserId]);
+  useEffect(() => { setEventId(null); }, [location.pathname]);
   const active = () => document.visibilityState === "visible" && document.hasFocus();
-  const refresh = useCallback(async () => {
-    if (!backendLoadedAt || !active()) return;
+  const refresh = useCallback(async (force = false) => {
+    if (!backendReady) return;
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     try {
-      const data = await callJourneyApi<{ items: Pending[] }>("/api/call-reviews");
+      const data = await loadCallReviews(currentUserId, { signal: controller.signal, force });
+      if (controller.signal.aborted) return;
       const items = Array.isArray(data.items) ? data.items : [];
       if (known.current) for (const item of items) if (!known.current.has(item.event_id)) arrived.current.add(item.event_id);
       known.current ||= new Set();
@@ -30,23 +39,29 @@ export default function PostCallInbox() {
       setPending(items);
     }
     catch { /* External-result workflow never blocks the rest of KBC. */ }
-  }, [backendLoadedAt, currentUserId]);
+  }, [backendReady, currentUserId]);
   useEffect(() => {
-    void refresh(); const timer = window.setInterval(() => void refresh(), 10000);
-    const focus = () => void refresh(); window.addEventListener("focus", focus); document.addEventListener("visibilitychange", focus);
+    if (!reviewsEnabled) { setPending([]); return; }
+    void refresh();
+    const changed = () => { clearCallReviewsCache(currentUserId); void refresh(); };
+    window.addEventListener("kbc:call-workflow-updated", changed);
+    return () => { request.current?.abort(); window.removeEventListener("kbc:call-workflow-updated", changed); };
+  }, [reviewsEnabled, location.pathname, currentUserId, refresh]);
+  useEffect(() => {
     const open = (event: Event) => { const id = (event as CustomEvent<string>).detail; if (id) { shown.current.add(id); setEventId(id); } };
     window.addEventListener("kbc:open-call-review", open);
-    return () => { clearInterval(timer); window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", focus); window.removeEventListener("kbc:open-call-review", open); };
-  }, [refresh]);
+    return () => window.removeEventListener("kbc:open-call-review", open);
+  }, []);
   useEffect(() => {
     const selected = new URLSearchParams(location.search).get("call_review");
     if (selected) { shown.current.add(selected); setEventId(selected); return; }
+    if (!reviewsEnabled) return;
     const row = pending.find(item => !shown.current.has(item.event_id) && (arrived.current.has(item.event_id)
       || location.pathname === `/leads/${encodeURIComponent(item.lead_id)}` || location.pathname === `/zoom/calls/${encodeURIComponent(item.call_id || '')}`));
     if (row && !eventId && active() && !document.querySelector('[role="dialog"]') && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName || "")) {
       shown.current.add(row.event_id); setEventId(row.event_id);
     }
-  }, [pending, location.pathname, location.search, eventId]);
+  }, [pending, location.pathname, location.search, eventId, reviewsEnabled]);
   const close = () => {
     setEventId(null);
     if (new URLSearchParams(location.search).has("call_review")) {
@@ -55,11 +70,12 @@ export default function PostCallInbox() {
     }
   };
   return <>
+    {reviewsEnabled && !pending.length ? <div className="flex justify-end px-5 py-1"><Button size="sm" variant="ghost" onClick={() => void refresh(true)}>Check call reviews</Button></div> : null}
     {pending.length ? <div className="flex items-center justify-between gap-3 border-b border-primary-200 bg-primary-50 px-5 py-2 text-sm text-primary-900" role="status">
       <span>{pending.length} pending post-call review{pending.length === 1 ? "" : "s"}</span>
-      <Button size="sm" variant="outline" onClick={() => { shown.current.add(pending[0].event_id); setEventId(pending[0].event_id); }}>Review call</Button>
+      <div className="flex gap-2"><Button size="sm" variant="ghost" onClick={() => void refresh(true)}>Refresh reviews</Button><Button size="sm" variant="outline" onClick={() => { shown.current.add(pending[0].event_id); setEventId(pending[0].event_id); }}>Review call</Button></div>
     </div> : null}
-    {eventId ? <PostCallReview key={eventId} eventId={eventId} onClose={close} onSaved={() => { close(); void refresh(); }} /> : null}
+    {eventId ? <PostCallReview key={eventId} eventId={eventId} onClose={close} onSaved={close} /> : null}
   </>;
 }
 function PostCallReview({ eventId, onClose, onSaved }: { eventId: string; onClose: () => void; onSaved: () => void }) {
@@ -69,10 +85,14 @@ function PostCallReview({ eventId, onClose, onSaved }: { eventId: string; onClos
   const [stage, setStage] = useState(""); const [reason, setReason] = useState(""); const [confirmed, setConfirmed] = useState(false);
   const [nextTitle, setNextTitle] = useState(""); const [nextDate, setNextDate] = useState("");
   const [tasks, setTasks] = useState<{ action_id: string; title: string; description: string; due: string; assignee_id: string; priority: string; selected: boolean }[]>([]);
+  const request = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
+    request.current?.abort();
+    const controller = new AbortController(); request.current = controller;
     setError("");
     try {
-      const row = await callJourneyApi<CallResultReview>(`/api/call-reviews/${encodeURIComponent(eventId)}`);
+      const row = await callJourneyApi<CallResultReview>(`/api/call-reviews/${encodeURIComponent(eventId)}`, undefined, controller.signal);
+      if (controller.signal.aborted) return;
       setReview(row);
       const ranks = ['New lead', 'Contacted', 'Qualified', 'Interested'];
       const regresses = ranks.includes(row.suggested_stage || '') && ranks.indexOf(row.current_stage || '') > ranks.indexOf(row.suggested_stage || '');
@@ -81,9 +101,9 @@ function PostCallReview({ eventId, onClose, onSaved }: { eventId: string; onClos
       // Selected commitments determine the next action unless staff explicitly enter an override.
       setNextTitle(""); setNextDate("");
       setReason("Reviewed the recorded call analysis."); setConfirmed(false);
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Unable to load this review."); }
+    } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "Unable to load this review."); }
   }, [eventId, currentUserId]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => request.current?.abort(); }, [load]);
   const selected = tasks.filter(task => task.selected);
   const missingDates = selected.some(task => !task.due) || Boolean(nextTitle.trim() && !nextDate);
   const save = async (decision: "approve" | "dismiss") => {

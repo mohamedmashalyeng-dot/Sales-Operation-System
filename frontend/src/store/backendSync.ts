@@ -1173,10 +1173,23 @@ async function loadWorkspaceSection<T>(
 }
 
 function shouldLoadSection(options: BackendWorkspaceLoadOptions, section: BackendWorkspaceSection): boolean {
-  return !options.sections || options.sections.includes(section);
+  return options.sections?.includes(section) === true;
 }
 
-export async function loadBackendWorkspace(options: BackendWorkspaceLoadOptions = {}): Promise<BackendWorkspaceResult | null> {
+const workspaceRequests = new Map<string, Promise<BackendWorkspaceResult | null>>();
+
+export function loadBackendWorkspace(options: BackendWorkspaceLoadOptions = {}): Promise<BackendWorkspaceResult | null> {
+  const key = JSON.stringify({ fast: Boolean(options.fast), sections: [...(options.sections || [])].sort(), throwOnFailure: Boolean(options.throwOnFailure) });
+  const pending = workspaceRequests.get(key);
+  if (pending) return pending;
+  const request = loadBackendWorkspaceRequest(options).finally(() => {
+    if (workspaceRequests.get(key) === request) workspaceRequests.delete(key);
+  });
+  workspaceRequests.set(key, request);
+  return request;
+}
+
+async function loadBackendWorkspaceRequest(options: BackendWorkspaceLoadOptions): Promise<BackendWorkspaceResult | null> {
   try {
     const bootstrap = await api<AnyRecord>("/api/bootstrap", {
       timeoutMs: BACKEND_BOOTSTRAP_TIMEOUT_MS,

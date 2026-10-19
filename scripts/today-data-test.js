@@ -54,6 +54,10 @@ function verify(data, own) {
   check('SLA successes use the actual response deadline',data.totals.sla_good.current,own?1:2);
   check('Cairo day bucket',data.daily.find(r => r.kind==='followups' && r.date==='2026-10-15')?.count,1);
   check('priority preview is bounded',data.priority.length,6);
+  check('programme options remain complete, sorted and owner-scoped',data.options.programme,own?['Business']:['Business','Private programme']);
+  check('intake options combine leads and applications without duplicates',data.options.intake,['October']);
+  check('source options remain complete, sorted and owner-scoped',data.options.source,own?['Referral']:['Private source','Referral']);
+  check('owner options retain names and scope',data.options.owner,own?[{value:'own',label:'Owner'}]:[{value:'other',label:'Other owner'},{value:'own',label:'Owner'}]);
   if (own) { check('options respect member ownership',data.options.programme.includes('Private programme'),false); check('no cross-owner priority records',data.priority.some(l => l.id==='private'),false); }
 }
 async function main() {
