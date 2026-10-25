@@ -283,7 +283,7 @@ async function ensureLead(client, cache, contact, receivedAt, labelName, stats) 
       city: '',
       owner: 'Sales',
       owner_id: 'local-user',
-      stage: 'Enrolled',
+      stage: 'New lead',
       priority: 'P2',
       source_first_touch: 'Gmail',
       source_lead_capture: 'Gmail',
@@ -291,8 +291,6 @@ async function ensureLead(client, cache, contact, receivedAt, labelName, stats) 
       level: 'Needs review',
       created_at: receivedAt || now,
       next_action_at: null,
-      enrolled_from_gmail_label: labelName,
-      enrolled_from_gmail_label_at: now,
       source_history: [{ source: 'Gmail', provider_id: labelName, captured_at: receivedAt || now }]
     };
     await client.query(
@@ -310,22 +308,12 @@ async function ensureLead(client, cache, contact, receivedAt, labelName, stats) 
         lead.source_first_touch, lead.source_lead_capture, lead.contact_permission, lead.created_at, lead.next_action_at, jsonValue(lead)]
     );
     stats.leads_created += 1;
-    stats.leads_enrolled += 1;
-    row = { id, email, data: lead, stage: 'Enrolled' };
+    row = { id, email, data: lead, stage: lead.stage };
     cache.leadByEmail.set(email, row);
-    return { id, data: lead, stage: 'Enrolled' };
+    return row;
   }
   const data = { ...(row.data || {}) };
   let changed = false;
-  if (row.stage !== 'Enrolled' || data.stage !== 'Enrolled') {
-    data.stage = 'Enrolled';
-    changed = true;
-  }
-  if (!data.enrolled_from_gmail_label) {
-    data.enrolled_from_gmail_label = labelName;
-    data.enrolled_from_gmail_label_at = now;
-    changed = true;
-  }
   if (programme !== 'Programme not identified' && (!data.programme || data.programme === 'Programme not identified')) {
     data.programme = programme;
     changed = true;
@@ -333,18 +321,17 @@ async function ensureLead(client, cache, contact, receivedAt, labelName, stats) 
   if (changed) {
     await client.query(
       `update app_leads
-       set stage = 'Enrolled',
-           programme = coalesce(nullif($2, 'Programme not identified'), programme),
+       set programme = coalesce(nullif($2, 'Programme not identified'), programme),
            data = $3::jsonb
        where id = $1`,
       [row.id, programme, jsonValue(data)]
     );
-    stats.leads_enrolled += row.stage === 'Enrolled' ? 0 : 1;
   }
-  return { id: row.id, data, stage: 'Enrolled' };
+  row.data = data;
+  return row;
 }
 
-async function upsertEmail(client, state, cache, lead, contact, message, labelMap, targetLabel, stats) {
+async function upsertEmail(client, state, cache, lead, contact, message, labelMap, stats) {
   const receivedAt = headerValue(message, 'Date') ? new Date(headerValue(message, 'Date')) : new Date(Number(message.internalDate || Date.now()));
   const receivedIso = Number.isNaN(receivedAt.getTime()) ? new Date().toISOString() : receivedAt.toISOString();
   const subject = headerValue(message, 'Subject') || '(No subject)';
@@ -356,7 +343,6 @@ async function upsertEmail(client, state, cache, lead, contact, message, labelMa
     gmail_label_names: gmailLabelNames,
     gmail_message_id: message.id,
     gmail_thread_id: message.threadId || '',
-    enrolled_from_gmail_label: targetLabel,
     is_read: !gmailLabels.includes('UNREAD')
   };
   const existing = cache.emailByMessageId.get(message.id);
@@ -492,7 +478,7 @@ async function main() {
           continue;
         }
         const lead = await ensureLead(client, cache, contact, receivedAt, targetLabel, stats);
-        await upsertEmail(client, state, cache, lead, contact, message, labelMap, targetLabel, stats);
+        await upsertEmail(client, state, cache, lead, contact, message, labelMap, stats);
         if ((index + 1) % 500 === 0) console.error(`Prepared database writes ${index + 1}/${prepared.length}...`);
       }
       await saveWorkspaceGmail(client, gmail);

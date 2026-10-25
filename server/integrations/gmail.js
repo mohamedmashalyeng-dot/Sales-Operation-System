@@ -20,8 +20,6 @@ let gmailAutoSyncTimer = null;
 let gmailAutoSyncRunning = false;
 const GMAIL_IMPORT_ALL_LIMIT = Math.max(1, Math.min(Number(process.env.GMAIL_IMPORT_ALL_LIMIT || 50000), 100000));
 const GMAIL_IMPORT_PAGE_SIZE = Math.max(1, Math.min(Number(process.env.GMAIL_IMPORT_PAGE_SIZE || 100), 500));
-const GMAIL_ENROLMENT_LABELS = new Set(['enrolled', 'enrolment confirmed', 'enrollment confirmed', 'apprenticeship intersted', 'apprenticeship interested']);
-const GMAIL_ENROLMENT_LABEL_PREFIXES = ['apprenticeship interests'];
 
 function gmailQueryDate(value) {
   const date = new Date(value);
@@ -110,7 +108,7 @@ async function saveGmailImportTables(db, options = {}) {
          created_at = excluded.created_at, next_action_at = excluded.next_action_at, data = excluded.data`,
       [Applications.jsonValue(leadRows)]
     );
-    const applicationLeadIds = new Set([...(options.enrolledLeadIds || []), ...leadRows.filter(row => Applications.isEnrolledStage(row.stage)).map(row => row.id)]);
+    const applicationLeadIds = new Set(leadRows.filter(row => Applications.isEnrolledStage(row.stage)).map(row => row.id));
     for (const id of applicationLeadIds) {
       const lead = (await client.query('select data from app_leads where id=$1 for update', [id])).rows[0]?.data;
       await Applications.ensureApplicationForLeadFastDb(client, lead, { name: 'Gmail Sync' });
@@ -454,20 +452,6 @@ function uniqueStrings(values) {
   return [...new Set((values || []).map(value => String(value || '').trim()).filter(Boolean))];
 }
 
-function normalizedGmailLabelName(value) {
-  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
-function isGmailEnrolmentLabelName(value) {
-  const label = normalizedGmailLabelName(value);
-  return GMAIL_ENROLMENT_LABELS.has(label) || GMAIL_ENROLMENT_LABEL_PREFIXES.some(prefix => label === prefix || label.startsWith(`${prefix}/`));
-}
-
-function gmailEnrolmentLabel(email) {
-  return uniqueStrings(email?.gmail_label_names || [])
-    .find(isGmailEnrolmentLabelName) || '';
-}
-
 function isInternalGmailLabelName(value) {
   return /^Label_[A-Za-z0-9_-]+$/i.test(String(value || '').trim());
 }
@@ -599,33 +583,6 @@ function parseAddressList(value) {
   }));
   if (withNames.length) return withNames.filter(item => item.email);
   return text.split(',').map(item => parseAddress(item)).filter(item => item.email);
-}
-
-function applyGmailEnrolmentLabels(db, user, changed) {
-  let enrolled = 0;
-  for (const email of db.emails || []) {
-    const label = gmailEnrolmentLabel(email);
-    if (!label) continue;
-    const linkedLead = email.lead_id ? (db.leads || []).find(lead => lead.id === email.lead_id) : null;
-    const lead = linkedLead || Emails.leadForEmailAddress(db, email.email);
-    if (!lead) continue;
-    if (email.lead_id !== lead.id) {
-      email.lead_id = lead.id;
-      changed?.emailIds?.add(email.id);
-    }
-    changed?.enrolledLeadIds?.add(lead.id);
-    if (lead.stage === 'Enrolled') continue;
-    lead.stage = 'Enrolled';
-    lead.enrolled_from_gmail_label = label;
-    lead.enrolled_from_gmail_label_at = new Date().toISOString();
-    changed?.leadIds?.add(lead.id);
-    if (db.audit && user) {
-      Audit.addAudit(db, user, 'Lead enrolled from Gmail label', 'lead', lead.id, label);
-      changed?.auditIds?.add(db.audit[0]?.id);
-    }
-    enrolled += 1;
-  }
-  return enrolled;
 }
 
 function externalRecipients(db, message) {
@@ -776,13 +733,12 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     inbox: latestOnly ? '' : gmailSyncPageToken(db, 'inbox', Config.GMAIL_INCREMENTAL_ONLY),
     sent: latestOnly ? '' : gmailSyncPageToken(db, 'sent', Config.GMAIL_INCREMENTAL_ONLY)
   };
-  const changed = { leadIds: new Set(), taskIds: new Set(), emailIds: new Set(), auditIds: new Set(), enrolledLeadIds: new Set() };
+  const changed = { leadIds: new Set(), taskIds: new Set(), emailIds: new Set(), auditIds: new Set() };
   const labelsRefreshed = refreshStoredGmailLabelNames(db, labelMap, changed);
   const historyResult = options.skipTrash ? { history_trash: 0, history_restored: 0, history_skipped: true } : await syncGmailHistoryChanges(db, auth, changed);
   const trashResult = options.skipTrash ? { trashed: 0, scanned_trash: 0, trash_sync_skipped: true } : await syncGmailTrashLabels(db, auth, changed, { force: options.forceTrash });
-  let enrolledFromLabels = 0;
+  // Gmail labels describe emails; learner enrolment is recorded separately.
   const quotaResponse = async () => {
-    enrolledFromLabels += applyGmailEnrolmentLabels(db, user, changed);
     if (latestOnly) {
       db.gmail.sync_2026_page_token = null;
       db.gmail.sent_sync_2026_page_token = null;
@@ -798,7 +754,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
     if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0) }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent))) {
       await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
     }
-    return { imported, imported_inbox: importedInbox, imported_sent: importedSent, labels_refreshed: labelsRefreshed, labels_enrolled: enrolledFromLabels, scanned, restored, ...historyResult, ...trashResult, since: Config.GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), quota_limited: true, retry_after_ms: 70000, last_sync_at: db.gmail.last_sync_at };
+    return { imported, imported_inbox: importedInbox, imported_sent: importedSent, labels_refreshed: labelsRefreshed, labels_enrolled: 0, scanned, restored, ...historyResult, ...trashResult, since: Config.GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), quota_limited: true, retry_after_ms: 70000, last_sync_at: db.gmail.last_sync_at };
   };
 
   async function importSource(source, labelId) {
@@ -939,7 +895,6 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   const sentQuota = await importSource('sent', 'SENT');
   if (sentQuota?.quota_limited) return sentQuota;
   const repliesResolved = reconcileGmailSentReplies(db, changed);
-  enrolledFromLabels += applyGmailEnrolmentLabels(db, user, changed);
   Emails.sortEmailsNewest(db);
   if (latestOnly) {
     db.gmail.sync_2026_page_token = null;
@@ -959,7 +914,7 @@ async function importGmailMessages(db, user, maxResults = 25, options = {}) {
   if (gmailImportChanged(changed, { imported, labels: labelsRefreshed, restored: restored + (historyResult.history_restored || 0), trashed: (trashResult.trashed || 0) + (historyResult.history_trash || 0), replied: repliesResolved }) || (!latestOnly && (pageTokens.inbox || pageTokens.sent)) || options.persistState !== false) {
     await saveGmailImportTables(db, { ...changed, preserveEventbrite: true });
   }
-  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, labels_refreshed: labelsRefreshed, labels_enrolled: enrolledFromLabels, scanned, restored, ...historyResult, ...trashResult, since: Config.GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
+  return { imported, imported_inbox: importedInbox, imported_sent: importedSent, replies_resolved: repliesResolved, labels_refreshed: labelsRefreshed, labels_enrolled: 0, scanned, restored, ...historyResult, ...trashResult, since: Config.GMAIL_INCREMENTAL_ONLY ? db.gmail.incremental_started_at : '2026-01-01', has_more: !latestOnly && Boolean(pageTokens.inbox || pageTokens.sent), last_sync_at: db.gmail.last_sync_at };
 }
 
 function gmailDailySyncTarget() {
@@ -1069,7 +1024,5 @@ exports.markGmailReconnectRequired = markGmailReconnectRequired;
 exports.hydrateEmailBody = hydrateEmailBody;
 exports.GMAIL_SYSTEM_LABELS = GMAIL_SYSTEM_LABELS;
 exports.uniqueStrings = uniqueStrings;
-exports.gmailEnrolmentLabel = gmailEnrolmentLabel;
-exports.applyGmailEnrolmentLabels = applyGmailEnrolmentLabels;
 exports.importGmailMessages = importGmailMessages;
 exports.scheduleGmailAutoSync = scheduleGmailAutoSync;

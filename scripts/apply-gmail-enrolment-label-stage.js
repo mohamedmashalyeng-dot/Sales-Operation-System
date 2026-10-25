@@ -11,6 +11,8 @@ const apply = process.argv.includes('--apply');
 const listLabels = process.argv.includes('--list-labels');
 const stageCount = process.argv.includes('--stage-count');
 
+// Legacy command: labels may link emails to leads, but never confirm enrolment.
+
 function loadEnv() {
   for (const name of ['.env', '.env.hostinger', 'hostinger.env', 'env.hostinger']) {
     const file = path.join(ROOT, name);
@@ -115,14 +117,13 @@ async function main() {
       `${matchedSql(activeLeadSql)}
        select
          count(distinct matched.lead_id)::int as matched_leads,
-         count(distinct matched.lead_id) filter (where coalesce(l.stage, '') <> 'Enrolled')::int as leads_to_update,
          count(distinct email_id) filter (where coalesce(e.lead_id, '') <> matched.lead_id)::int as emails_to_link
        from matched
        join app_leads l on l.id = matched.lead_id
        join app_emails e on e.id = matched.email_id`,
       [labels, labelPrefixes]
     );
-    const counts = countResult.rows[0] || { matched_leads: 0, leads_to_update: 0, emails_to_link: 0 };
+    const counts = countResult.rows[0] || { matched_leads: 0, emails_to_link: 0 };
 
     if (!apply) {
       console.log(JSON.stringify({ mode: 'dry-run', ...counts }));
@@ -153,38 +154,11 @@ async function main() {
         );
         emailsLinked += linked.rowCount;
       }
-      let leadsUpdated = 0;
-      const seenLeadIds = new Set();
-      const now = new Date().toISOString();
-      for (const row of matchesResult.rows) {
-        if (seenLeadIds.has(row.lead_id) || String(row.stage || '') === 'Enrolled') continue;
-        seenLeadIds.add(row.lead_id);
-        const updated = await client.query(
-          `update app_leads
-           set stage = 'Enrolled',
-               data = jsonb_set(
-                 jsonb_set(
-                   jsonb_set(coalesce(data, '{}'::jsonb), '{stage}', to_jsonb('Enrolled'::text), true),
-                   '{enrolled_from_gmail_label}',
-                   to_jsonb($2::text),
-                   true
-                 ),
-                 '{enrolled_from_gmail_label_at}',
-                 to_jsonb($3::text),
-                 true
-               )
-           where id = $1
-             and coalesce(stage, '') <> 'Enrolled'
-           returning id`,
-          [row.lead_id, row.label, now]
-        );
-        leadsUpdated += updated.rowCount;
-      }
       await client.query('commit');
       console.log(JSON.stringify({
         mode: 'apply',
         matched_leads: counts.matched_leads,
-        leads_updated: leadsUpdated,
+        leads_updated: 0,
         emails_linked: emailsLinked
       }));
     } catch (error) {
